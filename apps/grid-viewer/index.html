@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Grid Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #12151c;
+      --panel: #1b2030;
+      --text: #e8ecf4;
+      --muted: #9aa3b5;
+      --accent: #6ea8fe;
+      --border: #2c3448;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.6rem 1rem;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+    header .meta {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    header .hint {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    #status {
+      color: var(--accent);
+      font-size: 0.85rem;
+    }
+    #viewport {
+      position: relative;
+      height: calc(100% - 48px);
+      overflow: hidden;
+      cursor: grab;
+      background:
+        radial-gradient(ellipse at center, #1a2233 0%, #0d1016 70%);
+    }
+    #viewport.dragging { cursor: grabbing; }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="scene-name">Loading…</h1>
+    <span class="meta" id="scene-meta"></span>
+    <span id="status"></span>
+    <span class="hint">Drag to pan · Wheel to zoom · Double-click to fit</span>
+  </header>
+  <div id="viewport">
+    <canvas id="map"></canvas>
+  </div>
+  <script src="/viewer.js"></script>
+</body>
+</html>

@@ -8,6 +8,7 @@ This repo is **format + tooling only**. No listen server, renderer, AI, or game 
 
 ```
 vtt-format/
+├── apps/grid-viewer/           # minimal tile-grid web preview (HTML canvas)
 ├── packages/campaign-format/   # hash-and-store + validate-campaign (Python)
 └── examples/sample-campaign/   # reference campaign tree
     ├── build/                  # Editor output (compiled sheets, rules, manifest)
@@ -76,10 +77,23 @@ python -m campaign_format.validate_campaign \
 
 Checks: required dirs, sheet YAML parse, actor fields ⊆ sheet fields, scene asset hashes present, `build/manifest.json` hashes match build files.
 
+
+## Grid viewer (preview)
+
+Minimal browser preview for a scene tile grid (walls / doors / lights / spawns), optional background from `world/assets/by-hash/`.
+
+```bash
+pip install -r packages/campaign-format/requirements.txt
+python apps/grid-viewer/serve.py
+# open http://127.0.0.1:8765/?scene=docks
+```
+
+See `apps/grid-viewer/README.md` for controls and options.
+
 ## Non-goals (this scaffold)
 
 - No listen server / netcode
-- No renderer / Godot / Electron
+- No full renderer / Godot / Electron (only a tiny `apps/grid-viewer` preview)
 - No AI / provider SDKs
 - No game client
 
