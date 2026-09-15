@@ -1,5 +1,6 @@
 id: dock-tough
 sheet: npc
+sheet_doc: world/actors/dock-tough.sheet.txt
 name: Dock Tough
 # Instance fills NPC sheet fields only (validated ⊆ sheet fields).
 fields:

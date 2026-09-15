@@ -1,0 +1,7 @@
+Dock Tough — character sheet (blank text document)
+
+Name: Dock Tough
+Role: Harbor enforcer NPC
+
+(Fill in notes during prep or session. Schema fields live in build/sheets/npc.yaml;
+actor instance values live in world/actors/dock-tough.yaml.)

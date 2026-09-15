@@ -1,0 +1,16 @@
+id: party-fighter
+sheet: player
+sheet_doc: world/actors/party-fighter.sheet.txt
+name: Party Fighter
+fields:
+  name: Party Fighter
+  hp_current: 20
+  hp_max: 20
+  STR: 16
+  DEX: 12
+  CON: 14
+  INT: 10
+  WIS: 11
+  CHA: 10
+  AC: 16
+  notes: Front-line fighter for the sample party.

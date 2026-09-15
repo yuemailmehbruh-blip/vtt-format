@@ -86,3 +86,30 @@ See `campaign.lock.example`. Modes: `play` | `prep` | `edit`. Exclusive write ow
 - **edit** → `build/`
 
 Incompatible writers must refuse until the lock is released.
+
+## Human sheet documents (session library)
+
+Actor YAML may reference a human-facing sheet document:
+
+```yaml
+id: dock-tough
+sheet: npc
+sheet_doc: world/actors/dock-tough.sheet.txt
+name: Dock Tough
+fields: { … }
+```
+
+- `sheet` — schema id under `build/sheets/<id>.yaml` (validated; actor `fields` ⊆ sheet fields)
+- `sheet_doc` — campaign-relative path to a blank/placeholder text document opened in the GM Session library panel
+
+Default convention when omitted: `world/actors/<actor-id>.sheet.txt`.
+
+## Placed tokens (play / GM session)
+
+Runtime token placements for a scene are stored under:
+
+```
+state/tokens/<scene-id>.json
+```
+
+Play owns `state/`; Prep-owned `world/scenes/*.yaml` may keep `tokens: []` as a schema placeholder. The offline GM Session app reads/writes only `state/tokens/`.

@@ -32,6 +32,7 @@ REQUIRED_DIRS = [
     "state/combat",
     "state/chat-log",
     "state/autosave",
+    "state/tokens",
 ]
 
 

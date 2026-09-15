@@ -2,18 +2,19 @@
 
 Greenfield scaffold for a **native listen-server VTT**: campaign map layout + content-addressed asset library.
 
-This repo is **format + tooling only**. No listen server, renderer, AI, or game client.
+This repo is **format + tooling + offline GM Session foundation**. No listen server, AI, or multiplayer yet.
 
 ## Folder layout
 
 ```
 vtt-format/
-├── apps/grid-viewer/           # minimal tile-grid web preview (HTML canvas)
+├── apps/gm-session/            # offline DM session (map + library + tokens)  ← primary
+├── apps/grid-viewer/           # minimal tile-grid map preview only
 ├── packages/campaign-format/   # hash-and-store + validate-campaign (Python)
 └── examples/sample-campaign/   # reference campaign tree
     ├── build/                  # Editor output (compiled sheets, rules, manifest)
     ├── world/                  # Prep output (scenes, actors, journals, assets)
-    ├── state/                  # GM-owned runtime (fog, combat, chat, autosave)
+    ├── state/                  # GM-owned runtime (fog, combat, chat, tokens, autosave)
     ├── prep-scratch/           # Prep WIP (not play)
     ├── editor-scratch/         # Editor WIP (not play)
     ├── campaign.lock.example   # play | prep | edit lock protocol
@@ -27,9 +28,27 @@ vtt-format/
 | **Map / world content** | `world/` — scenes, actors, encounters, journals | Prep |
 | **Asset library** | `world/assets/by-hash/` + `index.yaml` | Prep / Editor via hash-and-store |
 | **Compiled rules & sheets** | `build/` | Editor |
-| **Live session state** | `state/` | GM / play runtime |
+| **Human sheet docs** | `world/actors/<id>.sheet.txt` (via actor `sheet_doc`) | Prep / GM Session |
+| **Live session state** | `state/` — including placed tokens under `state/tokens/` | GM / play runtime |
 
 Assets are **content-addressed**: files live at `world/assets/by-hash/<sha256-hex>`. Logical names (`maps/docks-bg`) map to hashes in `world/assets/index.yaml`. Scenes reference hashes, never mutable paths.
+
+## GM Session (offline DM foundation)
+
+Local browser app: grid map + library sidebar of characters/actors + drag-to-place tokens. Sheets are blank text documents on disk under the campaign path (declarative paths; content can be empty placeholders for now).
+
+```bash
+pip install -r packages/campaign-format/requirements.txt
+python apps/gm-session/serve.py
+# open http://127.0.0.1:8765/?scene=docks
+```
+
+- Library lists actors from `world/actors/` (sample: dock-tough, party-fighter, blank-npc)
+- Each actor has a human sheet at `world/actors/<id>.sheet.txt`
+- Drag an actor onto the map → white circle token; placements persist in `state/tokens/<scene>.json` and survive refresh
+- Click an actor → view/edit sheet text; Save writes back to the `.sheet.txt` on disk
+
+See `apps/gm-session/README.md` for API, controls, and disk paths.
 
 ## How to add an asset
 
@@ -56,16 +75,16 @@ This copies the file to `world/assets/by-hash/<sha256>`, upserts `name -> hash` 
 
 See `examples/sample-campaign/FORMAT.md` for the full scene schema.
 
-## Four subsystems (later)
+## Four subsystems
 
 | Subsystem | Writes | Play calls AI? |
 |-----------|--------|----------------|
 | **Editor** | `build/` | No |
 | **Prep** | `world/` | No |
-| **Play** (listen server + client) | `state/` | **Never** — play never calls AI |
+| **Play** (listen server + client; offline GM Session today) | `state/` | **Never** — play never calls AI |
 | **AI assist** (optional, offline) | scratch only | Out of band; not in the play path |
 
-Sheets are **declarative YAML + closed formulas** (no arbitrary code). Content is addressed by hash.
+Sheets are **declarative YAML + closed formulas** (no arbitrary code) under `build/sheets/`. Human-facing sheet documents for the session library live beside actors under `world/actors/`. Content-addressed assets use hashes.
 
 ## Validate
 
@@ -77,25 +96,21 @@ python -m campaign_format.validate_campaign \
 
 Checks: required dirs, sheet YAML parse, actor fields ⊆ sheet fields, scene asset hashes present, `build/manifest.json` hashes match build files.
 
+## Grid viewer (map-only preview)
 
-## Grid viewer (preview)
-
-Minimal browser preview for a scene tile grid (walls / doors / lights / spawns), optional background from `world/assets/by-hash/`.
+Minimal browser preview for a scene tile grid (walls / doors / lights / spawns). Prefer **GM Session** for the DM workflow.
 
 ```bash
-pip install -r packages/campaign-format/requirements.txt
 python apps/grid-viewer/serve.py
 # open http://127.0.0.1:8765/?scene=docks
 ```
 
-See `apps/grid-viewer/README.md` for controls and options.
-
 ## Non-goals (this scaffold)
 
-- No listen server / netcode
-- No full renderer / Godot / Electron (only a tiny `apps/grid-viewer` preview)
+- No listen server / netcode / multiplayer
+- No fog of war, dice, player client, or fancy art
 - No AI / provider SDKs
-- No game client
+- No Electron packaging (local browser via `serve.py` is enough)
 
 ## License
 

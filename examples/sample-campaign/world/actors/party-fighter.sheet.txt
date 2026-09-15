@@ -1,0 +1,7 @@
+Party Fighter — character sheet (blank text document)
+
+Name: Party Fighter
+Role: Player character
+
+(Fill in notes during prep or session. Schema fields live in build/sheets/player.yaml;
+actor instance values live in world/actors/party-fighter.yaml.)

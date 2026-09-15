@@ -1,0 +1,7 @@
+Blank NPC — character sheet (blank text document)
+
+Name: (unnamed)
+Role: Generic NPC placeholder
+
+(Fill in notes during prep or session. Schema fields live in build/sheets/npc.yaml;
+actor instance values live in world/actors/blank-npc.yaml.)

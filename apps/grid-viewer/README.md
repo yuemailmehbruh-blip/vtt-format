@@ -2,6 +2,8 @@
 
 Minimal static web viewer for campaign scene tile grids. Loads a scene YAML (via a tiny local server), draws the square grid, and overlays walls, doors, lights, and spawns. Optionally shows the content-addressed background PNG under a semi-transparent grid.
 
+> **Note:** For the offline DM session (library sidebar + tokens), use [`apps/gm-session`](../gm-session/) instead. This app remains a map-only preview.
+
 No VTT, netcode, or AI — just a map preview.
 
 ## Requirements

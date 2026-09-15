@@ -1,0 +1,19 @@
+id: blank-npc
+sheet: npc
+sheet_doc: world/actors/blank-npc.sheet.txt
+name: Blank NPC
+fields:
+  name: Blank NPC
+  hp_current: 8
+  hp_max: 8
+  STR: 10
+  DEX: 10
+  CON: 10
+  INT: 8
+  WIS: 10
+  CHA: 8
+  AC: 12
+  CR: "0"
+  creature_type: humanoid
+  hostile: false
+  notes: Empty placeholder NPC for quick drops onto the map.
