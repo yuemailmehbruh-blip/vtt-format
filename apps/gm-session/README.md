@@ -42,7 +42,7 @@ python serve.py --campaign ../../examples/sample-campaign --scene docks
 - **Header** — scene name + “GM Session (offline)”
 - **Left library** — Characters/Actors from `world/actors/*.yaml`; Scenes from `world/scenes/`
   - Entries with a human sheet file show a **sheet** badge
-  - **Click** an actor → open its `.sheet.txt` in the right panel (editable; Save writes back to disk)
+  - **Click** an actor → open its `.sheet.txt` in a pop-out window (editable; Save writes back to disk)
   - **Drag** an actor onto the map → place a white circle token labeled with initials + name
 - **Canvas** — grid, walls, doors, lights, spawns (same overlays as the grid viewer), plus placed tokens
 - **Pan / zoom** — drag to pan, wheel to zoom, double-click to fit

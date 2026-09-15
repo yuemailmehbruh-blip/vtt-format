@@ -10,11 +10,6 @@
   const statusEl = document.getElementById("status");
   const actorListEl = document.getElementById("actor-list");
   const sceneListEl = document.getElementById("scene-list");
-  const sheetPanel = document.getElementById("sheet-panel");
-  const sheetTitle = document.getElementById("sheet-title");
-  const sheetPath = document.getElementById("sheet-path");
-  const sheetText = document.getElementById("sheet-text");
-  const sheetSaveStatus = document.getElementById("sheet-save-status");
 
   const params = new URLSearchParams(location.search);
   let sceneId = params.get("scene") || "docks";
@@ -467,50 +462,33 @@
     }
   }
 
-  async function openSheet(actorId) {
+  /** @type {Map<string, Window>} */
+  const sheetWindows = new Map();
+
+  function openSheet(actorId) {
     selectedActorId = actorId;
-    renderLibrarySelection();
-    sheetSaveStatus.textContent = "";
-    const res = await fetch(`/api/sheet/${encodeURIComponent(actorId)}`);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      setStatus(err.error || `Sheet load failed (${res.status})`);
-      return;
-    }
-    const data = await res.json();
     currentSheetActorId = actorId;
-    sheetTitle.textContent = data.name || actorId;
-    sheetPath.textContent = data.path || "";
-    sheetText.value = data.text || "";
-    sheetPanel.classList.remove("hidden");
-    layout.classList.remove("no-sheet");
-    resize();
-  }
+    renderLibrarySelection();
 
-  function closeSheet() {
-    sheetPanel.classList.add("hidden");
-    layout.classList.add("no-sheet");
-    currentSheetActorId = null;
-    resize();
-  }
-
-  async function saveSheet() {
-    if (!currentSheetActorId) return;
-    sheetSaveStatus.textContent = "Saving…";
-    const res = await fetch(
-      `/api/sheet/${encodeURIComponent(currentSheetActorId)}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: sheetText.value }),
-      }
-    );
-    if (!res.ok) {
-      sheetSaveStatus.textContent = `Failed (${res.status})`;
+    const existing = sheetWindows.get(actorId);
+    if (existing && !existing.closed) {
+      existing.focus();
       return;
     }
-    const data = await res.json();
-    sheetSaveStatus.textContent = `Saved · ${data.path}`;
+
+    const features =
+      "popup=yes,width=480,height=640,menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes";
+    const w = window.open(
+      `/sheet.html?actor=${encodeURIComponent(actorId)}`,
+      `vtt-sheet-${actorId}`,
+      features
+    );
+    if (!w) {
+      setStatus("Pop-up blocked — allow pop-ups for character sheets");
+      return;
+    }
+    sheetWindows.set(actorId, w);
+    setStatus(`Sheet opened: ${actorId}`);
   }
 
   function renderLibrary() {
@@ -523,7 +501,7 @@
       item.className = "lib-item";
       item.draggable = true;
       item.dataset.id = actor.id;
-      item.title = "Drag onto map to place token · Click to open sheet";
+      item.title = "Drag onto map to place token · Click to open sheet in a pop-out";
       item.innerHTML = `
         <span class="dot" aria-hidden="true"></span>
         <span class="name">
@@ -578,27 +556,85 @@
     renderLibrary();
   }
 
-  // Pan / zoom
+  function canvasLocal(e) {
+    const rect = canvas.getBoundingClientRect();
+    return [e.clientX - rect.left, e.clientY - rect.top];
+  }
+
+  function tokenRadiusScreen() {
+    return Math.max(10, gridSize * 0.35 * Math.min(scale, 2));
+  }
+
+  /** Topmost token under screen point, or null. Tokens sit above map pan. */
+  function hitTestToken(sx, sy) {
+    const r = tokenRadiusScreen();
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      const t = tokens[i];
+      const [cx, cy] = worldToScreen(t.x, t.y);
+      const dx = sx - cx;
+      const dy = sy - cy;
+      if (dx * dx + dy * dy <= r * r) return t;
+    }
+    return null;
+  }
+
+  /** @type {"none"|"pan"|"token"} */
+  let dragMode = "none";
+  /** @type {any|null} */
+  let draggingToken = null;
+
+  // Token drag wins over map pan when pointer is on a token
   viewport.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
-    dragging = true;
-    viewport.classList.add("dragging");
+    const [sx, sy] = canvasLocal(e);
+    const hit = hitTestToken(sx, sy);
     lastX = e.clientX;
     lastY = e.clientY;
+    if (hit) {
+      dragMode = "token";
+      draggingToken = hit;
+      dragging = false;
+      viewport.classList.remove("dragging");
+      viewport.style.cursor = "grabbing";
+    } else {
+      dragMode = "pan";
+      draggingToken = null;
+      dragging = true;
+      viewport.classList.add("dragging");
+    }
     viewport.setPointerCapture(e.pointerId);
   });
   viewport.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    offsetX += e.clientX - lastX;
-    offsetY += e.clientY - lastY;
-    lastX = e.clientX;
-    lastY = e.clientY;
-    draw();
+    if (dragMode === "none") {
+      const [sx, sy] = canvasLocal(e);
+      viewport.style.cursor = hitTestToken(sx, sy) ? "move" : "grab";
+      return;
+    }
+    if (dragMode === "token" && draggingToken) {
+      const [sx, sy] = canvasLocal(e);
+      const [wx, wy] = screenToWorld(sx, sy);
+      draggingToken.x = wx;
+      draggingToken.y = wy;
+      draw();
+      return;
+    }
+    if (dragMode === "pan" && dragging) {
+      offsetX += e.clientX - lastX;
+      offsetY += e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      draw();
+    }
   });
   function endDrag(e) {
-    if (!dragging) return;
+    if (dragMode === "token" && draggingToken) {
+      schedulePersist();
+    }
+    dragMode = "none";
+    draggingToken = null;
     dragging = false;
     viewport.classList.remove("dragging");
+    viewport.style.cursor = "grab";
     try {
       viewport.releasePointerCapture(e.pointerId);
     } catch (_) {}
@@ -657,13 +693,6 @@
     const rect = canvas.getBoundingClientRect();
     const [wx, wy] = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
     placeToken(actor, wx, wy);
-  });
-
-  document.getElementById("sheet-close").addEventListener("click", closeSheet);
-  document.getElementById("sheet-save").addEventListener("click", () => {
-    saveSheet().catch((err) => {
-      sheetSaveStatus.textContent = String(err);
-    });
   });
 
   window.addEventListener("resize", resize);

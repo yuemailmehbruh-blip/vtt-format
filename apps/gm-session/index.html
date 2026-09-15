@@ -16,7 +16,6 @@
       --border: #2c3448;
       --ok: #7ddea5;
       --sidebar-w: 260px;
-      --sheet-w: 320px;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -58,11 +57,8 @@
     #status { color: var(--accent); font-size: 0.85rem; }
     #layout {
       display: grid;
-      grid-template-columns: var(--sidebar-w) 1fr var(--sheet-w);
-      height: calc(100% - 48px);
-    }
-    #layout.no-sheet {
       grid-template-columns: var(--sidebar-w) 1fr;
+      height: calc(100% - 48px);
     }
     #library {
       background: var(--panel-2);
@@ -157,66 +153,8 @@
       width: 100%;
       height: 100%;
     }
-    #sheet-panel {
-      background: var(--panel-2);
-      border-left: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      min-width: 0;
-    }
-    #sheet-panel.hidden { display: none; }
-    #sheet-panel .sheet-head {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.55rem 0.75rem;
-      border-bottom: 1px solid var(--border);
-      background: var(--panel);
-    }
-    #sheet-panel .sheet-head strong { flex: 1; font-size: 0.9rem; }
-    #sheet-panel .sheet-path {
-      padding: 0.35rem 0.75rem;
-      font-size: 0.7rem;
-      color: var(--muted);
-      border-bottom: 1px solid var(--border);
-      word-break: break-all;
-    }
-    #sheet-text {
-      flex: 1;
-      width: 100%;
-      resize: none;
-      border: 0;
-      background: transparent;
-      color: var(--text);
-      padding: 0.75rem;
-      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      outline: none;
-    }
-    #sheet-panel .sheet-actions {
-      display: flex;
-      gap: 0.5rem;
-      padding: 0.55rem 0.75rem;
-      border-top: 1px solid var(--border);
-      background: var(--panel);
-    }
-    button {
-      background: #24304a;
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.35rem 0.7rem;
-      cursor: pointer;
-      font: inherit;
-    }
-    button:hover { border-color: var(--accent); }
-    button.primary {
-      background: #2a4a7a;
-      border-color: #3d6cb0;
-    }
-    button.ghost { background: transparent; }
     @media (max-width: 900px) {
       #layout { grid-template-columns: 200px 1fr; }
-      #sheet-panel { display: none !important; }
     }
   </style>
 </head>
@@ -226,7 +164,7 @@
     <span class="badge">GM Session (offline)</span>
     <span class="meta" id="scene-meta"></span>
     <span id="status"></span>
-    <span class="hint">Drag actors onto map · Drag map to pan · Wheel zoom · Dbl-click fit</span>
+    <span class="hint">Drag actors onto map · Drag tokens to move · Empty map pans · Wheel zoom · Click actor for sheet pop-out</span>
   </header>
   <div id="layout">
     <aside id="library">
@@ -238,18 +176,6 @@
     <div id="viewport">
       <canvas id="map"></canvas>
     </div>
-    <aside id="sheet-panel" class="hidden">
-      <div class="sheet-head">
-        <strong id="sheet-title">Sheet</strong>
-        <button type="button" class="ghost" id="sheet-close" title="Close">✕</button>
-      </div>
-      <div class="sheet-path" id="sheet-path"></div>
-      <textarea id="sheet-text" spellcheck="false"></textarea>
-      <div class="sheet-actions">
-        <button type="button" class="primary" id="sheet-save">Save to disk</button>
-        <span id="sheet-save-status" class="meta"></span>
-      </div>
-    </aside>
   </div>
   <script src="/session.js"></script>
 </body>

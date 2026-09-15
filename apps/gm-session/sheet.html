@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Character Sheet</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #12151c;
+      --panel: #1b2030;
+      --text: #e8ecf4;
+      --muted: #9aa3b5;
+      --accent: #6ea8fe;
+      --border: #2c3448;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;
+      display: flex;
+      flex-direction: column;
+    }
+    .head {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.65rem 0.85rem;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    .head strong { flex: 1; font-size: 1rem; }
+    .path {
+      padding: 0.4rem 0.85rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      word-break: break-all;
+    }
+    #sheet-text {
+      flex: 1;
+      width: 100%;
+      border: 0;
+      resize: none;
+      background: transparent;
+      color: var(--text);
+      padding: 0.85rem;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      outline: none;
+    }
+    .actions {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      padding: 0.55rem 0.85rem;
+      border-top: 1px solid var(--border);
+      background: var(--panel);
+    }
+    button {
+      background: #2a4a7a;
+      color: var(--text);
+      border: 1px solid #3d6cb0;
+      border-radius: 6px;
+      padding: 0.4rem 0.8rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:hover { filter: brightness(1.08); }
+    #status { color: var(--muted); font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <div class="head"><strong id="title">Sheet</strong></div>
+  <div class="path" id="path"></div>
+  <textarea id="sheet-text" spellcheck="false"></textarea>
+  <div class="actions">
+    <button type="button" id="save">Save to disk</button>
+    <span id="status"></span>
+  </div>
+  <script src="/sheet.js"></script>
+</body>
+</html>
