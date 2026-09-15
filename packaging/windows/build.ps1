@@ -1,6 +1,5 @@
 # Build GM Session for Windows: PyInstaller onedir + optional Inno Setup installer.
-# Run from anywhere:  powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
-# Requires: Python 3.10+, pip. Optional: Inno Setup 6 (ISCC.exe on PATH or default install).
+# Run:  powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
 
 $ErrorActionPreference = "Stop"
 
@@ -21,7 +20,7 @@ if (-not (Test-Path $Python)) {
 }
 
 Write-Host "==> Installing PyInstaller + PyYAML"
-& $Pip install --upgrade pip | Out-Null
+& $Pip install --upgrade pip 2>$null | Out-Null
 & $Pip install "pyinstaller>=6.0" "pyyaml>=6.0"
 
 $Dist = Join-Path $ScriptDir "dist"
@@ -37,7 +36,6 @@ if (-not (Test-Path (Join-Path $AppDist "GM Session.exe"))) {
     throw "PyInstaller did not produce dist\GM Session\GM Session.exe"
 }
 
-# Stage editable campaign for the installer (prefer _internal layout from PyInstaller 6+)
 $StagingCampaign = Join-Path $ScriptDir "staging-campaign"
 if (Test-Path $StagingCampaign) { Remove-Item -Recurse -Force $StagingCampaign }
 
@@ -62,15 +60,14 @@ Copy-Item -Recurse -Force $SourceCampaign $StagingCampaign
 Write-Host ""
 Write-Host "PyInstaller output:"
 Write-Host "  $AppDist"
-Write-Host "  Executable: $(Join-Path $AppDist 'GM Session.exe')"
+Write-Host ("  Executable: " + (Join-Path $AppDist "GM Session.exe"))
 
-# Inno Setup (optional)
 $Iscc = $null
 $IsccCandidates = @(
     "ISCC.exe",
-    "${env:LocalAppData}\Programs\Inno Setup 6\ISCC.exe",
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    (Join-Path $env:LocalAppData "Programs\Inno Setup 6\ISCC.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+    (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
 )
 foreach ($c in $IsccCandidates) {
     if ($c -eq "ISCC.exe") {
@@ -94,13 +91,13 @@ if ($Iscc) {
         Write-Host "Installer:"
         Write-Host "  $SetupPath"
     } else {
-        Write-Warning "ISCC finished but GM-Session-Setup.exe was not found in output\"
+        Write-Warning "ISCC finished but GM-Session-Setup.exe was not found in output/"
     }
 } else {
     Write-Host ""
-    Write-Host "Inno Setup (ISCC) not found — skipped installer."
+    Write-Host "Inno Setup (ISCC) not found - skipped installer."
     Write-Host "Install Inno Setup 6, then re-run this script, or compile gm-session.iss manually."
-    Write-Host "You can still run the onedir build: dist\GM Session\GM Session.exe"
+    Write-Host "You can still run the onedir build under dist\GM Session\"
 }
 
 Write-Host ""
