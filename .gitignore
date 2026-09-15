@@ -5,3 +5,9 @@ __pycache__/
 venv/
 *.egg-info/
 .DS_Store
+packaging/windows/.venv/
+packaging/windows/dist/
+packaging/windows/build/
+packaging/windows/output/
+packaging/windows/staging-campaign/
+*.spec.bak

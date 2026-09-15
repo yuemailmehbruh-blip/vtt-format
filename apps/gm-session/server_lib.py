@@ -1,0 +1,442 @@
+"""Shared HTTP server for GM Session (CLI serve.py and desktop_app.py)."""
+
+from __future__ import annotations
+
+import json
+import mimetypes
+import re
+import sys
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+try:
+    import yaml
+except ImportError as exc:  # pragma: no cover
+    raise SystemExit(
+        "PyYAML is required. Install with: pip install -r "
+        "packages/campaign-format/requirements.txt"
+    ) from exc
+
+
+SAFE_ID = re.compile(r"^[A-Za-z0-9_./-]+$")
+
+
+def is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"))
+
+
+def resource_root() -> Path:
+    """Directory containing bundled app assets (UI + optional sample campaign)."""
+    if is_frozen():
+        return Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    return Path(__file__).resolve().parent
+
+
+def default_app_dir() -> Path:
+    """Directory with index.html / session.js."""
+    root = resource_root()
+    if is_frozen():
+        bundled = root / "gm-session"
+        if bundled.is_dir():
+            return bundled
+    return Path(__file__).resolve().parent
+
+
+def exe_dir() -> Path:
+    """Directory containing the frozen executable (or this package when not frozen)."""
+    if is_frozen():
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def bundled_sample_campaign() -> Path:
+    root = resource_root()
+    if is_frozen():
+        return (root / "sample-campaign").resolve()
+    return (
+        Path(__file__).resolve().parent.parent.parent / "examples" / "sample-campaign"
+    ).resolve()
+
+
+def resolve_campaign_path(explicit: Path | None = None) -> Path:
+    """
+    Prefer user-editable campaign/ beside the exe (install layout),
+    then an explicit path, then the bundled sample.
+    """
+    if explicit is not None:
+        return explicit.resolve()
+
+    beside = exe_dir() / "campaign"
+    if (beside / "world" / "scenes").is_dir():
+        return beside.resolve()
+
+    sample = bundled_sample_campaign()
+    if (sample / "world" / "scenes").is_dir():
+        return sample
+
+    raise FileNotFoundError(
+        "No campaign found. Expected campaign/ next to the app "
+        f"({beside}) or a bundled sample at {sample}."
+    )
+
+
+def _safe_segment(value: str) -> bool:
+    return bool(value) and "/" not in value and ".." not in value and "\\" not in value
+
+
+class Handler(BaseHTTPRequestHandler):
+    campaign_root: Path = Path(".")
+    app_dir: Path = Path(".")
+    quiet: bool = False
+
+    def log_message(self, fmt: str, *args) -> None:
+        if self.quiet:
+            return
+        print(f"[{self.address_string()}] {fmt % args}")
+
+    def _send(self, code: int, body: bytes, content_type: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_json(self, code: int, obj) -> None:
+        data = json.dumps(obj, indent=2).encode("utf-8")
+        self._send(code, data, "application/json; charset=utf-8")
+
+    def _read_json_body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        if not raw:
+            return None
+        return json.loads(raw.decode("utf-8"))
+
+    def _send_file(self, path: Path) -> None:
+        if not path.is_file():
+            self._send(404, b"Not found\n", "text/plain; charset=utf-8")
+            return
+        ctype, _ = mimetypes.guess_type(str(path))
+        if ctype is None:
+            head = path.read_bytes()[:16]
+            if head.startswith(b"\x89PNG\r\n\x1a\n"):
+                ctype = "image/png"
+            elif head[:3] == b"\xff\xd8\xff":
+                ctype = "image/jpeg"
+            elif head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+                ctype = "image/webp"
+            elif path.suffix.lower() in (".txt", ".md"):
+                ctype = "text/plain; charset=utf-8"
+            else:
+                ctype = "application/octet-stream"
+        body = path.read_bytes()
+        self._send(200, body, ctype)
+
+    def _resolve_under_campaign(self, rel: str) -> Path | None:
+        """Resolve a campaign-relative path; reject escapes."""
+        rel = rel.replace("\\", "/").lstrip("/")
+        if ".." in rel.split("/"):
+            return None
+        candidate = (self.campaign_root / rel).resolve()
+        root = self.campaign_root.resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+        return candidate
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        app = self.app_dir
+
+        if path in ("/", "/index.html"):
+            self._send_file(app / "index.html")
+            return
+        if path == "/session.js":
+            self._send_file(app / "session.js")
+            return
+        if path == "/favicon.ico":
+            self._send(204, b"", "image/x-icon")
+            return
+
+        if path == "/api/library":
+            self._api_library()
+            return
+
+        if path.startswith("/api/scene/"):
+            scene_id = path[len("/api/scene/") :].strip("/")
+            if not _safe_segment(scene_id):
+                self._send_json(400, {"error": "invalid scene id"})
+                return
+            scene_path = self.campaign_root / "world" / "scenes" / f"{scene_id}.yaml"
+            if not scene_path.is_file():
+                self._send_json(404, {"error": f"scene not found: {scene_id}"})
+                return
+            with scene_path.open("r", encoding="utf-8") as fh:
+                scene = yaml.safe_load(fh)
+            self._send_json(200, scene)
+            return
+
+        if path.startswith("/api/sheet/"):
+            actor_id = path[len("/api/sheet/") :].strip("/")
+            if not _safe_segment(actor_id):
+                self._send_json(400, {"error": "invalid actor id"})
+                return
+            actor_path = self.campaign_root / "world" / "actors" / f"{actor_id}.yaml"
+            if not actor_path.is_file():
+                self._send_json(404, {"error": f"actor not found: {actor_id}"})
+                return
+            actor = yaml.safe_load(actor_path.read_text(encoding="utf-8")) or {}
+            sheet_rel = actor.get("sheet_doc") or f"world/actors/{actor_id}.sheet.txt"
+            sheet_path = self._resolve_under_campaign(sheet_rel)
+            if sheet_path is None or not sheet_path.is_file():
+                self._send_json(
+                    404,
+                    {
+                        "error": f"sheet doc not found: {sheet_rel}",
+                        "actor_id": actor_id,
+                        "path": sheet_rel,
+                    },
+                )
+                return
+            text = sheet_path.read_text(encoding="utf-8")
+            self._send_json(
+                200,
+                {
+                    "actor_id": actor_id,
+                    "name": actor.get("name") or actor_id,
+                    "path": sheet_rel,
+                    "text": text,
+                },
+            )
+            return
+
+        if path.startswith("/api/tokens/"):
+            scene_id = path[len("/api/tokens/") :].strip("/")
+            if not _safe_segment(scene_id):
+                self._send_json(400, {"error": "invalid scene id"})
+                return
+            tokens_path = (
+                self.campaign_root / "state" / "tokens" / f"{scene_id}.json"
+            )
+            if not tokens_path.is_file():
+                self._send_json(200, {"scene": scene_id, "tokens": []})
+                return
+            try:
+                data = json.loads(tokens_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                data = {"scene": scene_id, "tokens": []}
+            if not isinstance(data, dict):
+                data = {"scene": scene_id, "tokens": []}
+            data.setdefault("scene", scene_id)
+            data.setdefault("tokens", [])
+            self._send_json(200, data)
+            return
+
+        if path.startswith("/assets/"):
+            digest = path[len("/assets/") :].strip("/")
+            if not _safe_segment(digest):
+                self._send(400, b"bad asset id\n", "text/plain; charset=utf-8")
+                return
+            asset_path = (
+                self.campaign_root / "world" / "assets" / "by-hash" / digest
+            )
+            self._send_file(asset_path)
+            return
+
+        rel = path.lstrip("/")
+        candidate = (app / rel).resolve()
+        try:
+            candidate.relative_to(app.resolve())
+        except ValueError:
+            self._send(404, b"Not found\n", "text/plain; charset=utf-8")
+            return
+        if candidate.is_file():
+            self._send_file(candidate)
+            return
+
+        self._send(404, b"Not found\n", "text/plain; charset=utf-8")
+
+    def do_PUT(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+
+        if path.startswith("/api/sheet/"):
+            actor_id = path[len("/api/sheet/") :].strip("/")
+            if not _safe_segment(actor_id):
+                self._send_json(400, {"error": "invalid actor id"})
+                return
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            if not isinstance(body, dict) or "text" not in body:
+                self._send_json(400, {"error": "body must be {\"text\": \"...\"}"})
+                return
+            actor_path = self.campaign_root / "world" / "actors" / f"{actor_id}.yaml"
+            if not actor_path.is_file():
+                self._send_json(404, {"error": f"actor not found: {actor_id}"})
+                return
+            actor = yaml.safe_load(actor_path.read_text(encoding="utf-8")) or {}
+            sheet_rel = actor.get("sheet_doc") or f"world/actors/{actor_id}.sheet.txt"
+            sheet_path = self._resolve_under_campaign(sheet_rel)
+            if sheet_path is None:
+                self._send_json(400, {"error": "invalid sheet path"})
+                return
+            sheet_path.parent.mkdir(parents=True, exist_ok=True)
+            text = body["text"]
+            if not isinstance(text, str):
+                self._send_json(400, {"error": "text must be a string"})
+                return
+            sheet_path.write_text(text, encoding="utf-8")
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "actor_id": actor_id,
+                    "path": sheet_rel,
+                    "bytes": len(text.encode("utf-8")),
+                },
+            )
+            return
+
+        if path.startswith("/api/tokens/"):
+            scene_id = path[len("/api/tokens/") :].strip("/")
+            if not _safe_segment(scene_id):
+                self._send_json(400, {"error": "invalid scene id"})
+                return
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            if not isinstance(body, dict):
+                self._send_json(400, {"error": "body must be an object"})
+                return
+            tokens = body.get("tokens")
+            if not isinstance(tokens, list):
+                self._send_json(400, {"error": "tokens must be a list"})
+                return
+            cleaned = []
+            for t in tokens:
+                if not isinstance(t, dict):
+                    continue
+                cleaned.append(
+                    {
+                        "id": str(t.get("id") or uuid.uuid4()),
+                        "actor_id": t.get("actor_id"),
+                        "name": t.get("name") or t.get("actor_id") or "Token",
+                        "label": t.get("label") or "",
+                        "x": float(t.get("x", 0)),
+                        "y": float(t.get("y", 0)),
+                    }
+                )
+            out = {"scene": scene_id, "tokens": cleaned}
+            tokens_dir = self.campaign_root / "state" / "tokens"
+            tokens_dir.mkdir(parents=True, exist_ok=True)
+            tokens_path = tokens_dir / f"{scene_id}.json"
+            tokens_path.write_text(
+                json.dumps(out, indent=2) + "\n", encoding="utf-8"
+            )
+            self._send_json(200, {"ok": True, **out})
+            return
+
+        self._send_json(404, {"error": "not found"})
+
+    def do_POST(self) -> None:  # noqa: N802
+        self.do_PUT()
+
+    def _api_library(self) -> None:
+        actors = []
+        actors_dir = self.campaign_root / "world" / "actors"
+        if actors_dir.is_dir():
+            for path in sorted(actors_dir.glob("*.yaml")):
+                try:
+                    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                except Exception as e:  # noqa: BLE001
+                    actors.append(
+                        {
+                            "id": path.stem,
+                            "name": path.stem,
+                            "error": str(e),
+                            "has_sheet": False,
+                        }
+                    )
+                    continue
+                actor_id = data.get("id") or path.stem
+                sheet_rel = data.get("sheet_doc") or f"world/actors/{actor_id}.sheet.txt"
+                sheet_path = self._resolve_under_campaign(sheet_rel)
+                has_sheet = bool(sheet_path and sheet_path.is_file())
+                actors.append(
+                    {
+                        "id": actor_id,
+                        "name": data.get("name") or actor_id,
+                        "sheet": data.get("sheet") or data.get("sheet_id"),
+                        "sheet_doc": sheet_rel if has_sheet else None,
+                        "has_sheet": has_sheet,
+                        "token_capable": True,
+                    }
+                )
+
+        scenes = []
+        scenes_dir = self.campaign_root / "world" / "scenes"
+        if scenes_dir.is_dir():
+            for path in sorted(scenes_dir.glob("*.yaml")):
+                try:
+                    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                except Exception:  # noqa: BLE001
+                    data = {}
+                scenes.append(
+                    {
+                        "id": data.get("id") or path.stem,
+                        "name": data.get("name") or path.stem,
+                    }
+                )
+
+        self._send_json(
+            200,
+            {
+                "campaign": str(self.campaign_root),
+                "actors": actors,
+                "scenes": scenes,
+            },
+        )
+
+
+def create_server(
+    campaign: Path,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    *,
+    app_dir: Path | None = None,
+    quiet: bool = False,
+) -> tuple[ThreadingHTTPServer, str]:
+    """Bind and return (server, base_url). Does not serve_forever."""
+    campaign = campaign.resolve()
+    if not (campaign / "world" / "scenes").is_dir():
+        raise FileNotFoundError(
+            f"Not a campaign root (missing world/scenes): {campaign}"
+        )
+
+    Handler.campaign_root = campaign
+    Handler.app_dir = (app_dir or default_app_dir()).resolve()
+    Handler.quiet = quiet
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    # If port was 0, pick the assigned one
+    bound_host, bound_port = server.server_address[:2]
+    base = f"http://{bound_host}:{bound_port}"
+    return server, base

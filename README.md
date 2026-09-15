@@ -50,6 +50,23 @@ python apps/gm-session/serve.py
 
 See `apps/gm-session/README.md` for API, controls, and disk paths.
 
+
+## Windows installer
+
+Double-click install on Windows 10/11 (no terminal required):
+
+1. On a Windows build machine, run `packaging/windows/build.ps1` (needs Python; Inno Setup 6 for the Setup.exe).
+2. Transfer `packaging/windows/output/GM-Session-Setup.exe` to the target PC.
+3. Double-click **GM-Session-Setup.exe**, then launch **GM Session** from the Start Menu.
+
+The installer places an editable `campaign\` folder next to the app (sample campaign). See `packaging/windows/README.md` for details.
+
+Dev / Linux / macOS still use:
+
+```bash
+python apps/gm-session/serve.py
+```
+
 ## How to add an asset
 
 ```bash
@@ -110,7 +127,7 @@ python apps/grid-viewer/serve.py
 - No listen server / netcode / multiplayer
 - No fog of war, dice, player client, or fancy art
 - No AI / provider SDKs
-- No Electron packaging (local browser via `serve.py` is enough)
+- No Electron / Node packaging (Windows uses PyInstaller + Inno; elsewhere `serve.py`)
 
 ## License
 

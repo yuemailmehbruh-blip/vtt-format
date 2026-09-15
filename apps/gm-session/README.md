@@ -98,3 +98,8 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 ## Relation to `apps/grid-viewer`
 
 `grid-viewer` remains a minimal map-only preview. **GM Session is the primary play entry** for this scaffold.
+
+## Windows desktop / installer
+
+For a Start Menu app without using the terminal, see `packaging/windows/` (PyInstaller + Inno Setup). The desktop entry point is `desktop_app.py` (shared server code lives in `server_lib.py`).
+
