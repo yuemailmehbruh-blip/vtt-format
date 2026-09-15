@@ -1,0 +1,85 @@
+# Player character sheet — declarative fields + closed formulas.
+# Permissions: players see/edit own sheet fields marked player_visible / player_editable.
+# GM sees all. Formulas are closed (no arbitrary code); only named ops over sheet fields.
+id: player
+name: Player Character
+permissions:
+  notes: |
+    - player_visible: shown to owning player
+    - player_editable: owning player may change
+    - gm_only: GM/runtime only
+    - formula fields are read-only for everyone except recomputation
+
+fields:
+  name:
+    type: string
+    visibility: player_visible
+    editable: player_editable
+    default: ""
+
+  hp_current:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+
+  hp_max:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+
+  STR:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+
+  DEX:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+
+  CON:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+
+  INT:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+
+  WIS:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+
+  CHA:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+
+  STR_mod:
+    type: integer
+    visibility: player_visible
+    editable: false
+    formula: "floor((STR - 10) / 2)"
+    notes: Closed formula over STR; recomputed when STR changes.
+
+  AC:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+
+  notes:
+    type: text
+    visibility: player_visible
+    editable: player_editable
+    default: ""

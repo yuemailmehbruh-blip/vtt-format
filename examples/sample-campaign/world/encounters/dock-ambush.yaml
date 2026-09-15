@@ -1,0 +1,11 @@
+id: dock-ambush
+name: Dock Ambush
+scene: docks
+description: Toughs jump the party near the pier gate.
+actors:
+  - ref: dock-tough
+    count: 3
+    spawn: ambush-a
+trigger:
+  type: enter_region
+  region: pier-gate

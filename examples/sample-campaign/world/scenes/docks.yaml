@@ -1,0 +1,28 @@
+id: docks
+name: The Docks
+grid:
+  size: 70
+  units: ft
+  type: square
+background: a433eb2ba6774bcb8ff2ecf7c63fd52d839cb783af7615ba69be2bed472bb6d7
+layers:
+  - id: background
+    type: map
+    asset: a433eb2ba6774bcb8ff2ecf7c63fd52d839cb783af7615ba69be2bed472bb6d7
+  - id: tokens
+    type: tokens
+walls:
+  - {x1: 0, y1: 0, x2: 700, y2: 0}
+  - {x1: 700, y1: 0, x2: 700, y2: 490}
+  - {x1: 700, y1: 490, x2: 0, y2: 490}
+  - {x1: 0, y1: 490, x2: 0, y2: 0}
+  - {x1: 280, y1: 0, x2: 280, y2: 210}
+doors:
+  - {x1: 280, y1: 210, x2: 280, y2: 280, open: false, locked: false}
+lights:
+  - {x: 140, y: 140, radius: 40, bright: 20}
+  - {x: 490, y: 350, radius: 30, bright: 15}
+spawns:
+  - {id: party-entry, x: 105, y: 420, label: Party Entry}
+  - {id: ambush-a, x: 490, y: 140, label: Ambush A}
+tokens: []

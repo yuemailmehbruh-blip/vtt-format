@@ -1,0 +1,11 @@
+# Bind token bar UI to sheet fields (closed mapping; no scripts).
+id: token-bars
+bindings:
+  - bar: 1
+    label: HP
+    current: hp_current
+    max: hp_max
+  - bar: 2
+    label: AC
+    current: AC
+    max: null

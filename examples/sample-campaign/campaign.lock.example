@@ -1,0 +1,17 @@
+# campaign.lock — exclusive mode lock (copy to campaign.lock when claiming)
+#
+# Modes:
+#   play  — listen-server / GM session owns state/; Prep and Editor must not write
+#   prep  — Prep owns world/; Play should not start; Editor may read build/
+#   edit  — Editor owns build/; Prep should not mutate sheets/rules mid-compile
+#
+# Protocol (sketch):
+# 1. Writer creates campaign.lock with mode + holder + acquired_at (ISO-8601).
+# 2. Other tools refuse write if lock exists with incompatible mode.
+# 3. Holder deletes lock on clean exit; stale locks may be broken with --force after timeout.
+#
+# Example:
+mode: play
+holder: gm@listen-server
+acquired_at: "2026-09-15T18:00:00Z"
+pid: 12345

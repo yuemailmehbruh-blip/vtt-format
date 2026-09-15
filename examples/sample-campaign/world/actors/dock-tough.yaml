@@ -1,0 +1,19 @@
+id: dock-tough
+sheet: npc
+name: Dock Tough
+# Instance fills NPC sheet fields only (validated ⊆ sheet fields).
+fields:
+  name: Dock Tough
+  hp_current: 12
+  hp_max: 12
+  STR: 14
+  DEX: 12
+  CON: 13
+  INT: 8
+  WIS: 10
+  CHA: 9
+  AC: 13
+  CR: "1/4"
+  creature_type: humanoid
+  hostile: true
+  notes: Harbor enforcer; fights dirty near crates.

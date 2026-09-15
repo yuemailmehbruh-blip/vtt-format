@@ -1,0 +1,99 @@
+# NPC sheet — suitable for automation: every field explicitly listed.
+# Actors under world/actors/ may only fill fields declared here.
+id: npc
+name: NPC
+permissions:
+  notes: |
+    NPCs are GM-owned. Players never edit NPC sheets directly.
+    Automation (encounters, token bars) reads these named fields only.
+
+fields:
+  name:
+    type: string
+    visibility: gm_only
+    editable: gm
+    default: ""
+
+  hp_current:
+    type: integer
+    visibility: gm_only
+    editable: gm
+    default: 8
+
+  hp_max:
+    type: integer
+    visibility: gm_only
+    editable: gm
+    default: 8
+
+  STR:
+    type: integer
+    visibility: gm_only
+    editable: gm
+    default: 10
+
+  DEX:
+    type: integer
+    visibility: gm_only
+    editable: gm
+    default: 10
+
+  CON:
+    type: integer
+    visibility: gm_only
+    editable: gm
+    default: 10
+
+  INT:
+    type: integer
+    visibility: gm_only
+    editable: gm
+    default: 8
+
+  WIS:
+    type: integer
+    visibility: gm_only
+    editable: gm
+    default: 10
+
+  CHA:
+    type: integer
+    visibility: gm_only
+    editable: gm
+    default: 8
+
+  STR_mod:
+    type: integer
+    visibility: gm_only
+    editable: false
+    formula: "floor((STR - 10) / 2)"
+
+  AC:
+    type: integer
+    visibility: gm_only
+    editable: gm
+    default: 12
+
+  CR:
+    type: string
+    visibility: gm_only
+    editable: gm
+    default: "1/4"
+
+  creature_type:
+    type: string
+    visibility: gm_only
+    editable: gm
+    default: humanoid
+
+  hostile:
+    type: boolean
+    visibility: gm_only
+    editable: gm
+    default: true
+
+  notes:
+    type: text
+    visibility: gm_only
+    editable: gm
+    default: ""

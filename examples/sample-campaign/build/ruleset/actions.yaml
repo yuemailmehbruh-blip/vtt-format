@@ -1,0 +1,11 @@
+# Stub action list — Editor will expand later.
+actions:
+  - id: attack
+    name: Attack
+    description: Make a weapon attack.
+  - id: dodge
+    name: Dodge
+    description: Focus on avoiding attacks.
+  - id: dash
+    name: Dash
+    description: Gain extra movement.
