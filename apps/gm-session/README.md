@@ -148,3 +148,7 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 ## 0.5.7
 
 - Has-grid: stronger doubled-pitch detection (mid-line sweep) and promote a bold every-5th major grid (e.g. Yester Hill 50ft squares) when present.
+
+## 0.5.8
+
+- Has-grid: require any 3×3 of cells on the lattice (full image), not only a center 3×3.

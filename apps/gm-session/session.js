@@ -966,12 +966,11 @@
   }
 
   /**
-   * Four consecutive grid lines around the image center = three cells.
-   * Fail if any of those lines is missing (faded edge / no lattice).
+   * Four consecutive comb lines starting at line index `k` = three cells.
+   * Fail if any of those lines is missing (gap / no lattice there).
    */
-  function axisHasThreeCells(signal, pitch, phase, center) {
+  function axisHasThreeCellsAt(signal, pitch, phase, k) {
     if (!(pitch > 0) || signal.length < 8) return false;
-    const k = Math.round((center - phase) / pitch - 1.5);
     const xs = [0, 1, 2, 3].map((i) => phase + (k + i) * pitch);
     if (xs.some((x) => x < 1 || x > signal.length - 2)) return false;
     const lo = Math.max(0, Math.floor(xs[0]));
@@ -986,10 +985,25 @@
     return strengths.every((s) => s >= thresh);
   }
 
-  function hasCenterThreeByThree(vSig, hSig, pitch, phaseX, phaseY, w, h) {
+  /**
+   * True when some 3×3 of cells exists on this lattice (not only at the image
+   * center). A valid vertical 3-cell run and a valid horizontal 3-cell run are
+   * enough — their overlap is a 3×3 block.
+   */
+  function hasAnyThreeByThree(vSig, hSig, pitch, phaseX, phaseY) {
+    if (!(pitch > 0)) return false;
+    function strongStarts(signal, phase) {
+      const minK = Math.ceil((1 - phase) / pitch);
+      const maxK = Math.floor((signal.length - 2 - phase) / pitch) - 3;
+      const out = [];
+      for (let k = minK; k <= maxK; k++) {
+        if (axisHasThreeCellsAt(signal, pitch, phase, k)) out.push(k);
+      }
+      return out;
+    }
     return (
-      axisHasThreeCells(vSig, pitch, phaseX, w / 2) &&
-      axisHasThreeCells(hSig, pitch, phaseY, h / 2)
+      strongStarts(vSig, phaseX).length > 0 &&
+      strongStarts(hSig, phaseY).length > 0
     );
   }
 
@@ -1483,17 +1497,23 @@
           pol.v,
           pol.h
         );
-        // Validate 3×3 on the fine (or halved) pitch before a 5× promotion —
-        // a bold 50ft cell may only fit ~3–4 across a small scan.
+        // Validate that some 3×3 exists on the fine (or halved) lattice before
+        // a 5× promotion. Use full-image projections so an off-center block counts.
+        const fullProj = lineProjections(imgData, w, h, {
+          x0: 2,
+          y0: 2,
+          x1: w - 2,
+          y1: h - 2,
+        });
+        const vGate = pol.name === "bright" ? fullProj.vBright : fullProj.vDark;
+        const hGate = pol.name === "bright" ? fullProj.hBright : fullProj.hDark;
         if (
-          !hasCenterThreeByThree(
-            pol.v,
-            pol.h,
+          !hasAnyThreeByThree(
+            vGate,
+            hGate,
             fitted.pitch,
             fitted.phaseX,
-            fitted.phaseY,
-            w,
-            h
+            fitted.phaseY
           )
         ) {
           continue;
