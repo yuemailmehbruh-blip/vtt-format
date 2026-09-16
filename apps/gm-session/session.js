@@ -462,33 +462,31 @@
     }
   }
 
-  /** @type {Map<string, Window>} */
-  const sheetWindows = new Map();
-
   function openSheet(actorId) {
     selectedActorId = actorId;
     currentSheetActorId = actorId;
     renderLibrarySelection();
 
-    const existing = sheetWindows.get(actorId);
-    if (existing && !existing.closed) {
-      existing.focus();
+    const api =
+      window.pywebview &&
+      window.pywebview.api &&
+      typeof window.pywebview.api.open_sheet === "function"
+        ? window.pywebview.api
+        : null;
+
+    if (api) {
+      Promise.resolve(api.open_sheet(actorId))
+        .then(() => setStatus(`Sheet opened: ${actorId}`))
+        .catch((err) =>
+          setStatus(`Could not open sheet: ${err && err.message ? err.message : err}`)
+        );
       return;
     }
 
-    const features =
-      "popup=yes,width=480,height=640,menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes";
-    const w = window.open(
-      `/sheet.html?actor=${encodeURIComponent(actorId)}`,
-      `vtt-sheet-${actorId}`,
-      features
+    // Dev browser (serve.py): no system pop-outs — sheets need the desktop app.
+    setStatus(
+      "Character sheets need the GM Session desktop app (pywebview). Run desktop_app.py — browser serve.py cannot open sheet windows."
     );
-    if (!w) {
-      setStatus("Pop-up blocked — allow pop-ups for character sheets");
-      return;
-    }
-    sheetWindows.set(actorId, w);
-    setStatus(`Sheet opened: ${actorId}`);
   }
 
   function renderLibrary() {

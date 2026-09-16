@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Windows-friendly GM Session desktop launcher (tkinter + embedded HTTP server)."""
+"""GM Session desktop app: local HTTP server + pywebview windows (no system browser)."""
 
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
+import sys
 import threading
-import tkinter as tk
-import webbrowser
 from pathlib import Path
-from tkinter import messagebox
+from urllib.parse import quote
 
 from server_lib import (
     bundled_sample_campaign,
@@ -19,11 +19,29 @@ from server_lib import (
     is_frozen,
     resolve_campaign_path,
 )
+from updater import check_and_offer_update, load_version
+
+try:
+    import webview
+except ImportError as exc:  # pragma: no cover
+    raise SystemExit(
+        "pywebview is required for the desktop app.\n"
+        "Install with: pip install pywebview\n"
+        "(For browser-only debugging, use serve.py instead.)"
+    ) from exc
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover
+    yaml = None  # type: ignore[assignment]
 
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_SCENE = "docks"
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("gm_session.desktop")
 
 
 def ensure_campaign_beside_exe() -> Path | None:
@@ -53,26 +71,111 @@ def ensure_campaign_beside_exe() -> Path | None:
         return None
 
 
+def _show_error(message: str) -> None:
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("GM Session", message)
+        root.destroy()
+    except Exception:  # noqa: BLE001
+        print(message, file=sys.stderr)
+
+
+def _actor_title(campaign_root: Path, actor_id: str) -> str:
+    path = campaign_root / "world" / "actors" / f"{actor_id}.yaml"
+    if yaml is not None and path.is_file():
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            name = data.get("name")
+            if name:
+                return str(name)
+        except Exception:  # noqa: BLE001
+            pass
+    return actor_id
+
+
+class DesktopApi:
+    """JS bridge: window.pywebview.api.open_sheet(actor_id)."""
+
+    def __init__(self, base_url: str, campaign_root: Path) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.campaign_root = campaign_root
+        self._sheets: dict[str, object] = {}
+
+    def open_sheet(self, actor_id: str) -> str:
+        actor_id = (actor_id or "").strip()
+        if not actor_id:
+            return "error: missing actor_id"
+
+        existing = self._sheets.get(actor_id)
+        if existing is not None and existing in webview.windows:
+            try:
+                existing.show()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                existing.restore()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            return "focused"
+
+        title = _actor_title(self.campaign_root, actor_id)
+        url = f"{self.base_url}/sheet.html?actor={quote(actor_id, safe='')}"
+        window = webview.create_window(
+            title,
+            url,
+            width=480,
+            height=640,
+            min_size=(320, 400),
+        )
+        self._sheets[actor_id] = window
+
+        def _on_closed() -> None:
+            if self._sheets.get(actor_id) is window:
+                del self._sheets[actor_id]
+
+        try:
+            window.events.closed += _on_closed
+        except Exception:  # noqa: BLE001
+            pass
+
+        return "opened"
+
+
+def _shutdown_server(server) -> None:
+    try:
+        server.shutdown()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        server.server_close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run_desktop(
     *,
     campaign: Path | None = None,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     scene: str = DEFAULT_SCENE,
-    open_browser: bool = True,
+    skip_update: bool = False,
 ) -> None:
     ensure_campaign_beside_exe()
 
     try:
         campaign_root = resolve_campaign_path(campaign)
     except FileNotFoundError as exc:
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showerror("GM Session", str(exc))
-        root.destroy()
+        _show_error(str(exc))
         raise SystemExit(1) from exc
 
     app_dir = default_app_dir()
+    version = load_version(app_dir)
+    logger.info("GM Session %s", version)
+
     try:
         server, base = create_server(
             campaign_root,
@@ -82,16 +185,8 @@ def run_desktop(
             quiet=True,
         )
     except OSError as exc:
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showerror(
-            "GM Session",
-            f"Could not start server on {host}:{port}\n{exc}",
-        )
-        root.destroy()
+        _show_error(f"Could not start server on {host}:{port}\n{exc}")
         raise SystemExit(1) from exc
-
-    url = f"{base}/?scene={scene}"
 
     thread = threading.Thread(
         target=server.serve_forever,
@@ -101,75 +196,65 @@ def run_desktop(
     )
     thread.start()
 
-    root = tk.Tk()
-    root.title("GM Session")
-    root.resizable(False, False)
-    root.minsize(420, 140)
-
-    frame = tk.Frame(root, padx=16, pady=14)
-    frame.pack(fill=tk.BOTH, expand=True)
-
-    tk.Label(frame, text="GM Session", font=("Segoe UI", 14, "bold")).pack(
-        anchor="w"
-    )
-    tk.Label(
-        frame,
-        text=f"URL: {url}\nCampaign: {campaign_root}",
-        justify=tk.LEFT,
-        font=("Segoe UI", 9),
-        wraplength=480,
-    ).pack(anchor="w", pady=(8, 12))
-
-    btn_row = tk.Frame(frame)
-    btn_row.pack(anchor="e", fill=tk.X)
-
-    def open_ui() -> None:
-        webbrowser.open(url)
-
-    def quit_app() -> None:
+    if not skip_update:
         try:
-            server.shutdown()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            server.server_close()
-        except Exception:  # noqa: BLE001
-            pass
-        root.destroy()
+            if check_and_offer_update(local_version=version, app_dir=app_dir):
+                _shutdown_server(server)
+                raise SystemExit(0)
+        except SystemExit:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Update check error (continuing): %s", exc)
 
-    tk.Button(btn_row, text="Open in browser", command=open_ui).pack(
-        side=tk.LEFT, padx=(0, 8)
+    url = f"{base}/?scene={quote(scene, safe='')}"
+    api = DesktopApi(base, campaign_root)
+
+    main = webview.create_window(
+        "GM Session",
+        url,
+        js_api=api,
+        width=1280,
+        height=800,
+        min_size=(800, 600),
     )
-    tk.Button(btn_row, text="Quit", width=10, command=quit_app).pack(side=tk.RIGHT)
 
-    root.protocol("WM_DELETE_WINDOW", quit_app)
-
-    if open_browser:
-        root.after(300, open_ui)
+    def on_main_closed() -> None:
+        # Closing the main window ends the app; sheet windows go with the process.
+        for actor_id, win in list(api._sheets.items()):
+            try:
+                win.destroy()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            api._sheets.pop(actor_id, None)
+        _shutdown_server(server)
 
     try:
-        root.mainloop()
+        main.events.closed += on_main_closed
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        webview.start()
     finally:
-        try:
-            server.shutdown()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            server.server_close()
-        except Exception:  # noqa: BLE001
-            pass
+        _shutdown_server(server)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="GM Session desktop launcher")
+    parser = argparse.ArgumentParser(description="GM Session desktop app (pywebview)")
     parser.add_argument("--campaign", type=Path, default=None)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--scene", default=DEFAULT_SCENE)
     parser.add_argument(
+        "--skip-update",
+        action="store_true",
+        help="Skip GitHub Releases update check (debugging)",
+    )
+    # Kept for backward compatibility with old launchers; ignored (no system browser).
+    parser.add_argument(
         "--no-browser",
         action="store_true",
-        help="Do not open the default browser automatically",
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
     run_desktop(
@@ -177,7 +262,7 @@ def main() -> None:
         host=args.host,
         port=args.port,
         scene=args.scene,
-        open_browser=not args.no_browser,
+        skip_update=args.skip_update,
     )
 
 

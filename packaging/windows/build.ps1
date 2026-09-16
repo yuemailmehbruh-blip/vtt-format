@@ -19,9 +19,9 @@ if (-not (Test-Path $Python)) {
     python -m venv $Venv
 }
 
-Write-Host "==> Installing PyInstaller + PyYAML"
+Write-Host "==> Installing PyInstaller + PyYAML + pywebview"
 & $Pip install --upgrade pip 2>$null | Out-Null
-& $Pip install "pyinstaller>=6.0" "pyyaml>=6.0"
+& $Pip install "pyinstaller>=6.0" "pyyaml>=6.0" "pywebview>=5.0"
 
 $Dist = Join-Path $ScriptDir "dist"
 $Build = Join-Path $ScriptDir "build"
@@ -100,10 +100,25 @@ if ($Iscc) {
     Write-Host "You can still run the onedir build under dist\GM Session\"
 }
 
+# Read VERSION for release hint
+$VersionFile = Join-Path $RepoRoot "apps\gm-session\VERSION"
+$VersionTag = "0.2.0"
+if (Test-Path $VersionFile) {
+    $VersionTag = (Get-Content -Raw $VersionFile).Trim()
+}
+if (-not $VersionTag.StartsWith("v")) {
+    $VersionTag = "v$VersionTag"
+}
+
 Write-Host ""
 Write-Host "Done."
 if ($SetupPath -and (Test-Path $SetupPath)) {
     Write-Host "Ship: $SetupPath"
+    Write-Host ""
+    Write-Host "Publish a GitHub Release (auto-update downloads this asset):"
+    Write-Host "  gh release create $VersionTag `"$SetupPath`" --title `"GM Session $VersionTag`" --notes `"Desktop app with pywebview sheets + auto-update.`""
 } else {
     Write-Host "Ship (folder): $AppDist"
+    Write-Host "After building GM-Session-Setup.exe, publish with:"
+    Write-Host "  gh release create $VersionTag packaging/windows/output/GM-Session-Setup.exe --title `"GM Session $VersionTag`""
 }

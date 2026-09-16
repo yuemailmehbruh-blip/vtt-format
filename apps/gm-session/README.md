@@ -8,44 +8,71 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 
 - Python 3.10+
 - PyYAML (`pip install -r ../../packages/campaign-format/requirements.txt`)
+- **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
+- **Browser debug only:** `serve.py` (no sheet windows)
 
-## Run (sample campaign)
+Version is in `VERSION` (currently **0.2.0**).
+
+## Run — desktop app (recommended)
 
 From the **repo root** (`vtt-format/`):
 
 ```bash
 pip install -r packages/campaign-format/requirements.txt
-python apps/gm-session/serve.py
+pip install pywebview
+python apps/gm-session/desktop_app.py --skip-update
 ```
 
-Open the URL printed in the terminal (default):
-
-[http://127.0.0.1:8765/?scene=docks](http://127.0.0.1:8765/?scene=docks)
-
-Or from this directory:
-
-```bash
-python serve.py --campaign ../../examples/sample-campaign --scene docks
-```
-
-### Options
+Opens a **pywebview** window titled “GM Session” (not Chrome / the system browser). Character sheets open as **additional desktop windows** via `window.pywebview.api.open_sheet(actor_id)`.
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--campaign` | `examples/sample-campaign` | Campaign root with `world/` + `state/` |
-| `--scene` | `docks` | Scene id in the printed URL |
-| `--host` | `127.0.0.1` | Bind address (localhost only is fine) |
+| `--campaign` | beside-exe `campaign/` or sample | Campaign root with `world/` + `state/` |
+| `--scene` | `docks` | Initial scene id |
+| `--host` | `127.0.0.1` | Bind address |
 | `--port` | `8765` | Bind port |
+| `--skip-update` | off | Skip GitHub Releases update check |
+
+Closing the main window stops the local HTTP server and exits. Closing a sheet window only closes that sheet. Re-clicking the same actor focuses the existing sheet window.
+
+## Run — browser debug (`serve.py`)
+
+```bash
+python apps/gm-session/serve.py
+```
+
+Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1:8765/?scene=docks)). Sheets **do not** pop out in the browser; the status line explains that the desktop app is required.
 
 ## UI
 
 - **Header** — scene name + “GM Session (offline)”
 - **Left library** — Characters/Actors from `world/actors/*.yaml`; Scenes from `world/scenes/`
   - Entries with a human sheet file show a **sheet** badge
-  - **Click** an actor → open its `.sheet.txt` in a pop-out window (editable; Save writes back to disk)
+  - **Click** an actor → open its `.sheet.txt` in a **desktop sheet window** (editable; Save writes back to disk)
   - **Drag** an actor onto the map → place a white circle token labeled with initials + name
 - **Canvas** — grid, walls, doors, lights, spawns (same overlays as the grid viewer), plus placed tokens
 - **Pan / zoom** — drag to pan, wheel to zoom, double-click to fit
+
+## Auto-update
+
+On launch (unless `--skip-update`), the desktop app checks GitHub Releases for [`yuemailmehbruh-blip/vtt-format`](https://github.com/yuemailmehbruh-blip/vtt-format):
+
+1. `GET /repos/.../releases/latest`
+2. Compare release tag (strip leading `v`) to local `VERSION`
+3. If newer and asset `GM-Session-Setup.exe` exists → native “Download and install?” dialog
+4. On yes → download to a temp file, launch the installer, quit so files can be replaced
+
+Auth (for private repos): try unauthenticated first; else `GM_SESSION_GH_TOKEN` / `GITHUB_TOKEN`, `%LOCALAPPDATA%\GM Session\github_token.txt`, or GitHub CLI `hosts.yml`. If there is no access, the check is skipped silently.
+
+Publish after a Windows build:
+
+```bash
+gh release create v0.2.0 packaging/windows/output/GM-Session-Setup.exe \
+  --title "GM Session v0.2.0" \
+  --notes "Desktop pywebview app, sheet windows, auto-update."
+```
+
+(`build.ps1` prints the exact command for the current `VERSION`.)
 
 ## Disk layout (sheets & tokens)
 
@@ -87,6 +114,7 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/` | App UI |
+| GET | `/sheet.html` | Sheet pop-out UI (desktop window) |
 | GET | `/api/library` | Actors + scenes for the sidebar |
 | GET | `/api/scene/<id>` | Scene YAML as JSON |
 | GET | `/api/sheet/<actor_id>` | Sheet text + campaign-relative path |
@@ -101,5 +129,4 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 
 ## Windows desktop / installer
 
-For a Start Menu app without using the terminal, see `packaging/windows/` (PyInstaller + Inno Setup). The desktop entry point is `desktop_app.py` (shared server code lives in `server_lib.py`).
-
+See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `desktop_app.py`; shared HTTP APIs in `server_lib.py`; updater in `updater.py`.

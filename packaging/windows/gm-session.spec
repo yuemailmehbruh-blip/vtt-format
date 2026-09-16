@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for GM Session (onedir, windowed).
+# PyInstaller spec for GM Session (onedir, windowed, pywebview).
 # Run from packaging/windows/ via build.ps1 (paths are relative to SPECPATH).
 
 import os
@@ -15,6 +15,9 @@ block_cipher = None
 ui_datas = [
     (str(APP / "index.html"), "gm-session"),
     (str(APP / "session.js"), "gm-session"),
+    (str(APP / "sheet.html"), "gm-session"),
+    (str(APP / "sheet.js"), "gm-session"),
+    (str(APP / "VERSION"), "gm-session"),
 ]
 
 # Bundle sample campaign under sample-campaign/ in the archive (fallback + installer source)
@@ -25,7 +28,16 @@ a = Analysis(
     pathex=[str(APP)],
     binaries=[],
     datas=ui_datas + sample_datas,
-    hiddenimports=["yaml", "_tkinter"],
+    hiddenimports=[
+        "yaml",
+        "webview",
+        "webview.platforms.edgechromium",
+        "webview.platforms.winforms",
+        "bottle",
+        "proxy_tools",
+        "clr_loader",
+        "pythonnet",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

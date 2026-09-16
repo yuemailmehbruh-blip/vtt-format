@@ -35,37 +35,40 @@ Assets are **content-addressed**: files live at `world/assets/by-hash/<sha256-he
 
 ## GM Session (offline DM foundation)
 
-Local browser app: grid map + library sidebar of characters/actors + drag-to-place tokens. Sheets are blank text documents on disk under the campaign path (declarative paths; content can be empty placeholders for now).
+Desktop app (**pywebview**): grid map + library sidebar + drag-to-place tokens. Sheets open as separate desktop windows. Blank sheet docs live under the campaign path.
 
 ```bash
 pip install -r packages/campaign-format/requirements.txt
+pip install pywebview
+python apps/gm-session/desktop_app.py --skip-update
+```
+
+Browser debug only (`serve.py` — no sheet pop-outs):
+
+```bash
 python apps/gm-session/serve.py
 # open http://127.0.0.1:8765/?scene=docks
 ```
 
 - Library lists actors from `world/actors/` (sample: dock-tough, party-fighter, blank-npc)
 - Each actor has a human sheet at `world/actors/<id>.sheet.txt`
-- Drag an actor onto the map → white circle token; placements persist in `state/tokens/<scene>.json` and survive refresh
-- Click an actor → view/edit sheet text; Save writes back to the `.sheet.txt` on disk
+- Drag an actor onto the map → white circle token; placements persist in `state/tokens/<scene>.json`
+- Click an actor → sheet window (desktop app); Save writes `.sheet.txt` on disk
+- Auto-update on launch via GitHub Releases (`GM-Session-Setup.exe`); see `apps/gm-session/README.md`
 
 See `apps/gm-session/README.md` for API, controls, and disk paths.
 
 
 ## Windows installer
 
-Double-click install on Windows 10/11 (no terminal required):
+Double-click install on Windows 10/11 (no system browser):
 
-1. On a Windows build machine, run `packaging/windows/build.ps1` (needs Python; Inno Setup 6 for the Setup.exe).
+1. On a Windows build machine, run `packaging/windows/build.ps1` (needs Python + pywebview; Inno Setup 6 for the Setup.exe).
 2. Transfer `packaging/windows/output/GM-Session-Setup.exe` to the target PC.
 3. Double-click **GM-Session-Setup.exe**, then launch **GM Session** from the Start Menu.
+4. Publish for auto-update: `gh release create v0.2.0 packaging/windows/output/GM-Session-Setup.exe`
 
 The installer places an editable `campaign\` folder next to the app (sample campaign). See `packaging/windows/README.md` for details.
-
-Dev / Linux / macOS still use:
-
-```bash
-python apps/gm-session/serve.py
-```
 
 ## How to add an asset
 
