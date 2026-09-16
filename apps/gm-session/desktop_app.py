@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 import sys
@@ -144,35 +145,56 @@ class DesktopApi:
 
         return "opened"
 
+    def _push_update_status(self, message: str, done: bool = False) -> None:
+        payload = json.dumps(message)
+        flag = "true" if done else "false"
+        js = f"window.__gmUpdateStatus && window.__gmUpdateStatus({payload}, {flag})"
+        for win in list(webview.windows):
+            try:
+                win.evaluate_js(js)
+            except Exception:  # noqa: BLE001
+                pass
+
     def check_update(self) -> str:
-        """JS bridge: Update app button — download and install if a newer release exists.
+        """JS bridge: Update app button — download latest Setup.exe, install, relaunch.
 
-        prompt=False: the click is consent; do not use a tkinter yes/no dialog.
-        Launch-time check still uses check_and_offer_update (prompt=True).
+        Returns immediately so pywebview does not time out the JS call. Work runs
+        on a background thread; status is pushed via window.__gmUpdateStatus.
         """
-        app_dir = default_app_dir()
-        version = load_version(app_dir)
-        try:
-            quitting, message = check_and_offer_update_with_status(
-                local_version=version, app_dir=app_dir, prompt=False
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.info("Update check error: %s", exc)
-            return f"Update check failed: {exc}"
+        if getattr(self, "_update_running", False):
+            return "Update already running…"
+        self._update_running = True
 
-        if quitting:
-            def _quit_soon() -> None:
-                import time
+        def worker() -> None:
+            import time
 
-                time.sleep(0.4)
+            def progress(msg: str) -> None:
+                self._push_update_status(msg, done=False)
+
+            try:
+                quitting, message = check_and_offer_update_with_status(
+                    local_version=load_version(default_app_dir()),
+                    app_dir=default_app_dir(),
+                    prompt=False,
+                    force=True,
+                    progress=progress,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Update check error: %s", exc)
+                message = f"Update failed: {exc}"
+                quitting = False
+            self._push_update_status(message, done=not quitting)
+            self._update_running = False
+            if quitting:
+                time.sleep(0.6)
                 for win in list(webview.windows):
                     try:
                         win.destroy()
                     except Exception:  # noqa: BLE001
                         pass
 
-            threading.Thread(target=_quit_soon, name="gm-session-quit", daemon=True).start()
-        return message
+        threading.Thread(target=worker, name="gm-session-update", daemon=True).start()
+        return "Looking for installer on GitHub…"
 
 
 def _shutdown_server(server) -> None:

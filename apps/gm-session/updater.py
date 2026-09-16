@@ -1,4 +1,4 @@
-"""Check GitHub Releases for a newer GM Session installer and offer to install it."""
+"""Check GitHub Releases for a GM Session installer, run it, and relaunch."""
 
 from __future__ import annotations
 
@@ -9,17 +9,36 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger("gm_session.updater")
 
 REPO = "yuemailmehbruh-blip/vtt-format"
 RELEASES_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
+RELEASES_LIST = f"https://api.github.com/repos/{REPO}/releases?per_page=15"
 SETUP_ASSET_NAME = "GM-Session-Setup.exe"
 USER_AGENT = "GM-Session-Updater"
 TOKEN_FILE_HINT = r"%LOCALAPPDATA%\GM Session\github_token.txt"
+
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_NO_WINDOW = 0x08000000
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+
+def _log(msg: str) -> None:
+    logger.info("%s", msg)
+    try:
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or str(Path.home())
+        log_dir = Path(base) / "GM Session"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with (log_dir / "update.log").open("a", encoding="utf-8") as fh:
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+    except OSError:
+        pass
 
 
 def load_version(app_dir: Path | None = None) -> str:
@@ -46,7 +65,6 @@ def _normalize_semver(tag: str) -> tuple[int, ...]:
     raw = (tag or "").strip()
     if raw.lower().startswith("v"):
         raw = raw[1:]
-    # Take leading dotted numeric part (ignore -beta etc. for comparison)
     m = re.match(r"^(\d+(?:\.\d+)*)", raw)
     if not m:
         return (0,)
@@ -58,12 +76,10 @@ def version_is_newer(remote: str, local: str) -> bool:
 
 
 def _token_from_gh_hosts(path: Path) -> str | None:
-    """Best-effort parse of GitHub CLI hosts.yml for an oauth_token."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    # Minimal YAML-ish: look for oauth_token: value under github.com
     in_github = False
     for line in text.splitlines():
         stripped = line.strip()
@@ -71,11 +87,9 @@ def _token_from_gh_hosts(path: Path) -> str | None:
             in_github = True
             continue
         if in_github and stripped and not line[:1].isspace() and ":" in stripped:
-            # New top-level key
             if not stripped.startswith("oauth_token"):
                 in_github = False
         if in_github and "oauth_token" in stripped:
-            # oauth_token: gho_...
             parts = stripped.split(":", 1)
             if len(parts) == 2:
                 tok = parts[1].strip().strip("'\"")
@@ -100,13 +114,11 @@ def find_github_token() -> str | None:
         except OSError:
             pass
 
-    # Windows gh config; also try XDG / home for Linux/macOS
     candidates: list[Path] = []
     appdata = os.environ.get("APPDATA")
     if appdata:
         candidates.append(Path(appdata) / "GitHub CLI" / "hosts.yml")
-    home = Path.home()
-    candidates.append(home / ".config" / "gh" / "hosts.yml")
+    candidates.append(Path.home() / ".config" / "gh" / "hosts.yml")
     for path in candidates:
         tok = _token_from_gh_hosts(path)
         if tok:
@@ -126,13 +138,24 @@ def _needs_token(http_status: int | None, token: str | None) -> bool:
 
 
 class _OctetStreamRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Follow redirects; keep Accept: application/octet-stream."""
+    """Follow redirects. Keep Accept. Drop Authorization off api.github.com (S3 400s)."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is None:
             return None
-        new.add_unredirected_header("Accept", "application/octet-stream")
+        new.add_header("Accept", "application/octet-stream")
+        old_host = urlparse(req.full_url).netloc.lower()
+        new_host = urlparse(new.full_url).netloc.lower()
+        if new_host != old_host:
+            for key in list(new.headers):
+                if key.lower() == "authorization":
+                    del new.headers[key]
+            unredir = getattr(new, "unredirected_hdrs", None)
+            if isinstance(unredir, dict):
+                for key in list(unredir):
+                    if key.lower() == "authorization":
+                        del unredir[key]
         return new
 
 
@@ -140,25 +163,26 @@ def _opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(_OctetStreamRedirectHandler)
 
 
-def _http_json(url: str, token: str | None) -> tuple[dict | None, int | None, str | None]:
+def _http_json(url: str, token: str | None) -> tuple[object | None, int | None, str | None]:
     """GET JSON. Returns (data, http_status, error_message)."""
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
+    req = urllib.request.Request(url)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("User-Agent", USER_AGENT)
     if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers)
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             status = getattr(resp, "status", None) or resp.getcode()
             return json.loads(resp.read().decode("utf-8")), int(status), None
     except urllib.error.HTTPError as exc:
-        logger.info("Release check failed: HTTP %s %s", exc.code, exc.reason)
+        _log(f"Release check failed: HTTP {exc.code} {exc.reason}")
         try:
             exc.read()
         except Exception:  # noqa: BLE001
             pass
         return None, int(exc.code), f"HTTP {exc.code}"
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        logger.info("Release check failed: %s", exc)
+        _log(f"Release check failed: {exc}")
         return None, None, str(exc)
 
 
@@ -171,26 +195,29 @@ def _cleanup_dest(dest: Path) -> None:
 
 
 def _download_one(url: str, dest: Path, token: str | None) -> tuple[bool, str | None, int | None]:
-    """GET url (Accept: application/octet-stream, Bearer token); follow redirects."""
-    headers = {"User-Agent": USER_AGENT, "Accept": "application/octet-stream"}
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", USER_AGENT)
+    req.add_header("Accept", "application/octet-stream")
     if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers)
+        # First hop (api.github.com) needs auth; S3 redirect must not see it.
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
     try:
         opener = _opener()
-        with opener.open(req, timeout=120) as resp, dest.open("wb") as out:
+        with opener.open(req, timeout=180) as resp, dest.open("wb") as out:
             status = getattr(resp, "status", None) or resp.getcode()
             while True:
                 chunk = resp.read(1024 * 256)
                 if not chunk:
                     break
                 out.write(chunk)
-        if dest.is_file() and dest.stat().st_size > 0:
+        size = dest.stat().st_size if dest.is_file() else 0
+        if size > 1024:
+            _log(f"Downloaded {size} bytes from {url}")
             return True, None, int(status) if status else 200
         _cleanup_dest(dest)
         return False, "empty download", int(status) if status else None
     except urllib.error.HTTPError as exc:
-        logger.info("Download failed: HTTP %s %s from %s", exc.code, exc.reason, url)
+        _log(f"Download failed: HTTP {exc.code} {exc.reason} from {url}")
         try:
             exc.read()
         except Exception:  # noqa: BLE001
@@ -198,7 +225,7 @@ def _download_one(url: str, dest: Path, token: str | None) -> tuple[bool, str | 
         _cleanup_dest(dest)
         return False, f"HTTP {exc.code}", int(exc.code)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        logger.info("Download failed: %s", exc)
+        _log(f"Download failed: {exc}")
         _cleanup_dest(dest)
         return False, str(exc), None
 
@@ -210,49 +237,71 @@ def _download(
     *,
     fallback_url: str | None = None,
 ) -> tuple[bool, str | None, int | None]:
-    """Download via API asset URL; fall back to browser_download_url if needed."""
     ok, err, status = _download_one(url, dest, token)
     if ok:
         return ok, err, status
     if fallback_url and fallback_url != url:
-        logger.info("Primary download failed; trying browser_download_url")
+        _log("Primary download failed; trying browser_download_url")
         return _download_one(fallback_url, dest, token)
     return ok, err, status
 
 
-def find_setup_asset(release: dict) -> dict | None:
-    """Return setup asset info preferring the API asset URL plus id.
+def _asset_is_setup(name: str) -> bool:
+    n = (name or "").strip()
+    if not n.lower().endswith(".exe"):
+        return False
+    lower = n.lower()
+    if lower == SETUP_ASSET_NAME.lower():
+        return True
+    if lower.startswith("gm-session-setup"):
+        return True
+    if lower.endswith("-setup.exe") or lower.endswith("setup.exe"):
+        if "unins" in lower:
+            return False
+        return True
+    return False
 
-    Keys: url (API ``asset["url"]``), id, name, browser_download_url (optional).
-    """
+
+def find_setup_asset(release: dict) -> dict | None:
+    """Return setup asset: url (API), id, name, browser_download_url."""
+    exact = None
+    fuzzy = None
     for asset in release.get("assets") or []:
         name = asset.get("name") or ""
-        if name != SETUP_ASSET_NAME and name.lower() != SETUP_ASSET_NAME.lower():
+        if not _asset_is_setup(str(name)):
             continue
         api_url = asset.get("url")
         browser_url = asset.get("browser_download_url")
         if not api_url and not browser_url:
             continue
-        out: dict = {
+        out = {
             "url": str(api_url or browser_url),
             "id": asset.get("id"),
             "name": str(name),
             "browser_download_url": str(browser_url) if browser_url else None,
         }
-        return out
+        if str(name).lower() == SETUP_ASSET_NAME.lower():
+            exact = out
+            break
+        if fuzzy is None:
+            fuzzy = out
+    return exact or fuzzy
+
+
+def current_app_exe() -> Path | None:
+    if getattr(sys, "frozen", False):
+        try:
+            return Path(sys.executable).resolve()
+        except OSError:
+            return None
     return None
 
 
 def _ask_user(remote_tag: str, local_version: str) -> bool | None:
-    """Native yes/no dialog.
-
-    Returns True/False if the user answered, or None if the dialog could not be shown
-    (tkinter often fails on the pywebview JS-bridge thread).
-    """
     message = (
         f"Update {remote_tag} is available (you have {local_version}).\n\n"
-        "Download and install? The installer will open; this app will quit "
-        "so files can be replaced."
+        "Download and install? The app will quit, the installer will run, "
+        "then GM Session will reopen."
     )
     try:
         import tkinter as tk
@@ -265,7 +314,7 @@ def _ask_user(remote_tag: str, local_version: str) -> bool | None:
         root.destroy()
         return bool(result)
     except Exception:  # noqa: BLE001
-        logger.info("Could not show update dialog; skipping update prompt")
+        _log("Could not show update dialog; skipping launch-time prompt")
         return None
 
 
@@ -279,33 +328,103 @@ def _show_error_dialog(message: str) -> None:
         messagebox.showerror("GM Session — Update", message)
         root.destroy()
     except Exception:  # noqa: BLE001
-        logger.info("Could not show error dialog: %s", message)
+        _log(f"Could not show error dialog: {message}")
+
+
+def spawn_install_and_relaunch(installer: Path, exe_path: Path | None) -> None:
+    """Detach a helper that waits for this process to exit, runs Setup, relaunches."""
+    installer = installer.resolve()
+    if sys.platform != "win32":
+        subprocess.Popen([str(installer)], start_new_session=True)
+        return
+
+    exe = str(exe_path.resolve()) if exe_path else ""
+    setup = str(installer)
+    # PowerShell: wait for GM Session.exe to vanish, run Inno silently, start the app.
+    ps = (
+        f"$setup = {json.dumps(setup)}\n"
+        f"$exe = {json.dumps(exe)}\n"
+        "Start-Sleep -Seconds 2\n"
+        "$deadline = (Get-Date).AddMinutes(2)\n"
+        "while (Get-Process -Name 'GM Session' -ErrorAction SilentlyContinue) {\n"
+        "  if ((Get-Date) -gt $deadline) { break }\n"
+        "  Start-Sleep -Seconds 1\n"
+        "}\n"
+        "Start-Process -FilePath $setup -ArgumentList "
+        "'/SILENT','/NORESTART','/FORCECLOSEAPPLICATIONS' -Wait\n"
+        "if ($exe -and (Test-Path -LiteralPath $exe)) {\n"
+        "  Start-Sleep -Seconds 1\n"
+        "  Start-Process -FilePath $exe\n"
+        "}\n"
+    )
+    encoded = ps.encode("utf-16le")
+    import base64
+
+    b64 = base64.b64encode(encoded).decode("ascii")
+    flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-WindowStyle",
+            "Hidden",
+            "-EncodedCommand",
+            b64,
+        ],
+        close_fds=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=flags,
+        startupinfo=si,
+    )
+    _log(f"Spawned install helper for {setup} relaunch={exe or '(none)'}")
 
 
 def launch_installer(path: Path) -> None:
-    path = path.resolve()
-    if sys.platform == "win32":
-        try:
-            subprocess.Popen(
-                [str(path), "/SILENT", "/NORESTART", "/CLOSEAPPLICATIONS"],
-                close_fds=True,
-            )
-        except OSError as exc:
-            logger.info("Silent installer launch failed (%s); falling back to startfile", exc)
-            os.startfile(str(path))  # type: ignore[attr-defined]
-    else:
-        subprocess.Popen([str(path)], start_new_session=True)
+    """Back-compat wrapper: detached silent install + relaunch when frozen."""
+    spawn_install_and_relaunch(path, current_app_exe())
+
+
+def _release_tag(release: dict) -> str:
+    return str(release.get("tag_name") or release.get("name") or "").strip()
+
+
+def _latest_release_with_setup(token: str | None) -> tuple[dict | None, dict | None, int | None, str | None]:
+    """Return (release, asset, http_status, error)."""
+    data, http_status, err = _http_json(RELEASES_LATEST, token)
+    if isinstance(data, dict):
+        asset = find_setup_asset(data)
+        if asset:
+            return data, asset, http_status, None
+        tag = _release_tag(data)
+        _log(f"Latest {tag or '(untagged)'} has no Setup.exe; listing releases")
+    listed, list_status, list_err = _http_json(RELEASES_LIST, token)
+    if isinstance(listed, list):
+        for rel in listed:
+            if not isinstance(rel, dict):
+                continue
+            if rel.get("draft"):
+                continue
+            asset = find_setup_asset(rel)
+            if asset:
+                return rel, asset, list_status, None
+        return None, None, list_status, "No GitHub release has a Setup.exe"
+    if data is None:
+        return None, None, http_status, err
+    return None, None, http_status or list_status, "Latest release has no installer asset"
 
 
 def probe_update(*, local_version: str | None = None, app_dir: Path | None = None) -> dict:
     """
     Check GitHub Releases without prompting.
-    Returns dict with keys: status, local, message, and optionally remote, asset_url.
     status: up_to_date | available | skipped
     """
     local = local_version or load_version(app_dir)
     token = find_github_token()
-    release, http_status, err = _http_json(RELEASES_LATEST, token)
+    release, asset, http_status, err = _latest_release_with_setup(token)
     if release is None:
         if _needs_token(http_status, token):
             message = (
@@ -322,21 +441,13 @@ def probe_update(*, local_version: str | None = None, app_dir: Path | None = Non
             "needs_token": _needs_token(http_status, token),
             "message": message,
         }
-    tag = str(release.get("tag_name") or release.get("name") or "").strip()
+    tag = _release_tag(release)
     if not tag:
         return {
             "status": "skipped",
             "local": local,
             "message": f"No release tag (local {local})",
         }
-    if not version_is_newer(tag, local):
-        return {
-            "status": "up_to_date",
-            "local": local,
-            "remote": tag,
-            "message": f"Up to date ({local}); latest is {tag}",
-        }
-    asset = find_setup_asset(release)
     if asset is None:
         return {
             "status": "skipped",
@@ -344,28 +455,34 @@ def probe_update(*, local_version: str | None = None, app_dir: Path | None = Non
             "remote": tag,
             "message": f"Update {tag} has no installer asset",
         }
+    if not version_is_newer(tag, local):
+        return {
+            "status": "up_to_date",
+            "local": local,
+            "remote": tag,
+            "asset_url": asset["url"],
+            "asset_id": asset.get("id"),
+            "asset_name": asset.get("name"),
+            "browser_download_url": asset.get("browser_download_url"),
+            "message": f"Up to date ({local}); latest is {tag}",
+        }
     return {
         "status": "available",
         "local": local,
         "remote": tag,
         "asset_url": asset["url"],
         "asset_id": asset.get("id"),
+        "asset_name": asset.get("name"),
         "browser_download_url": asset.get("browser_download_url"),
         "message": f"Update available ({tag})…",
     }
 
 
 def check_and_offer_update(*, local_version: str | None = None, app_dir: Path | None = None) -> bool:
-    """
-    Check GitHub Releases for a newer Setup.exe. If the user accepts, download,
-    launch the installer, and return True (caller should quit). Otherwise False.
-
-    Launch-time path: prompts with a confirm dialog (prompt=True).
-    """
-    _quitting, _msg = check_and_offer_update_with_status(
-        local_version=local_version, app_dir=app_dir, prompt=True
+    quitting, _msg = check_and_offer_update_with_status(
+        local_version=local_version, app_dir=app_dir, prompt=True, force=False
     )
-    return _quitting
+    return quitting
 
 
 def check_and_offer_update_with_status(
@@ -373,50 +490,70 @@ def check_and_offer_update_with_status(
     local_version: str | None = None,
     app_dir: Path | None = None,
     prompt: bool = True,
+    force: bool = False,
+    progress=None,
 ) -> tuple[bool, str]:
     """
-    Same as check_and_offer_update, but also returns a short status string for the UI.
+    Download the latest Setup.exe, spawn a detached installer+relaunch helper.
+
     Returns (should_quit, message).
-
-    prompt=True (launch): native yes/no dialog. If tkinter fails, skip with a visible log.
-    prompt=False (Update app button): the click is consent — download and launch immediately,
-    never using tkinter.
+    prompt=True: launch-time yes/no (skip if tkinter fails).
+    prompt=False: Update app button — the click is consent.
+    force=True: run the latest installer even if the version matches.
+    progress: optional callable(str) for UI status while downloading.
     """
-    info = probe_update(local_version=local_version, app_dir=app_dir)
-    local = str(info.get("local") or load_version(app_dir))
-    if info.get("needs_token"):
+
+    def _progress(msg: str) -> None:
+        _log(msg)
+        if progress:
+            try:
+                progress(msg)
+            except Exception:  # noqa: BLE001
+                pass
+
+    local = local_version or load_version(app_dir)
+    token = find_github_token()
+    if not token:
         msg = token_missing_message()
-        logger.info("%s", msg)
-        return False, msg
-    if info["status"] == "up_to_date":
-        msg = str(info.get("message") or f"Up to date ({local})")
-        logger.info("%s", msg)
-        return False, msg
-    if info["status"] != "available":
-        msg = str(info.get("message") or f"Could not check updates (local {local})")
-        logger.info("%s", msg)
+        _progress(msg)
         return False, msg
 
-    tag = str(info["remote"])
-    url = str(info["asset_url"])
-    fallback = info.get("browser_download_url")
-    fallback_url = str(fallback) if fallback else None
+    _progress("Looking for installer on GitHub…")
+    release, asset, http_status, err = _latest_release_with_setup(token)
+    if release is None or asset is None:
+        if _needs_token(http_status, token):
+            msg = token_missing_message()
+        elif http_status is not None:
+            msg = f"Could not check updates: HTTP {http_status}"
+        else:
+            msg = f"Could not check updates: {err or 'network error'} (local {local})"
+        _progress(msg)
+        return False, msg
 
-    if prompt:
+    tag = _release_tag(release) or "latest"
+    if prompt and not force and not version_is_newer(tag, local):
+        msg = f"Up to date ({local}); latest is {tag}"
+        _progress(msg)
+        return False, msg
+    if prompt and not force:
         answer = _ask_user(tag, local)
         if answer is None:
             msg = "Could not show update dialog; skipped (use Update app to install)"
-            logger.info("%s", msg)
+            _progress(msg)
             return False, msg
         if not answer:
-            logger.info("User declined update %s", tag)
-            return False, f"Update available ({tag}) — declined"
-    else:
-        logger.info("Update app clicked; installing %s without dialog", tag)
+            msg = f"Update available ({tag}) — declined"
+            _progress(msg)
+            return False, msg
 
-    token = find_github_token()
+    url = str(asset["url"])
+    fallback = asset.get("browser_download_url")
+    fallback_url = str(fallback) if fallback else None
+    asset_name = str(asset.get("name") or SETUP_ASSET_NAME)
+
+    _progress(f"Downloading {asset_name} ({tag})…")
     tmp_dir = Path(tempfile.mkdtemp(prefix="gm-session-update-"))
-    dest = tmp_dir / SETUP_ASSET_NAME
+    dest = tmp_dir / (asset_name if asset_name.lower().endswith(".exe") else SETUP_ASSET_NAME)
     ok, err, http_status = _download(url, dest, token, fallback_url=fallback_url)
     if not ok:
         if _needs_token(http_status, token):
@@ -425,16 +562,17 @@ def check_and_offer_update_with_status(
             msg = f"Download failed: HTTP {http_status}"
         else:
             msg = f"Download failed: {err or 'unknown error'}"
-        logger.info("%s", msg)
+        _progress(msg)
         if prompt:
             _show_error_dialog(msg)
         return False, msg
 
+    _progress(f"Running installer {tag} — app will close and reopen…")
     try:
-        launch_installer(dest)
+        spawn_install_and_relaunch(dest, current_app_exe())
     except OSError as exc:
-        logger.info("Could not launch installer: %s", exc)
-        return False, f"Could not launch installer: {exc}"
+        msg = f"Could not launch installer: {exc}"
+        _progress(msg)
+        return False, msg
 
-    return True, f"Installing {tag} — app will quit…"
-
+    return True, f"Installing {tag} — closing so the installer can replace files…"

@@ -1280,6 +1280,13 @@
     });
   }
 
+  window.__gmUpdateStatus = function (msg, done) {
+    const text = String(msg || "");
+    setUpdateStatus(text);
+    setStatus(text);
+    if (done && btnUpdate) btnUpdate.disabled = false;
+  };
+
   async function runUpdateCheck() {
     const api =
       window.pywebview &&
@@ -1297,16 +1304,14 @@
     }
 
     if (btnUpdate) btnUpdate.disabled = true;
-    setUpdateStatus("Checking for app updates…");
+    setUpdateStatus("Looking for installer on GitHub…");
     try {
       const msg = await Promise.resolve(api.check_update());
-      setUpdateStatus(String(msg || "Done"));
-      setStatus(String(msg || "Update app done"));
+      setUpdateStatus(String(msg || "Looking for installer on GitHub…"));
     } catch (err) {
       const text = err && err.message ? err.message : String(err);
       setUpdateStatus(`Failed: ${text}`);
       setStatus(`Update app failed: ${text}`);
-    } finally {
       if (btnUpdate) btnUpdate.disabled = false;
     }
   }
