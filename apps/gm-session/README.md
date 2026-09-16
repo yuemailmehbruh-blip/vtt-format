@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.4.1**).
+Version is in `VERSION` (currently **0.4.2**).
 
 ## Run — desktop app (recommended)
 
@@ -55,25 +55,26 @@ Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1
 - **Token snap** — free movement while dragging; on pointerup, if Snap to grid is ON, snap to cell center (`floor(x/g)*g + g/2`). Library drop / place still snaps on place.
 - **Canvas draw order** — map images → grid (if on) → tokens → additions stub → layer edit chrome (play view does not draw walls/doors/lights/spawns)
 - **Pan / zoom** — drag empty map to pan, wheel to zoom, double-click to fit. Hit-test: edit handles/body → tokens → pan
-- **Update** — fixed button bottom-left of the canvas; calls `window.pywebview.api.check_update()` (same as launch). Browser `serve.py` shows that Update needs the desktop app.
+- **Update app** — fixed button bottom-left of the canvas; upgrades the installed program (not the map). Calls `window.pywebview.api.check_update()` which downloads and launches the installer if a newer release exists (the click is consent). Status text under the button shows the probe/install result, including errors. Browser `serve.py` shows that Update app needs the desktop app.
 
 ## Auto-update
 
-On launch (unless `--skip-update`), and via the in-session **Update** button, the desktop app checks GitHub Releases for [`yuemailmehbruh-blip/vtt-format`](https://github.com/yuemailmehbruh-blip/vtt-format):
+On launch (unless `--skip-update`), the desktop app checks GitHub Releases for [`yuemailmehbruh-blip/vtt-format`](https://github.com/yuemailmehbruh-blip/vtt-format) and may show a confirm dialog. The in-session **Update app** button does the same check, but **the click is consent**: if a newer release exists it immediately downloads and launches the installer (no tkinter yes/no).
 
-1. `GET /repos/.../releases/latest`
+1. `GET /repos/.../releases/latest` (Bearer token when present)
 2. Compare release tag (strip leading `v`) to local `VERSION`
-3. If newer and asset `GM-Session-Setup.exe` exists → native “Download and install?” dialog
-4. On yes → download to a temp file, launch the installer, quit so files can be replaced
+3. Prefer the GitHub API asset URL (`asset["url"]`) with `Accept: application/octet-stream` (private-repo `browser_download_url` 404s)
+4. Launch: native “Download and install?” dialog (if tkinter fails, skip with a visible log — use **Update app**)
+5. **Update app** button: download + launch Inno silently (`/SILENT /NORESTART /CLOSEAPPLICATIONS`), then quit so files can be replaced
 
-Auth (for private repos): try unauthenticated first; else `GM_SESSION_GH_TOKEN` / `GITHUB_TOKEN`, `%LOCALAPPDATA%\GM Session\github_token.txt`, or GitHub CLI `hosts.yml`. If there is no access, the check is skipped silently.
+Auth (for private repos): `GM_SESSION_GH_TOKEN` / `GITHUB_TOKEN`, `%LOCALAPPDATA%\GM Session\github_token.txt`, or GitHub CLI `hosts.yml`. Unauthenticated `/releases/latest` 404s on a private repo; the UI then says to put a token in that file. Failures are shown under **Update app**, not swallowed.
 
 Publish after a Windows build:
 
 ```bash
-gh release create v0.4.1 packaging/windows/output/GM-Session-Setup.exe \
-  --title "GM Session v0.4.1" \
-  --notes "Layer edit/resize, token snap-on-release, Update button, v0.4.1."
+gh release create v0.4.2 packaging/windows/output/GM-Session-Setup.exe \
+  --title "GM Session v0.4.2" \
+  --notes "Update app installs the program (private-repo API download, silent Inno)."
 ```
 
 (`build.ps1` prints the exact command for the current `VERSION`.)

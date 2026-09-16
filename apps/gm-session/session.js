@@ -962,23 +962,23 @@
         : null;
 
     if (!api) {
-      setUpdateStatus("Update needs the desktop app");
+      setUpdateStatus("Update app needs the desktop app");
       setStatus(
-        "Update check needs the GM Session desktop app (pywebview). Browser serve.py has no updater API."
+        "Update app needs the GM Session desktop app (pywebview). Browser serve.py has no updater API."
       );
       return;
     }
 
     if (btnUpdate) btnUpdate.disabled = true;
-    setUpdateStatus("Checking…");
+    setUpdateStatus("Checking for app updates…");
     try {
       const msg = await Promise.resolve(api.check_update());
       setUpdateStatus(String(msg || "Done"));
-      setStatus(String(msg || "Update check done"));
+      setStatus(String(msg || "Update app done"));
     } catch (err) {
       const text = err && err.message ? err.message : String(err);
       setUpdateStatus(`Failed: ${text}`);
-      setStatus(`Update check failed: ${text}`);
+      setStatus(`Update app failed: ${text}`);
     } finally {
       if (btnUpdate) btnUpdate.disabled = false;
     }

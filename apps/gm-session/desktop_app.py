@@ -145,12 +145,16 @@ class DesktopApi:
         return "opened"
 
     def check_update(self) -> str:
-        """JS bridge: window.pywebview.api.check_update() — same check as launch."""
+        """JS bridge: Update app button — download and install if a newer release exists.
+
+        prompt=False: the click is consent; do not use a tkinter yes/no dialog.
+        Launch-time check still uses check_and_offer_update (prompt=True).
+        """
         app_dir = default_app_dir()
         version = load_version(app_dir)
         try:
             quitting, message = check_and_offer_update_with_status(
-                local_version=version, app_dir=app_dir
+                local_version=version, app_dir=app_dir, prompt=False
             )
         except Exception as exc:  # noqa: BLE001
             logger.info("Update check error: %s", exc)

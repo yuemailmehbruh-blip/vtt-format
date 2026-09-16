@@ -11,3 +11,7 @@ packaging/windows/build/
 packaging/windows/output/
 packaging/windows/staging-campaign/
 *.spec.bak
+
+# Updater GitHub token (never commit)
+github_token.txt
+**/github_token.txt
