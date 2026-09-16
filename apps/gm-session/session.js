@@ -1132,41 +1132,157 @@
     return false;
   }
 
+  /**
+   * Median mid-line strength / median edge-line strength along a pitch comb.
+   * When the detector locked onto every other printed line, mids beat edges at
+   * some phase even if the fitted phase looks clean.
+   */
+  function midEdgeRatio(signal, pitch, phase) {
+    if (!(pitch > 0)) return 0;
+    const edges = [];
+    const mids = [];
+    let x = phase;
+    while (x < 0) x += pitch;
+    for (; x + pitch < signal.length - 1; x += pitch) {
+      edges.push(sample1d(signal, x));
+      mids.push(sample1d(signal, x + pitch / 2));
+    }
+    if (edges.length < 3) return 0;
+    const e = medianOf(edges);
+    if (!(e > 0)) return 0;
+    return medianOf(mids) / e;
+  }
+
+  function midEdgeSuggestsDoubled(vSig, hSig, pitch, phaseX, phaseY, minP) {
+    if (!(pitch >= 2 * minP - 1e-6)) return false;
+    let best = 0;
+    const steps = 9;
+    for (let ix = 0; ix < steps; ix++) {
+      for (let iy = 0; iy < steps; iy++) {
+        const ox = (pitch * ix) / steps;
+        const oy = (pitch * iy) / steps;
+        const r =
+          0.5 *
+          (midEdgeRatio(vSig, pitch, phaseX + ox) +
+            midEdgeRatio(hSig, pitch, phaseY + oy));
+        if (r > best) best = r;
+      }
+    }
+    // Mid lines about as strong as (or stronger than) the locked edges ⇒ doubled.
+    return best >= 0.75;
+  }
+
+  /**
+   * Dual-grid maps (fine + bold every 5th): promote fine pitch → 5× when every
+   * 5th comb line is clearly stronger and a 3×3 of major cells still fits.
+   */
+  function majorFifthRatio(signal, pitch, phase) {
+    if (!(pitch > 0)) return 0;
+    const majors = [];
+    const minors = [];
+    let x = phase;
+    let i = 0;
+    while (x < 0) {
+      x += pitch;
+    }
+    for (; x < signal.length - 1; x += pitch, i++) {
+      const s = sample1d(signal, x);
+      if (i % 5 === 0) majors.push(s);
+      else minors.push(s);
+    }
+    if (majors.length < 3 || minors.length < 8) return 0;
+    const maj = medianOf(majors);
+    const min = medianOf(minors);
+    if (!(min > 0)) return 0;
+    return maj / min;
+  }
+
+  function suggestsMajorFifth(vSig, hSig, pitch, phaseX, phaseY, w, h) {
+    const major = pitch * 5;
+    if (!(major * 3.2 <= Math.min(w, h))) return false;
+    let bestV = 0;
+    let bestH = 0;
+    const steps = 11;
+    for (let i = 0; i < steps; i++) {
+      const ox = (pitch * i) / steps;
+      const oy = (pitch * i) / steps;
+      const rv = majorFifthRatio(vSig, pitch, phaseX + ox);
+      const rh = majorFifthRatio(hSig, pitch, phaseY + oy);
+      if (rv > bestV) bestV = rv;
+      if (rh > bestH) bestH = rh;
+    }
+    const avg = 0.5 * (bestV + bestH);
+    const lo = Math.min(bestV, bestH);
+    // One axis may be weaker (fade/vignette); both must show some major emphasis.
+    return avg >= 1.35 && lo >= 0.55 && Math.max(bestV, bestH) >= 1.35;
+  }
+
   function maybeHalvePitch(imgData, w, h, fitted, polarity, minP, maxP, vSig, hSig) {
     let pitch = fitted.pitch;
     let phaseX = fitted.phaseX;
     let phaseY = fitted.phaseY;
     let score = fitted.score;
+    let halved = false;
     for (let step = 0; step < 2; step++) {
       if (pitch / 2 < minP) break;
-      if (
-        !cellsSuggestDoubledPitch(
-          imgData,
-          w,
-          h,
-          pitch,
-          phaseX,
-          phaseY,
-          polarity,
-          minP
-        )
-      ) {
-        break;
-      }
-      const half = pitch / 2;
-      const refined = refinePitchAndPhase(
+      const midEdge = midEdgeSuggestsDoubled(
         vSig,
         hSig,
-        half,
-        minP,
-        maxP
+        pitch,
+        phaseX,
+        phaseY,
+        minP
       );
+      const cells = cellsSuggestDoubledPitch(
+        imgData,
+        w,
+        h,
+        pitch,
+        phaseX,
+        phaseY,
+        polarity,
+        minP
+      );
+      if (!midEdge && !cells) break;
+      const half = pitch / 2;
+      const refined = refinePitchAndPhase(vSig, hSig, half, minP, maxP);
       pitch = refined.pitch;
       phaseX = refined.phaseX;
       phaseY = refined.phaseY;
       score = refined.score;
+      halved = true;
     }
-    return { pitch, phaseX, phaseY, score };
+    return { pitch, phaseX, phaseY, score, halved };
+  }
+
+  function maybePromoteMajorFifth(fitted, minP, maxP, vSig, hSig, w, h) {
+    // Skip when we just halved — wooden floors / texture can fake a 5× pattern.
+    if (fitted.halved) return fitted;
+    let pitch = fitted.pitch;
+    let phaseX = fitted.phaseX;
+    let phaseY = fitted.phaseY;
+    let score = fitted.score;
+    if (!suggestsMajorFifth(vSig, hSig, pitch, phaseX, phaseY, w, h)) {
+      return fitted;
+    }
+    const major = pitch * 5;
+    const refined = refinePitchAndPhase(
+      vSig,
+      hSig,
+      major,
+      minP,
+      Math.max(maxP, major * 1.05)
+    );
+    // Keep the promotion only if comb still locks near 5× fine.
+    if (Math.abs(refined.pitch / pitch - 5) > 0.35) return fitted;
+    return {
+      pitch: refined.pitch,
+      phaseX: refined.phaseX,
+      phaseY: refined.phaseY,
+      score: refined.score,
+      halved: false,
+      majorFifth: true,
+    };
   }
 
   function autocorrAt(signal, lag) {
@@ -1367,6 +1483,8 @@
           pol.v,
           pol.h
         );
+        // Validate 3×3 on the fine (or halved) pitch before a 5× promotion —
+        // a bold 50ft cell may only fit ~3–4 across a small scan.
         if (
           !hasCenterThreeByThree(
             pol.v,
@@ -1380,6 +1498,15 @@
         ) {
           continue;
         }
+        fitted = maybePromoteMajorFifth(
+          fitted,
+          minP,
+          maxP,
+          pol.v,
+          pol.h,
+          w,
+          h
+        );
         if (!best || fitted.score > best.score) {
           best = {
             pitch: fitted.pitch,

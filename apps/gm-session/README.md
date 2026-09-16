@@ -144,3 +144,7 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 ## Windows desktop / installer
 
 See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `desktop_app.py`; shared HTTP APIs in `server_lib.py`; updater in `updater.py`.
+
+## 0.5.7
+
+- Has-grid: stronger doubled-pitch detection (mid-line sweep) and promote a bold every-5th major grid (e.g. Yester Hill 50ft squares) when present.
