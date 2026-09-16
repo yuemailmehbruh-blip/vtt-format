@@ -914,23 +914,19 @@
   }
 
   /**
-   * Project bright/dark thin lines inside a center rectangle (not a 1px strip).
-   * Vertical lines → score per x; horizontal → per y. Pixels outside the ROI
-   * stay 0 so a decorative frame / faded margin cannot dominate.
+   * Project bright/dark thin lines. Vertical lines → score per x; horizontal → per y.
+   * Uses the whole image so grass/trees on the center strip cannot win.
    */
-  function lineProjections(imgData, w, h, roi) {
+  function lineProjections(imgData, w, h) {
     const d = imgData.data;
     const vBright = new Float64Array(w);
     const vDark = new Float64Array(w);
     const hBright = new Float64Array(h);
     const hDark = new Float64Array(h);
-    const x0 = Math.max(2, roi && roi.x0 != null ? roi.x0 | 0 : 2);
-    const y0 = Math.max(2, roi && roi.y0 != null ? roi.y0 | 0 : 2);
-    const x1 = Math.min(w - 2, roi && roi.x1 != null ? roi.x1 | 0 : w - 2);
-    const y1 = Math.min(h - 2, roi && roi.y1 != null ? roi.y1 | 0 : h - 2);
-    if (x1 - x0 < 8 || y1 - y0 < 8) {
-      return { vBright, vDark, hBright, hDark };
-    }
+    const y0 = 2;
+    const y1 = h - 2;
+    const x0 = 2;
+    const x1 = w - 2;
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
         const g = grayAt(d, w, x, y);
@@ -942,360 +938,22 @@
         hDark[y] += Math.max(0, nY - g);
       }
     }
+    // Ignore the outer frame (black border / UI edge) so it does not dominate.
+    const mx = Math.max(4, Math.floor(w * 0.01));
+    const my = Math.max(4, Math.floor(h * 0.01));
+    for (const arr of [vBright, vDark]) {
+      for (let x = 0; x < mx; x++) arr[x] = 0;
+      for (let x = w - mx; x < w; x++) arr[x] = 0;
+    }
+    for (const arr of [hBright, hDark]) {
+      for (let y = 0; y < my; y++) arr[y] = 0;
+      for (let y = h - my; y < h; y++) arr[y] = 0;
+    }
     return {
       vBright: smooth1d(vBright, 1),
       vDark: smooth1d(vDark, 1),
       hBright: smooth1d(hBright, 1),
       hDark: smooth1d(hDark, 1),
-    };
-  }
-
-  function sample1d(signal, x) {
-    const n = signal.length;
-    if (!(x >= 0) || x >= n - 1) return 0;
-    const i = Math.floor(x);
-    const f = x - i;
-    return (1 - f) * signal[i] + f * signal[i + 1];
-  }
-
-  function medianOf(arr) {
-    if (!arr.length) return 0;
-    const a = arr.slice().sort((p, q) => p - q);
-    const m = Math.floor(a.length / 2);
-    return a.length % 2 ? a[m] : 0.5 * (a[m - 1] + a[m]);
-  }
-
-  /**
-   * Four consecutive comb lines starting at line index `k` = three cells.
-   * Fail if any of those lines is missing (gap / no lattice there).
-   */
-  function axisHasThreeCellsAt(signal, pitch, phase, k) {
-    if (!(pitch > 0) || signal.length < 8) return false;
-    const xs = [0, 1, 2, 3].map((i) => phase + (k + i) * pitch);
-    if (xs.some((x) => x < 1 || x > signal.length - 2)) return false;
-    const lo = Math.max(0, Math.floor(xs[0]));
-    const hi = Math.min(signal.length - 1, Math.ceil(xs[3]));
-    const slice = [];
-    for (let i = lo; i <= hi; i++) slice.push(signal[i]);
-    const med = medianOf(slice);
-    const strengths = xs.map((x) => sample1d(signal, x));
-    const peak = Math.max(...strengths);
-    if (!(peak > 0) || !(peak > med * 1.08)) return false;
-    const thresh = med + 0.22 * (peak - med);
-    return strengths.every((s) => s >= thresh);
-  }
-
-  /**
-   * True when some 3×3 of cells exists on this lattice (not only at the image
-   * center). A valid vertical 3-cell run and a valid horizontal 3-cell run are
-   * enough — their overlap is a 3×3 block.
-   */
-  function hasAnyThreeByThree(vSig, hSig, pitch, phaseX, phaseY) {
-    if (!(pitch > 0)) return false;
-    function strongStarts(signal, phase) {
-      const minK = Math.ceil((1 - phase) / pitch);
-      const maxK = Math.floor((signal.length - 2 - phase) / pitch) - 3;
-      const out = [];
-      for (let k = minK; k <= maxK; k++) {
-        if (axisHasThreeCellsAt(signal, pitch, phase, k)) out.push(k);
-      }
-      return out;
-    }
-    return (
-      strongStarts(vSig, phaseX).length > 0 &&
-      strongStarts(hSig, phaseY).length > 0
-    );
-  }
-
-  function centerRoi(w, h, frac) {
-    const sideX = Math.max(16, Math.floor(w * frac));
-    const sideY = Math.max(16, Math.floor(h * frac));
-    const x0 = Math.floor((w - sideX) / 2);
-    const y0 = Math.floor((h - sideY) / 2);
-    return { x0, y0, x1: x0 + sideX, y1: y0 + sideY };
-  }
-
-  /**
-   * True when a detected cell has a printed cross / half-grid inside it
-   * (mid-band line nearly as strong as the cell borders, and stronger than
-   * the quarter bands). Used to catch a doubled pitch (2×2 inside each cell).
-   */
-  function cellHasInternalCross(imgData, w, h, pitch, phaseX, phaseY, ix, iy, polarity) {
-    const d = imgData.data;
-    const x0 = phaseX + ix * pitch;
-    const y0 = phaseY + iy * pitch;
-    const x1 = x0 + pitch;
-    const y1 = y0 + pitch;
-    if (x0 < 2 || y0 < 2 || x1 > w - 2 || y1 > h - 2) return null;
-    const xStart = Math.floor(x0) + 1;
-    const xEnd = Math.ceil(x1);
-    const yStart = Math.floor(y0) + 1;
-    const yEnd = Math.ceil(y1);
-    if (xEnd - xStart < 8 || yEnd - yStart < 8) return null;
-
-    const vProf = [];
-    const vCoord = [];
-    for (let x = xStart; x < xEnd; x++) {
-      let s = 0;
-      for (let y = yStart + 1; y < yEnd - 1; y++) {
-        const g = grayAt(d, w, x, y);
-        const nX = 0.5 * (grayAt(d, w, x - 1, y) + grayAt(d, w, x + 1, y));
-        s += polarity === "bright" ? Math.max(0, g - nX) : Math.max(0, nX - g);
-      }
-      vProf.push(s);
-      vCoord.push(x);
-    }
-    const hProf = [];
-    const hCoord = [];
-    for (let y = yStart; y < yEnd; y++) {
-      let s = 0;
-      for (let x = xStart + 1; x < xEnd - 1; x++) {
-        const g = grayAt(d, w, x, y);
-        const nY = 0.5 * (grayAt(d, w, x, y - 1) + grayAt(d, w, x, y + 1));
-        s += polarity === "bright" ? Math.max(0, g - nY) : Math.max(0, nY - g);
-      }
-      hProf.push(s);
-      hCoord.push(y);
-    }
-
-    function axisHasMid(prof, coords, c0) {
-      const edge = [];
-      const mid = [];
-      const q = [];
-      for (let i = 0; i < coords.length; i++) {
-        const tt = (coords[i] - c0) / pitch;
-        if (tt < 0.1 || tt > 0.9) edge.push(prof[i]);
-        else if (tt >= 0.45 && tt <= 0.55) mid.push(prof[i]);
-        else if ((tt >= 0.25 && tt <= 0.35) || (tt >= 0.65 && tt <= 0.75)) q.push(prof[i]);
-      }
-      if (!edge.length || !mid.length || !q.length) return false;
-      const e = Math.max(...edge);
-      const m = Math.max(...mid);
-      const qq = medianOf(q);
-      return e > 0 && m >= 0.5 * e && m >= 1.3 * qq;
-    }
-
-    return (
-      axisHasMid(vProf, vCoord, x0) && axisHasMid(hProf, hCoord, y0)
-    );
-  }
-
-  /**
-   * Sample up to 7 cells around the image center. Returns true when at least
-   * 4 contain an internal cross / half-grid (2×2 inside the detected cell).
-   */
-  function majorityCellsHaveInternalGrid(
-    imgData,
-    w,
-    h,
-    pitch,
-    phaseX,
-    phaseY,
-    polarity
-  ) {
-    if (!(pitch > 0)) return false;
-    // Snap pitch so tiny phase/pitch jitter does not shift mid-bands onto borders.
-    const p = Math.max(1, Math.round(pitch));
-    const kx = Math.round(w / 2 / p - phaseX / p - 0.5);
-    const ky = Math.round(h / 2 / p - phaseY / p - 0.5);
-    let hits = 0;
-    let checked = 0;
-    for (let dy = -2; dy <= 2 && checked < 7; dy++) {
-      for (let dx = -2; dx <= 2 && checked < 7; dx++) {
-        const r = cellHasInternalCross(
-          imgData,
-          w,
-          h,
-          p,
-          phaseX,
-          phaseY,
-          kx + dx,
-          ky + dy,
-          polarity
-        );
-        if (r == null) continue;
-        checked++;
-        if (r) hits++;
-      }
-    }
-    return checked >= 3 && hits >= 4;
-  }
-
-  function cellsSuggestDoubledPitch(imgData, w, h, pitch, phaseX, phaseY, polarity, minP) {
-    // Only subdivide when half-pitch stays at or above minP (avoids halving a true cell).
-    if (!(pitch >= 2 * minP - 1e-6)) return false;
-    // Try the fitted phase and a quarter-cell shift (comb can lock onto the wrong offset).
-    const offsets = [0, pitch / 4];
-    for (const ox of offsets) {
-      for (const oy of offsets) {
-        if (
-          majorityCellsHaveInternalGrid(
-            imgData,
-            w,
-            h,
-            pitch,
-            phaseX + ox,
-            phaseY + oy,
-            polarity
-          )
-        ) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  /**
-   * Median mid-line strength / median edge-line strength along a pitch comb.
-   * When the detector locked onto every other printed line, mids beat edges at
-   * some phase even if the fitted phase looks clean.
-   */
-  function midEdgeRatio(signal, pitch, phase) {
-    if (!(pitch > 0)) return 0;
-    const edges = [];
-    const mids = [];
-    let x = phase;
-    while (x < 0) x += pitch;
-    for (; x + pitch < signal.length - 1; x += pitch) {
-      edges.push(sample1d(signal, x));
-      mids.push(sample1d(signal, x + pitch / 2));
-    }
-    if (edges.length < 3) return 0;
-    const e = medianOf(edges);
-    if (!(e > 0)) return 0;
-    return medianOf(mids) / e;
-  }
-
-  function midEdgeSuggestsDoubled(vSig, hSig, pitch, phaseX, phaseY, minP) {
-    if (!(pitch >= 2 * minP - 1e-6)) return false;
-    let best = 0;
-    const steps = 9;
-    for (let ix = 0; ix < steps; ix++) {
-      for (let iy = 0; iy < steps; iy++) {
-        const ox = (pitch * ix) / steps;
-        const oy = (pitch * iy) / steps;
-        const r =
-          0.5 *
-          (midEdgeRatio(vSig, pitch, phaseX + ox) +
-            midEdgeRatio(hSig, pitch, phaseY + oy));
-        if (r > best) best = r;
-      }
-    }
-    // Mid lines about as strong as (or stronger than) the locked edges ⇒ doubled.
-    return best >= 0.75;
-  }
-
-  /**
-   * Dual-grid maps (fine + bold every 5th): promote fine pitch → 5× when every
-   * 5th comb line is clearly stronger and a 3×3 of major cells still fits.
-   */
-  function majorFifthRatio(signal, pitch, phase) {
-    if (!(pitch > 0)) return 0;
-    const majors = [];
-    const minors = [];
-    let x = phase;
-    let i = 0;
-    while (x < 0) {
-      x += pitch;
-    }
-    for (; x < signal.length - 1; x += pitch, i++) {
-      const s = sample1d(signal, x);
-      if (i % 5 === 0) majors.push(s);
-      else minors.push(s);
-    }
-    if (majors.length < 3 || minors.length < 8) return 0;
-    const maj = medianOf(majors);
-    const min = medianOf(minors);
-    if (!(min > 0)) return 0;
-    return maj / min;
-  }
-
-  function suggestsMajorFifth(vSig, hSig, pitch, phaseX, phaseY, w, h) {
-    const major = pitch * 5;
-    if (!(major * 3.2 <= Math.min(w, h))) return false;
-    let bestV = 0;
-    let bestH = 0;
-    const steps = 11;
-    for (let i = 0; i < steps; i++) {
-      const ox = (pitch * i) / steps;
-      const oy = (pitch * i) / steps;
-      const rv = majorFifthRatio(vSig, pitch, phaseX + ox);
-      const rh = majorFifthRatio(hSig, pitch, phaseY + oy);
-      if (rv > bestV) bestV = rv;
-      if (rh > bestH) bestH = rh;
-    }
-    const avg = 0.5 * (bestV + bestH);
-    const lo = Math.min(bestV, bestH);
-    // One axis may be weaker (fade/vignette); both must show some major emphasis.
-    return avg >= 1.35 && lo >= 0.55 && Math.max(bestV, bestH) >= 1.35;
-  }
-
-  function maybeHalvePitch(imgData, w, h, fitted, polarity, minP, maxP, vSig, hSig) {
-    let pitch = fitted.pitch;
-    let phaseX = fitted.phaseX;
-    let phaseY = fitted.phaseY;
-    let score = fitted.score;
-    let halved = false;
-    for (let step = 0; step < 2; step++) {
-      if (pitch / 2 < minP) break;
-      const midEdge = midEdgeSuggestsDoubled(
-        vSig,
-        hSig,
-        pitch,
-        phaseX,
-        phaseY,
-        minP
-      );
-      const cells = cellsSuggestDoubledPitch(
-        imgData,
-        w,
-        h,
-        pitch,
-        phaseX,
-        phaseY,
-        polarity,
-        minP
-      );
-      if (!midEdge && !cells) break;
-      const half = pitch / 2;
-      const refined = refinePitchAndPhase(vSig, hSig, half, minP, maxP);
-      pitch = refined.pitch;
-      phaseX = refined.phaseX;
-      phaseY = refined.phaseY;
-      score = refined.score;
-      halved = true;
-    }
-    return { pitch, phaseX, phaseY, score, halved };
-  }
-
-  function maybePromoteMajorFifth(fitted, minP, maxP, vSig, hSig, w, h) {
-    // Skip when we just halved — wooden floors / texture can fake a 5× pattern.
-    if (fitted.halved) return fitted;
-    let pitch = fitted.pitch;
-    let phaseX = fitted.phaseX;
-    let phaseY = fitted.phaseY;
-    let score = fitted.score;
-    if (!suggestsMajorFifth(vSig, hSig, pitch, phaseX, phaseY, w, h)) {
-      return fitted;
-    }
-    const major = pitch * 5;
-    const refined = refinePitchAndPhase(
-      vSig,
-      hSig,
-      major,
-      minP,
-      Math.max(maxP, major * 1.05)
-    );
-    // Keep the promotion only if comb still locks near 5× fine.
-    if (Math.abs(refined.pitch / pitch - 5) > 0.35) return fitted;
-    return {
-      pitch: refined.pitch,
-      phaseX: refined.phaseX,
-      phaseY: refined.phaseY,
-      score: refined.score,
-      halved: false,
-      majorFifth: true,
     };
   }
 
@@ -1438,108 +1096,58 @@
     } catch (_) {
       return null;
     }
-    // Grass/noise below ~20px; a doubled pitch is corrected later by mid-cell checks.
+    // Grass texture lives at 4–12px; printed VTT cells are much larger.
     const minP = Math.max(20, Math.floor(Math.min(w, h) / 80));
     const maxP = Math.max(minP + 8, Math.floor(Math.min(w, h) / 4));
-    // Hunt from the center outward so a second border / faded edge cannot win.
-    // A window must be able to hold a 3×3 of cells at minP.
-    const fractions = [0.4, 0.55, 0.7];
+    const proj = lineProjections(imgData, w, h);
+    const polarities = [
+      { name: "bright", v: proj.vBright, h: proj.hBright },
+      { name: "dark", v: proj.vDark, h: proj.hDark },
+    ];
     let best = null;
-    for (const frac of fractions) {
-      const roi = centerRoi(w, h, frac);
-      if (roi.x1 - roi.x0 < 3.2 * minP || roi.y1 - roi.y0 < 3.2 * minP) continue;
-      const proj = lineProjections(imgData, w, h, roi);
-      const polarities = [
-        { name: "bright", v: proj.vBright, h: proj.hBright },
-        { name: "dark", v: proj.vDark, h: proj.hDark },
-      ];
-      for (const pol of polarities) {
-        const vHit = bestPitch(pol.v, minP, maxP);
-        const hHit = bestPitch(pol.h, minP, maxP);
-        if (!vHit && !hHit) continue;
-        let pitch;
-        let axis = "v";
-        if (vHit && hHit) {
-          const rel = Math.abs(vHit.lag - hHit.lag) / Math.max(vHit.lag, hHit.lag);
-          if (rel < 0.15) {
-            pitch = (vHit.lag + hHit.lag) / 2;
-            axis = "avg";
-          } else if (vHit.score >= hHit.score) {
-            pitch = vHit.lag;
-            axis = "v";
-          } else {
-            pitch = hHit.lag;
-            axis = "h";
-          }
-        } else if (vHit) {
+    for (const pol of polarities) {
+      const vHit = bestPitch(pol.v, minP, maxP);
+      const hHit = bestPitch(pol.h, minP, maxP);
+      if (!vHit && !hHit) continue;
+      let pitch;
+      let axis = "v";
+      if (vHit && hHit) {
+        const rel = Math.abs(vHit.lag - hHit.lag) / Math.max(vHit.lag, hHit.lag);
+        if (rel < 0.15) {
+          pitch = (vHit.lag + hHit.lag) / 2;
+          axis = "avg";
+        } else if (vHit.score >= hHit.score) {
           pitch = vHit.lag;
+          axis = "v";
         } else {
           pitch = hHit.lag;
           axis = "h";
         }
-        const strip = axis === "h" ? pol.h : pol.v;
-        pitch = refinePitchWithFifths(strip, pitch, minP, maxP);
-        if (axis === "avg") {
-          const p2 = refinePitchWithFifths(pol.h, pitch, minP, maxP);
-          pitch = (pitch + p2) / 2;
-        }
-        if (!(pitch >= minP && pitch <= maxP)) continue;
-        if (roi.x1 - roi.x0 < 3.2 * pitch || roi.y1 - roi.y0 < 3.2 * pitch) continue;
-        let fitted = refinePitchAndPhase(pol.v, pol.h, pitch, minP, maxP);
-        fitted = maybeHalvePitch(
-          imgData,
-          w,
-          h,
-          fitted,
-          pol.name,
-          minP,
-          maxP,
-          pol.v,
-          pol.h
-        );
-        // Validate that some 3×3 exists on the fine (or halved) lattice before
-        // a 5× promotion. Use full-image projections so an off-center block counts.
-        const fullProj = lineProjections(imgData, w, h, {
-          x0: 2,
-          y0: 2,
-          x1: w - 2,
-          y1: h - 2,
-        });
-        const vGate = pol.name === "bright" ? fullProj.vBright : fullProj.vDark;
-        const hGate = pol.name === "bright" ? fullProj.hBright : fullProj.hDark;
-        if (
-          !hasAnyThreeByThree(
-            vGate,
-            hGate,
-            fitted.pitch,
-            fitted.phaseX,
-            fitted.phaseY
-          )
-        ) {
-          continue;
-        }
-        fitted = maybePromoteMajorFifth(
-          fitted,
-          minP,
-          maxP,
-          pol.v,
-          pol.h,
-          w,
-          h
-        );
-        if (!best || fitted.score > best.score) {
-          best = {
-            pitch: fitted.pitch,
-            phaseX: fitted.phaseX,
-            phaseY: fitted.phaseY,
-            score: fitted.score,
-            polarity: pol.name,
-            width: w,
-            height: h,
-          };
-        }
+      } else if (vHit) {
+        pitch = vHit.lag;
+      } else {
+        pitch = hHit.lag;
+        axis = "h";
       }
-      if (best) break;
+      const strip = axis === "h" ? pol.h : pol.v;
+      pitch = refinePitchWithFifths(strip, pitch, minP, maxP);
+      if (axis === "avg") {
+        const p2 = refinePitchWithFifths(pol.h, pitch, minP, maxP);
+        pitch = (pitch + p2) / 2;
+      }
+      if (!(pitch >= minP && pitch <= maxP)) continue;
+      const fitted = refinePitchAndPhase(pol.v, pol.h, pitch, minP, maxP);
+      if (!best || fitted.score > best.score) {
+        best = {
+          pitch: fitted.pitch,
+          phaseX: fitted.phaseX,
+          phaseY: fitted.phaseY,
+          score: fitted.score,
+          polarity: pol.name,
+          width: w,
+          height: h,
+        };
+      }
     }
     if (!best) return null;
     return best;
@@ -1672,7 +1280,7 @@
           const detected = detectGridPitch(srcImg);
           if (!detected) {
             statusExtra =
-              " · grid-fit failed: no 3×3 of squares near the center — imported at natural size (0,0)";
+              " · grid-fit: could not detect cell pitch — imported at natural size (0,0)";
           } else {
             const fitted = await gridFitImage(srcImg, detected);
             const cropBuf = await fitted.blob.arrayBuffer();

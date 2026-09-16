@@ -152,3 +152,7 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 ## 0.5.8
 
 - Has-grid: require any 3×3 of cells on the lattice (full image), not only a center 3×3.
+
+## 0.5.9
+
+- Has-grid rolled back to the 0.5.3 printed-line comb fit (before center 3×3 / half-pitch / major-5th experiments). Update app and grid-locked tokens unchanged.
