@@ -54,6 +54,28 @@
       color: var(--muted);
       font-size: 0.8rem;
     }
+    .toggles {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.65rem;
+      padding: 0.2rem 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel-2);
+      font-size: 0.82rem;
+    }
+    .toggles label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      cursor: pointer;
+      user-select: none;
+      color: var(--text);
+    }
+    .toggles input {
+      accent-color: var(--accent);
+      margin: 0;
+    }
     #status { color: var(--accent); font-size: 0.85rem; }
     #layout {
       display: grid;
@@ -75,6 +97,59 @@
       font-weight: 600;
     }
     #library h2:first-child { margin-top: 0; }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.4rem;
+      margin: 0.85rem 0 0.5rem;
+    }
+    .section-head h2 { margin: 0; }
+    .btn-add {
+      font-size: 0.72rem;
+      padding: 0.2rem 0.45rem;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--accent);
+      cursor: pointer;
+    }
+    .btn-add:hover { border-color: var(--accent); }
+    .layer-item {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.4rem 0.45rem;
+      margin-bottom: 0.2rem;
+      border-radius: 6px;
+      background: var(--panel);
+      border: 1px solid transparent;
+      font-size: 0.85rem;
+    }
+    .layer-item:hover { border-color: var(--border); }
+    .layer-item .eye {
+      flex-shrink: 0;
+      width: 28px;
+      height: 24px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.85rem;
+      line-height: 1;
+      padding: 0;
+    }
+    .layer-item .eye.on { color: var(--ok); border-color: rgba(125, 222, 165, 0.35); }
+    .layer-item .eye.off { opacity: 0.55; }
+    .layer-item .lname {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .layer-item .lname.dim { color: var(--muted); }
     .lib-item {
       display: flex;
       align-items: center;
@@ -153,6 +228,7 @@
       width: 100%;
       height: 100%;
     }
+    #layer-file { display: none; }
     @media (max-width: 900px) {
       #layout { grid-template-columns: 200px 1fr; }
     }
@@ -163,6 +239,10 @@
     <h1 id="scene-name">Loading…</h1>
     <span class="badge">GM Session (offline)</span>
     <span class="meta" id="scene-meta"></span>
+    <div class="toggles" title="Grid visibility and snap are independent">
+      <label><input type="checkbox" id="toggle-grid" checked /> Grid</label>
+      <label><input type="checkbox" id="toggle-snap" checked /> Snap to grid</label>
+    </div>
     <span id="status"></span>
     <span class="hint">Drag actors onto map · Drag tokens to move · Empty map pans · Wheel zoom · Click actor for sheet window</span>
   </header>
@@ -172,6 +252,12 @@
       <div id="actor-list"></div>
       <h2>Scenes</h2>
       <div id="scene-list"></div>
+      <div class="section-head">
+        <h2>Map layers</h2>
+        <button type="button" class="btn-add" id="btn-add-layer" title="Upload a map image as a new layer">Add layer</button>
+      </div>
+      <div id="layer-list"></div>
+      <input type="file" id="layer-file" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif" />
     </aside>
     <div id="viewport">
       <canvas id="map"></canvas>

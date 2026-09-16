@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.2.0**).
+Version is in `VERSION` (currently **0.3.0**).
 
 ## Run — desktop app (recommended)
 
@@ -45,13 +45,14 @@ Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1
 
 ## UI
 
-- **Header** — scene name + “GM Session (offline)”
-- **Left library** — Characters/Actors from `world/actors/*.yaml`; Scenes from `world/scenes/`
+- **Header** — scene name + “GM Session (offline)” + **Grid** / **Snap to grid** toggles (independent; default both ON; persisted in `state/ui/<scene-id>.json`)
+- **Left library** — Characters/Actors from `world/actors/*.yaml`; Scenes from `world/scenes/`; **Map layers** list
   - Entries with a human sheet file show a **sheet** badge
   - **Click** an actor → open its `.sheet.txt` in a **desktop sheet window** (editable; Save writes back to disk)
-  - **Drag** an actor onto the map → place a white circle token labeled with initials + name
-- **Canvas** — grid, walls, doors, lights, spawns (same overlays as the grid viewer), plus placed tokens
-- **Pan / zoom** — drag to pan, wheel to zoom, double-click to fit
+  - **Drag** an actor onto the map → place a white circle token labeled with initials + name (snaps to cell centers when Snap is on)
+  - **Map layers** — eye toggle per layer; **Add layer** uploads png/jpg/webp/gif into `world/assets/by-hash/` and appends a `type: map` layer
+- **Canvas draw order** — map images → walls/doors/lights/spawns → grid (if on) → tokens → additions stub
+- **Pan / zoom** — drag empty map to pan, wheel to zoom, double-click to fit; token drag wins over pan
 
 ## Auto-update
 
@@ -67,9 +68,9 @@ Auth (for private repos): try unauthenticated first; else `GM_SESSION_GH_TOKEN` 
 Publish after a Windows build:
 
 ```bash
-gh release create v0.2.0 packaging/windows/output/GM-Session-Setup.exe \
-  --title "GM Session v0.2.0" \
-  --notes "Desktop pywebview app, sheet windows, auto-update."
+gh release create v0.3.0 packaging/windows/output/GM-Session-Setup.exe \
+  --title "GM Session v0.3.0" \
+  --notes "Map layers, grid/snap toggles, asset upload, sheet windows, auto-update."
 ```
 
 (`build.ps1` prints the exact command for the current `VERSION`.)
@@ -82,6 +83,7 @@ gh release create v0.2.0 packaging/windows/output/GM-Session-Setup.exe \
 | Actor instances | `world/actors/<id>.yaml` | Prep |
 | Human sheet docs (blank `.txt` for now) | `world/actors/<id>.sheet.txt` (via actor `sheet_doc`) | Prep / GM session save |
 | Placed tokens (session) | `state/tokens/<scene-id>.json` | GM Session (play) |
+| UI prefs (grid/snap) | `state/ui/<scene-id>.json` | GM Session (play) |
 
 Sample actors with sheet docs:
 
@@ -117,10 +119,14 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 | GET | `/sheet.html` | Sheet pop-out UI (desktop window) |
 | GET | `/api/library` | Actors + scenes for the sidebar |
 | GET | `/api/scene/<id>` | Scene YAML as JSON |
+| PUT | `/api/scene/<id>/layers` | Body `{"layers":[…]}` → rewrite only the `layers` key |
+| POST | `/api/assets` | Raw image body + `Content-Type` + optional `X-Asset-Name` → hash into `world/assets/` |
 | GET | `/api/sheet/<actor_id>` | Sheet text + campaign-relative path |
 | PUT | `/api/sheet/<actor_id>` | Body `{"text":"…"}` → write `.sheet.txt` |
 | GET | `/api/tokens/<scene_id>` | Placed tokens JSON |
 | PUT | `/api/tokens/<scene_id>` | Body `{"tokens":[…]}` → write `state/tokens/<id>.json` |
+| GET | `/api/ui/<scene_id>` | UI prefs (`showGrid`, `snapToGrid`) |
+| PUT | `/api/ui/<scene_id>` | Persist UI prefs to `state/ui/<id>.json` |
 | GET | `/assets/<sha256>` | Content-addressed asset |
 
 ## Relation to `apps/grid-viewer`

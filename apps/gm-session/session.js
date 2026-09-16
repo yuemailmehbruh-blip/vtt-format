@@ -10,14 +10,21 @@
   const statusEl = document.getElementById("status");
   const actorListEl = document.getElementById("actor-list");
   const sceneListEl = document.getElementById("scene-list");
+  const layerListEl = document.getElementById("layer-list");
+  const toggleGridEl = document.getElementById("toggle-grid");
+  const toggleSnapEl = document.getElementById("toggle-snap");
+  const btnAddLayer = document.getElementById("btn-add-layer");
+  const layerFileInput = document.getElementById("layer-file");
 
   const params = new URLSearchParams(location.search);
   let sceneId = params.get("scene") || "docks";
 
   /** @type {any} */
   let scene = null;
-  /** @type {HTMLImageElement|null} */
-  let bgImage = null;
+  /** @type {Map<string, HTMLImageElement>} hash -> Image */
+  const imageCache = new Map();
+  /** @type {{id: string, name: string, asset: string, visible: boolean, x: number, y: number, w?: number, h?: number, img: HTMLImageElement|null}[]} */
+  let mapLayers = [];
   /** @type {any[]} */
   let tokens = [];
   /** @type {any|null} */
@@ -27,6 +34,10 @@
 
   let extent = { x: 0, y: 0, w: 1400, h: 1400 };
   let gridSize = 70;
+
+  let showGrid = true;
+  let snapToGrid = true;
+  let uiSaveTimer = null;
 
   let scale = 1;
   let offsetX = 0;
@@ -48,6 +59,19 @@
     if (!parts.length) return "?";
     if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+
+  function snapWorld(x, y) {
+    const g = gridSize;
+    return [
+      Math.floor(x / g) * g + g / 2,
+      Math.floor(y / g) * g + g / 2,
+    ];
+  }
+
+  function maybeSnap(x, y) {
+    if (!snapToGrid) return [x, y];
+    return snapWorld(x, y);
   }
 
   function resize() {
@@ -79,10 +103,29 @@
     for (const t of tokens) {
       pts.push([t.x, t.y]);
     }
+    for (const layer of mapLayers) {
+      const lx = Number(layer.x) || 0;
+      const ly = Number(layer.y) || 0;
+      if (layer.w != null && layer.h != null) {
+        pts.push([lx, ly], [lx + layer.w, ly + layer.h]);
+      } else if (layer.img && layer.img.naturalWidth > 0) {
+        pts.push(
+          [lx, ly],
+          [lx + layer.img.naturalWidth, ly + layer.img.naturalHeight]
+        );
+      }
+    }
     return pts;
   }
 
-  function computeExtent(sc, img) {
+  function primaryMapImage() {
+    for (const layer of mapLayers) {
+      if (layer.img && layer.img.naturalWidth > 0) return layer.img;
+    }
+    return null;
+  }
+
+  function computeExtent(sc) {
     const g = (sc.grid && sc.grid.size) || 70;
     gridSize = g;
 
@@ -99,6 +142,7 @@
       maxY = Math.max(maxY, y);
     }
 
+    const img = primaryMapImage();
     if (img && img.naturalWidth > 0) {
       const iw = img.naturalWidth;
       const ih = img.naturalHeight;
@@ -150,48 +194,8 @@
     return [(sx - offsetX) / scale, (sy - offsetY) / scale];
   }
 
-  function drawGrid() {
-    const g = gridSize;
-    const startCol = Math.floor(extent.x / g);
-    const endCol = Math.ceil((extent.x + extent.w) / g);
-    const startRow = Math.floor(extent.y / g);
-    const endRow = Math.ceil((extent.y + extent.h) / g);
-
-    ctx.save();
-    ctx.strokeStyle = "rgba(200, 210, 230, 0.35)";
-    ctx.lineWidth = 1;
-
-    for (let c = startCol; c <= endCol; c++) {
-      const x = c * g;
-      const [sx1, sy1] = worldToScreen(x, extent.y);
-      const [, sy2] = worldToScreen(x, extent.y + extent.h);
-      ctx.beginPath();
-      ctx.moveTo(sx1, sy1);
-      ctx.lineTo(sx1, sy2);
-      ctx.stroke();
-    }
-    for (let r = startRow; r <= endRow; r++) {
-      const y = r * g;
-      const [sx1, sy1] = worldToScreen(extent.x, y);
-      const [sx2] = worldToScreen(extent.x + extent.w, y);
-      ctx.beginPath();
-      ctx.moveTo(sx1, sy1);
-      ctx.lineTo(sx2, sy1);
-      ctx.stroke();
-    }
-
-    ctx.strokeStyle = "rgba(230, 235, 250, 0.7)";
-    ctx.lineWidth = 2;
-    const [bx, by] = worldToScreen(extent.x, extent.y);
-    ctx.strokeRect(bx, by, extent.w * scale, extent.h * scale);
-    ctx.restore();
-  }
-
-  function drawBackground() {
-    if (!bgImage || !bgImage.complete || bgImage.naturalWidth === 0) return;
-    const [sx, sy] = worldToScreen(0, 0);
-    let dw = bgImage.naturalWidth;
-    let dh = bgImage.naturalHeight;
+  // --- Layer 1: map images ---
+  function drawMapImages() {
     const pts = collectPoints(scene);
     let maxX = 0;
     let maxY = 0;
@@ -199,17 +203,32 @@
       maxX = Math.max(maxX, x);
       maxY = Math.max(maxY, y);
     }
-    if (dw < maxX * 0.5 || dh < maxY * 0.5) {
-      dw = Math.max(maxX, gridSize);
-      dh = Math.max(maxY, gridSize);
+
+    for (const layer of mapLayers) {
+      if (!layer.visible) continue;
+      const img = layer.img;
+      if (!img || !img.complete || img.naturalWidth === 0) continue;
+      const lx = Number(layer.x) || 0;
+      const ly = Number(layer.y) || 0;
+      let dw = layer.w != null ? Number(layer.w) : img.naturalWidth;
+      let dh = layer.h != null ? Number(layer.h) : img.naturalHeight;
+      // Tiny placeholder stretch (same logic as legacy background)
+      if (layer.w == null && layer.h == null) {
+        if (dw < maxX * 0.5 || dh < maxY * 0.5) {
+          dw = Math.max(maxX, gridSize);
+          dh = Math.max(maxY, gridSize);
+        }
+      }
+      const [sx, sy] = worldToScreen(lx, ly);
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, sx, sy, dw * scale, dh * scale);
+      ctx.restore();
     }
-    ctx.save();
-    ctx.globalAlpha = 0.85;
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(bgImage, sx, sy, dw * scale, dh * scale);
-    ctx.restore();
   }
 
+  // Map geometry (with map, before grid)
   function drawWalls() {
     ctx.save();
     ctx.strokeStyle = "#e8eefc";
@@ -305,11 +324,52 @@
     ctx.restore();
   }
 
+  // --- Layer 2: grid overlay ---
+  function drawGrid() {
+    if (!showGrid) return;
+    const g = gridSize;
+    const startCol = Math.floor(extent.x / g);
+    const endCol = Math.ceil((extent.x + extent.w) / g);
+    const startRow = Math.floor(extent.y / g);
+    const endRow = Math.ceil((extent.y + extent.h) / g);
+
+    ctx.save();
+    // Brighter / thicker so grid stays visible on map images
+    ctx.strokeStyle = "rgba(220, 230, 250, 0.55)";
+    ctx.lineWidth = Math.max(1.25, 1.5 * Math.min(scale, 1.5));
+
+    for (let c = startCol; c <= endCol; c++) {
+      const x = c * g;
+      const [sx1, sy1] = worldToScreen(x, extent.y);
+      const [, sy2] = worldToScreen(x, extent.y + extent.h);
+      ctx.beginPath();
+      ctx.moveTo(sx1, sy1);
+      ctx.lineTo(sx1, sy2);
+      ctx.stroke();
+    }
+    for (let r = startRow; r <= endRow; r++) {
+      const y = r * g;
+      const [sx1, sy1] = worldToScreen(extent.x, y);
+      const [sx2] = worldToScreen(extent.x + extent.w, y);
+      ctx.beginPath();
+      ctx.moveTo(sx1, sy1);
+      ctx.lineTo(sx2, sy1);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = "rgba(240, 245, 255, 0.85)";
+    ctx.lineWidth = 2.5;
+    const [bx, by] = worldToScreen(extent.x, extent.y);
+    ctx.strokeRect(bx, by, extent.w * scale, extent.h * scale);
+    ctx.restore();
+  }
+
+  // --- Layer 3: tokens ---
   function drawTokens() {
     ctx.save();
     for (const t of tokens) {
       const [cx, cy] = worldToScreen(t.x, t.y);
-      const r = Math.max(10, (gridSize * 0.35) * Math.min(scale, 2));
+      const r = Math.max(10, gridSize * 0.35 * Math.min(scale, 2));
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.fillStyle = "#ffffff";
@@ -336,39 +396,171 @@
     ctx.restore();
   }
 
+  // --- Layer 4: additions stub ---
+  function drawOverlayAdditions() {
+    // Stub for future drawings / effects. Intentionally empty for now.
+  }
+
+  /**
+   * Fixed draw order (YAML layer types do not control z-order):
+   * 1 map images → map geometry (walls/doors/lights/spawns) →
+   * 2 grid (if on) → 3 tokens → 4 overlay additions stub
+   */
   function draw() {
     const rect = viewport.getBoundingClientRect();
     ctx.clearRect(0, 0, rect.width, rect.height);
     if (!scene) return;
 
-    drawBackground();
-    drawGrid();
+    drawMapImages();
     drawWalls();
     drawDoors();
     drawLights();
     drawSpawns();
+    drawGrid();
     drawTokens();
+    drawOverlayAdditions();
   }
 
-  function loadBackground(hash) {
+  function loadImageByHash(hash) {
     return new Promise((resolve) => {
       if (!hash) {
-        bgImage = null;
         resolve(null);
+        return;
+      }
+      if (imageCache.has(hash)) {
+        resolve(imageCache.get(hash));
         return;
       }
       const img = new Image();
       img.onload = () => {
-        bgImage = img;
+        imageCache.set(hash, img);
         resolve(img);
       };
       img.onerror = () => {
-        bgImage = null;
-        setStatus("Background asset missing or unreadable");
+        setStatus(`Map asset missing: ${hash.slice(0, 12)}…`);
         resolve(null);
       };
       img.src = `/assets/${hash}`;
     });
+  }
+
+  function resolveMapLayerDefs(sc) {
+    const layers = Array.isArray(sc.layers) ? sc.layers : [];
+    const mapDefs = layers.filter((l) => l && l.type === "map" && l.asset);
+    if (mapDefs.length) {
+      return mapDefs.map((l, i) => ({
+        id: l.id || `map-${i}`,
+        name: l.name || l.id || `Map layer ${i + 1}`,
+        asset: String(l.asset),
+        visible: l.visible !== false,
+        x: Number(l.x) || 0,
+        y: Number(l.y) || 0,
+        w: l.w != null ? Number(l.w) : undefined,
+        h: l.h != null ? Number(l.h) : undefined,
+      }));
+    }
+    // Legacy: scene.background counts as bottom map layer
+    if (sc.background) {
+      return [
+        {
+          id: "background",
+          name: "Base map",
+          asset: String(sc.background),
+          visible: true,
+          x: 0,
+          y: 0,
+        },
+      ];
+    }
+    return [];
+  }
+
+  async function loadMapLayers(sc) {
+    const defs = resolveMapLayerDefs(sc);
+    const loaded = [];
+    for (const def of defs) {
+      const img = await loadImageByHash(def.asset);
+      loaded.push({ ...def, img });
+    }
+    mapLayers = loaded;
+  }
+
+  function getSceneLayersForWrite() {
+    // Preserve non-map layers from scene YAML; rewrite map layers from mapLayers state
+    const existing = Array.isArray(scene.layers) ? scene.layers.slice() : [];
+    const nonMap = existing.filter((l) => l && l.type !== "map");
+    const mapEntries = mapLayers.map((l) => {
+      const entry = {
+        id: l.id,
+        type: "map",
+        name: l.name,
+        asset: l.asset,
+        visible: !!l.visible,
+      };
+      if (l.x) entry.x = l.x;
+      if (l.y) entry.y = l.y;
+      if (l.w != null) entry.w = l.w;
+      if (l.h != null) entry.h = l.h;
+      return entry;
+    });
+    // Map layers first (list order = bottom→top for images), then other typed layers
+    return [...mapEntries, ...nonMap];
+  }
+
+  async function persistSceneLayers() {
+    const layers = getSceneLayersForWrite();
+    try {
+      const res = await fetch(`/api/scene/${encodeURIComponent(sceneId)}/layers`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ layers }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setStatus(`Layer save failed (${res.status}): ${err.error || ""}`);
+        return false;
+      }
+      const data = await res.json();
+      if (scene) scene.layers = data.layers || layers;
+      return true;
+    } catch (err) {
+      setStatus(`Layer save error: ${err}`);
+      return false;
+    }
+  }
+
+  function renderMapLayersList() {
+    layerListEl.innerHTML = "";
+    if (!mapLayers.length) {
+      const empty = document.createElement("div");
+      empty.className = "scene-item";
+      empty.style.cursor = "default";
+      empty.textContent = "No map layers";
+      layerListEl.appendChild(empty);
+      return;
+    }
+    for (const layer of mapLayers) {
+      const item = document.createElement("div");
+      item.className = "layer-item";
+      const eye = document.createElement("button");
+      eye.type = "button";
+      eye.className = `eye ${layer.visible ? "on" : "off"}`;
+      eye.title = layer.visible ? "Hide layer" : "Show layer";
+      eye.textContent = layer.visible ? "👁" : "◌";
+      eye.addEventListener("click", async () => {
+        layer.visible = !layer.visible;
+        renderMapLayersList();
+        draw();
+        await persistSceneLayers();
+      });
+      const name = document.createElement("span");
+      name.className = `lname${layer.visible ? "" : " dim"}`;
+      name.textContent = layer.name;
+      name.title = `${layer.name} (${layer.asset.slice(0, 12)}…)`;
+      item.appendChild(eye);
+      item.appendChild(name);
+      layerListEl.appendChild(item);
+    }
   }
 
   async function loadTokens() {
@@ -405,15 +597,59 @@
     }, 200);
   }
 
+  async function loadUiPrefs() {
+    try {
+      const res = await fetch(`/api/ui/${encodeURIComponent(sceneId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        showGrid = data.showGrid !== false;
+        snapToGrid = data.snapToGrid !== false;
+      }
+    } catch (_) {
+      // defaults already ON
+    }
+    toggleGridEl.checked = showGrid;
+    toggleSnapEl.checked = snapToGrid;
+  }
+
+  async function persistUiPrefs() {
+    try {
+      await fetch(`/api/ui/${encodeURIComponent(sceneId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          showGrid,
+          snapToGrid,
+        }),
+      });
+    } catch (_) {
+      // best-effort; also mirror to localStorage as fallback
+    }
+    try {
+      localStorage.setItem(
+        `vtt-ui:${sceneId}`,
+        JSON.stringify({ showGrid, snapToGrid })
+      );
+    } catch (_) {}
+  }
+
+  function scheduleUiPersist() {
+    if (uiSaveTimer) clearTimeout(uiSaveTimer);
+    uiSaveTimer = setTimeout(() => {
+      persistUiPrefs();
+    }, 150);
+  }
+
   function placeToken(actor, worldX, worldY) {
+    const [x, y] = maybeSnap(worldX, worldY);
     const name = actor.name || actor.id;
     tokens.push({
       id: `${actor.id}-${Date.now()}-${Math.floor(Math.random() * 1e4)}`,
       actor_id: actor.id,
       name,
       label: initials(name),
-      x: worldX,
-      y: worldY,
+      x,
+      y,
     });
     draw();
     schedulePersist();
@@ -437,19 +673,19 @@
     const g = scene.grid || {};
     metaEl.textContent = `grid ${g.size || "?"}px · ${g.type || "square"} · ${g.units || ""}`.trim();
 
-    const bgHash =
-      scene.background ||
-      (scene.layers || []).find((l) => l.asset)?.asset;
-    await loadBackground(bgHash);
+    await loadUiPrefs();
+    await loadMapLayers(scene);
     await loadTokens();
-    extent = computeExtent(scene, bgImage);
+    extent = computeExtent(scene);
     if (fit) fitToView();
+    const visibleMaps = mapLayers.filter((l) => l.visible && l.img).length;
     setStatus(
       `${Math.round(extent.w / gridSize)}×${Math.round(extent.h / gridSize)} tiles` +
-        (bgImage ? " · background loaded" : "") +
+        (visibleMaps ? ` · ${visibleMaps} map layer(s)` : "") +
         ` · ${tokens.length} token(s)`
     );
     renderLibrarySelection();
+    renderMapLayersList();
     draw();
   }
 
@@ -483,7 +719,6 @@
       return;
     }
 
-    // Dev browser (serve.py): no system pop-outs — sheets need the desktop app.
     setStatus(
       "Character sheets need the GM Session desktop app (pywebview). Run desktop_app.py — browser serve.py cannot open sheet windows."
     );
@@ -554,6 +789,78 @@
     renderLibrary();
   }
 
+  async function addMapLayerFromFile(file) {
+    if (!file) return;
+    setStatus(`Uploading ${file.name}…`);
+    try {
+      const buf = await file.arrayBuffer();
+      const res = await fetch("/api/assets", {
+        method: "POST",
+        headers: {
+          "Content-Type": file.type || "application/octet-stream",
+          "X-Asset-Name": `maps/${file.name}`,
+        },
+        body: buf,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setStatus(`Upload failed (${res.status}): ${err.error || ""}`);
+        return;
+      }
+      const { hash, name } = await res.json();
+      const baseId = String(file.name || "layer")
+        .replace(/\.[^.]+$/, "")
+        .replace(/[^A-Za-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase() || "layer";
+      let id = baseId;
+      let n = 2;
+      const used = new Set(mapLayers.map((l) => l.id));
+      while (used.has(id)) {
+        id = `${baseId}-${n++}`;
+      }
+      const img = await loadImageByHash(hash);
+      mapLayers.push({
+        id,
+        name: file.name.replace(/\.[^.]+$/, "") || name || id,
+        asset: hash,
+        visible: true,
+        x: 0,
+        y: 0,
+        img,
+      });
+      // Ensure scene has layers key including legacy upgrade
+      if (!scene.layers) scene.layers = [];
+      const ok = await persistSceneLayers();
+      if (!ok) return;
+      extent = computeExtent(scene);
+      renderMapLayersList();
+      draw();
+      setStatus(`Added map layer “${id}” (${hash.slice(0, 12)}…)`);
+    } catch (err) {
+      setStatus(`Upload error: ${err}`);
+    }
+  }
+
+  btnAddLayer.addEventListener("click", () => {
+    layerFileInput.value = "";
+    layerFileInput.click();
+  });
+  layerFileInput.addEventListener("change", () => {
+    const file = layerFileInput.files && layerFileInput.files[0];
+    if (file) addMapLayerFromFile(file);
+  });
+
+  toggleGridEl.addEventListener("change", () => {
+    showGrid = !!toggleGridEl.checked;
+    draw();
+    scheduleUiPersist();
+  });
+  toggleSnapEl.addEventListener("change", () => {
+    snapToGrid = !!toggleSnapEl.checked;
+    scheduleUiPersist();
+  });
+
   function canvasLocal(e) {
     const rect = canvas.getBoundingClientRect();
     return [e.clientX - rect.left, e.clientY - rect.top];
@@ -581,7 +888,6 @@
   /** @type {any|null} */
   let draggingToken = null;
 
-  // Token drag wins over map pan when pointer is on a token
   viewport.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     const [sx, sy] = canvasLocal(e);
@@ -611,8 +917,9 @@
     if (dragMode === "token" && draggingToken) {
       const [sx, sy] = canvasLocal(e);
       const [wx, wy] = screenToWorld(sx, sy);
-      draggingToken.x = wx;
-      draggingToken.y = wy;
+      const [nx, ny] = maybeSnap(wx, wy);
+      draggingToken.x = nx;
+      draggingToken.y = ny;
       draw();
       return;
     }
@@ -664,7 +971,6 @@
     draw();
   });
 
-  // Drop tokens from library
   viewport.addEventListener("dragover", (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";

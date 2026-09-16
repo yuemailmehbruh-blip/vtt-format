@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import re
@@ -153,7 +154,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header(
+            "Access-Control-Allow-Headers", "Content-Type, X-Asset-Name"
+        )
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
@@ -249,6 +252,32 @@ class Handler(BaseHTTPRequestHandler):
             data.setdefault("scene", scene_id)
             data.setdefault("tokens", [])
             self._send_json(200, data)
+            return
+
+        if path == "/api/ui" or path.startswith("/api/ui/"):
+            scene_id = None
+            if path.startswith("/api/ui/"):
+                scene_id = path[len("/api/ui/") :].strip("/")
+                if scene_id and not _safe_segment(scene_id):
+                    self._send_json(400, {"error": "invalid scene id"})
+                    return
+            if scene_id:
+                ui_path = self.campaign_root / "state" / "ui" / f"{scene_id}.json"
+                defaults = {"scene": scene_id, "showGrid": True, "snapToGrid": True}
+            else:
+                ui_path = self.campaign_root / "state" / "ui.json"
+                defaults = {"showGrid": True, "snapToGrid": True}
+            if not ui_path.is_file():
+                self._send_json(200, defaults)
+                return
+            try:
+                data = json.loads(ui_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            out = {**defaults, **data}
+            self._send_json(200, out)
             return
 
         if path.startswith("/assets/"):
@@ -360,10 +389,218 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, **out})
             return
 
+        if path.startswith("/api/scene/") and path.endswith("/layers"):
+            # /api/scene/<id>/layers
+            mid = path[len("/api/scene/") : -len("/layers")].strip("/")
+            scene_id = mid
+            if not _safe_segment(scene_id):
+                self._send_json(400, {"error": "invalid scene id"})
+                return
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            if not isinstance(body, dict) or "layers" not in body:
+                self._send_json(400, {"error": "body must be {\"layers\": [...]}"})
+                return
+            layers = body["layers"]
+            if not isinstance(layers, list):
+                self._send_json(400, {"error": "layers must be a list"})
+                return
+            cleaned = []
+            seen_ids = set()
+            allowed_types = {"map", "tokens", "grid", "additions", "overlay"}
+            for layer in layers:
+                if not isinstance(layer, dict):
+                    self._send_json(400, {"error": "each layer must be an object"})
+                    return
+                lid = layer.get("id")
+                ltype = layer.get("type")
+                if not isinstance(lid, str) or not lid.strip():
+                    self._send_json(400, {"error": "layer.id required"})
+                    return
+                if not _safe_segment(lid):
+                    self._send_json(400, {"error": f"invalid layer id: {lid}"})
+                    return
+                if lid in seen_ids:
+                    self._send_json(400, {"error": f"duplicate layer id: {lid}"})
+                    return
+                seen_ids.add(lid)
+                if not isinstance(ltype, str) or ltype not in allowed_types:
+                    self._send_json(
+                        400,
+                        {
+                            "error": f"invalid layer type: {ltype}",
+                            "allowed": sorted(allowed_types),
+                        },
+                    )
+                    return
+                entry = {"id": lid, "type": ltype}
+                if "name" in layer and layer["name"] is not None:
+                    entry["name"] = str(layer["name"])
+                if "asset" in layer and layer["asset"] is not None:
+                    asset = str(layer["asset"])
+                    if not re.fullmatch(r"[0-9a-fA-F]{64}", asset):
+                        self._send_json(400, {"error": f"invalid asset hash: {asset}"})
+                        return
+                    entry["asset"] = asset.lower()
+                if "visible" in layer:
+                    entry["visible"] = bool(layer["visible"])
+                for key in ("x", "y", "w", "h"):
+                    if key in layer and layer[key] is not None:
+                        try:
+                            num = float(layer[key])
+                        except (TypeError, ValueError):
+                            self._send_json(400, {"error": f"layer.{key} must be a number"})
+                            return
+                        entry[key] = int(num) if num.is_integer() else num
+                # Preserve any extra keys we don't understand (forward-compatible)
+                for k, v in layer.items():
+                    if k not in entry:
+                        entry[k] = v
+                cleaned.append(entry)
+
+            scene_path = self.campaign_root / "world" / "scenes" / f"{scene_id}.yaml"
+            if not scene_path.is_file():
+                self._send_json(404, {"error": f"scene not found: {scene_id}"})
+                return
+            scene = yaml.safe_load(scene_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(scene, dict):
+                self._send_json(500, {"error": "scene YAML is not a mapping"})
+                return
+            scene["layers"] = cleaned
+            scene_path.write_text(
+                yaml.safe_dump(
+                    scene,
+                    sort_keys=False,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                ),
+                encoding="utf-8",
+            )
+            self._send_json(200, {"ok": True, "scene": scene_id, "layers": cleaned})
+            return
+
+        if path == "/api/ui" or path.startswith("/api/ui/"):
+            # Global: /api/ui  or per-scene: /api/ui/<scene_id>
+            scene_id = None
+            if path.startswith("/api/ui/"):
+                scene_id = path[len("/api/ui/") :].strip("/")
+                if scene_id and not _safe_segment(scene_id):
+                    self._send_json(400, {"error": "invalid scene id"})
+                    return
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            if not isinstance(body, dict):
+                self._send_json(400, {"error": "body must be an object"})
+                return
+            ui_dir = self.campaign_root / "state" / "ui"
+            ui_dir.mkdir(parents=True, exist_ok=True)
+            if scene_id:
+                ui_path = ui_dir / f"{scene_id}.json"
+                existing = {}
+                if ui_path.is_file():
+                    try:
+                        existing = json.loads(ui_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        existing = {}
+                if not isinstance(existing, dict):
+                    existing = {}
+                existing.update(body)
+                existing["scene"] = scene_id
+                ui_path.write_text(
+                    json.dumps(existing, indent=2) + "\n", encoding="utf-8"
+                )
+                self._send_json(200, {"ok": True, **existing})
+            else:
+                ui_path = self.campaign_root / "state" / "ui.json"
+                existing = {}
+                if ui_path.is_file():
+                    try:
+                        existing = json.loads(ui_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        existing = {}
+                if not isinstance(existing, dict):
+                    existing = {}
+                existing.update(body)
+                ui_path.write_text(
+                    json.dumps(existing, indent=2) + "\n", encoding="utf-8"
+                )
+                self._send_json(200, {"ok": True, **existing})
+            return
+
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+
+        if path == "/api/assets":
+            self._api_post_asset()
+            return
+
+        # Fall through to PUT handlers for any other POSTs that share semantics
         self.do_PUT()
+
+    def _api_post_asset(self) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        if not raw:
+            self._send_json(400, {"error": "empty body"})
+            return
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype and not ctype.startswith("image/") and ctype != "application/octet-stream":
+            self._send_json(
+                400,
+                {"error": f"expected image/* Content-Type, got {ctype or '(missing)'}"},
+            )
+            return
+        name = self.headers.get("X-Asset-Name") or ""
+        name = name.strip()
+        if not name:
+            # Derive a logical name from content type
+            ext = {
+                "image/png": "png",
+                "image/jpeg": "jpg",
+                "image/jpg": "jpg",
+                "image/webp": "webp",
+                "image/gif": "gif",
+            }.get(ctype, "bin")
+            name = f"uploads/asset-{uuid.uuid4().hex[:8]}.{ext}"
+        # Sanitize name path segments
+        name = name.replace("\\", "/").lstrip("/")
+        if ".." in name.split("/") or not name:
+            self._send_json(400, {"error": "invalid X-Asset-Name"})
+            return
+
+        digest = hashlib.sha256(raw).hexdigest()
+        by_hash = self.campaign_root / "world" / "assets" / "by-hash"
+        by_hash.mkdir(parents=True, exist_ok=True)
+        dest = by_hash / digest
+        if not dest.exists():
+            dest.write_bytes(raw)
+
+        index_path = self.campaign_root / "world" / "assets" / "index.yaml"
+        index = {"assets": {}}
+        if index_path.is_file():
+            loaded = yaml.safe_load(index_path.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict) and isinstance(loaded.get("assets"), dict):
+                index = loaded
+            elif isinstance(loaded, dict):
+                index = {"assets": loaded.get("assets") or {}}
+        if not isinstance(index.get("assets"), dict):
+            index["assets"] = {}
+        index["assets"][name] = digest
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_text(
+            yaml.safe_dump(index, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+        self._send_json(200, {"hash": digest, "name": name, "bytes": len(raw)})
 
     def _api_library(self) -> None:
         actors = []

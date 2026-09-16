@@ -44,11 +44,18 @@ grid:
   size: number          # pixels per cell (or abstract units)
   units: string         # e.g. ft
   type: square|hex
-background: <sha256 hex>
+background: <sha256 hex>   # legacy; used as bottom map layer if no type:map layers
 layers:
   - id: string
-    type: map|tokens|…
-    asset: <sha256 hex> # optional
+    type: map            # map image layer (list order = bottom → top)
+    name: string
+    asset: <sha256 hex>
+    visible: true
+    x: 0                 # optional offset
+    y: 0
+    # w/h optional; if missing, use image natural size (tiny placeholders stretch)
+  - id: tokens
+    type: tokens         # optional metadata only — does NOT control draw order
 walls:
   - {x1, y1, x2, y2}
 doors:
@@ -57,10 +64,23 @@ lights:
   - {x, y, radius, bright}
 spawns:
   - {id, x, y, label?}
-tokens: []              # optional placed tokens
+tokens: []              # optional placed tokens (schema placeholder)
 ```
 
 Asset references are **sha256 hex** of files in `world/assets/by-hash/`. Logical names live only in `world/assets/index.yaml`.
+
+### Fixed draw order (GM Session)
+
+YAML `layers` entries of `type: tokens` (or similar) are **not** used for z-order.
+The renderer always draws:
+
+1. **Map image layers** (`type: map`, list order = bottom → top; visibility per layer)
+2. **Map geometry** — walls, doors, lights, spawns (with the map, before the grid)
+3. **Grid overlay** — togglable in the UI
+4. **Tokens** — white circles from `state/tokens/`
+5. **Additions** — stub (`drawOverlayAdditions()`); empty for now
+
+UI prefs (grid / snap) live under `state/ui/<scene-id>.json`.
 
 ## Manifest (`build/manifest.json`)
 

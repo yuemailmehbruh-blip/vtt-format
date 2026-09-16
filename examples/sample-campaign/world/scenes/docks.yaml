@@ -8,7 +8,13 @@ background: a433eb2ba6774bcb8ff2ecf7c63fd52d839cb783af7615ba69be2bed472bb6d7
 layers:
   - id: background
     type: map
+    name: Base map
     asset: a433eb2ba6774bcb8ff2ecf7c63fd52d839cb783af7615ba69be2bed472bb6d7
+    visible: true
+    x: 0
+    y: 0
+  # type: tokens is optional metadata only — GM Session draw order is fixed in code
+  # (map images → geometry → grid → tokens → additions), not driven by this entry.
   - id: tokens
     type: tokens
 walls:

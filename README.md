@@ -35,7 +35,7 @@ Assets are **content-addressed**: files live at `world/assets/by-hash/<sha256-he
 
 ## GM Session (offline DM foundation)
 
-Desktop app (**pywebview**): grid map + library sidebar + drag-to-place tokens. Sheets open as separate desktop windows. Blank sheet docs live under the campaign path.
+Desktop app (**pywebview**): map layers + grid/snap toggles + library sidebar + drag-to-place tokens. Sheets open as separate desktop windows. Blank sheet docs live under the campaign path.
 
 ```bash
 pip install -r packages/campaign-format/requirements.txt
@@ -66,7 +66,7 @@ Double-click install on Windows 10/11 (no system browser):
 1. On a Windows build machine, run `packaging/windows/build.ps1` (needs Python + pywebview; Inno Setup 6 for the Setup.exe).
 2. Transfer `packaging/windows/output/GM-Session-Setup.exe` to the target PC.
 3. Double-click **GM-Session-Setup.exe**, then launch **GM Session** from the Start Menu.
-4. Publish for auto-update: `gh release create v0.2.0 packaging/windows/output/GM-Session-Setup.exe`
+4. Publish for auto-update: `gh release create v0.3.0 packaging/windows/output/GM-Session-Setup.exe`
 
 The installer places an editable `campaign\` folder next to the app (sample campaign). See `packaging/windows/README.md` for details.
 
@@ -89,7 +89,7 @@ This copies the file to `world/assets/by-hash/<sha256>`, upserts `name -> hash` 
 
 1. Place any background (or other) assets with `hash-and-store`.
 2. Copy `world/scenes/docks.yaml` as a template.
-3. Set `id`, `name`, `grid`, `background` (sha256 hex), `walls`, `doors`, `lights`, `spawns`.
+3. Set `id`, `name`, `grid`, `layers` (`type: map` + asset hash; legacy `background` still works), `walls`, `doors`, `lights`, `spawns`.
 4. Reference only hashes that exist under `world/assets/by-hash/`.
 5. Run validate (below).
 
