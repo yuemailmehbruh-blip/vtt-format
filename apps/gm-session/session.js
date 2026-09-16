@@ -981,8 +981,8 @@
     const med = medianOf(slice);
     const strengths = xs.map((x) => sample1d(signal, x));
     const peak = Math.max(...strengths);
-    if (!(peak > 0) || !(peak > med * 1.2)) return false;
-    const thresh = med + 0.35 * (peak - med);
+    if (!(peak > 0) || !(peak > med * 1.08)) return false;
+    const thresh = med + 0.22 * (peak - med);
     return strengths.every((s) => s >= thresh);
   }
 
@@ -999,6 +999,174 @@
     const x0 = Math.floor((w - sideX) / 2);
     const y0 = Math.floor((h - sideY) / 2);
     return { x0, y0, x1: x0 + sideX, y1: y0 + sideY };
+  }
+
+  /**
+   * True when a detected cell has a printed cross / half-grid inside it
+   * (mid-band line nearly as strong as the cell borders, and stronger than
+   * the quarter bands). Used to catch a doubled pitch (2×2 inside each cell).
+   */
+  function cellHasInternalCross(imgData, w, h, pitch, phaseX, phaseY, ix, iy, polarity) {
+    const d = imgData.data;
+    const x0 = phaseX + ix * pitch;
+    const y0 = phaseY + iy * pitch;
+    const x1 = x0 + pitch;
+    const y1 = y0 + pitch;
+    if (x0 < 2 || y0 < 2 || x1 > w - 2 || y1 > h - 2) return null;
+    const xStart = Math.floor(x0) + 1;
+    const xEnd = Math.ceil(x1);
+    const yStart = Math.floor(y0) + 1;
+    const yEnd = Math.ceil(y1);
+    if (xEnd - xStart < 8 || yEnd - yStart < 8) return null;
+
+    const vProf = [];
+    const vCoord = [];
+    for (let x = xStart; x < xEnd; x++) {
+      let s = 0;
+      for (let y = yStart + 1; y < yEnd - 1; y++) {
+        const g = grayAt(d, w, x, y);
+        const nX = 0.5 * (grayAt(d, w, x - 1, y) + grayAt(d, w, x + 1, y));
+        s += polarity === "bright" ? Math.max(0, g - nX) : Math.max(0, nX - g);
+      }
+      vProf.push(s);
+      vCoord.push(x);
+    }
+    const hProf = [];
+    const hCoord = [];
+    for (let y = yStart; y < yEnd; y++) {
+      let s = 0;
+      for (let x = xStart + 1; x < xEnd - 1; x++) {
+        const g = grayAt(d, w, x, y);
+        const nY = 0.5 * (grayAt(d, w, x, y - 1) + grayAt(d, w, x, y + 1));
+        s += polarity === "bright" ? Math.max(0, g - nY) : Math.max(0, nY - g);
+      }
+      hProf.push(s);
+      hCoord.push(y);
+    }
+
+    function axisHasMid(prof, coords, c0) {
+      const edge = [];
+      const mid = [];
+      const q = [];
+      for (let i = 0; i < coords.length; i++) {
+        const tt = (coords[i] - c0) / pitch;
+        if (tt < 0.1 || tt > 0.9) edge.push(prof[i]);
+        else if (tt >= 0.45 && tt <= 0.55) mid.push(prof[i]);
+        else if ((tt >= 0.25 && tt <= 0.35) || (tt >= 0.65 && tt <= 0.75)) q.push(prof[i]);
+      }
+      if (!edge.length || !mid.length || !q.length) return false;
+      const e = Math.max(...edge);
+      const m = Math.max(...mid);
+      const qq = medianOf(q);
+      return e > 0 && m >= 0.5 * e && m >= 1.3 * qq;
+    }
+
+    return (
+      axisHasMid(vProf, vCoord, x0) && axisHasMid(hProf, hCoord, y0)
+    );
+  }
+
+  /**
+   * Sample up to 7 cells around the image center. Returns true when at least
+   * 4 contain an internal cross / half-grid (2×2 inside the detected cell).
+   */
+  function majorityCellsHaveInternalGrid(
+    imgData,
+    w,
+    h,
+    pitch,
+    phaseX,
+    phaseY,
+    polarity
+  ) {
+    if (!(pitch > 0)) return false;
+    // Snap pitch so tiny phase/pitch jitter does not shift mid-bands onto borders.
+    const p = Math.max(1, Math.round(pitch));
+    const kx = Math.round(w / 2 / p - phaseX / p - 0.5);
+    const ky = Math.round(h / 2 / p - phaseY / p - 0.5);
+    let hits = 0;
+    let checked = 0;
+    for (let dy = -2; dy <= 2 && checked < 7; dy++) {
+      for (let dx = -2; dx <= 2 && checked < 7; dx++) {
+        const r = cellHasInternalCross(
+          imgData,
+          w,
+          h,
+          p,
+          phaseX,
+          phaseY,
+          kx + dx,
+          ky + dy,
+          polarity
+        );
+        if (r == null) continue;
+        checked++;
+        if (r) hits++;
+      }
+    }
+    return checked >= 3 && hits >= 4;
+  }
+
+  function cellsSuggestDoubledPitch(imgData, w, h, pitch, phaseX, phaseY, polarity, minP) {
+    // Only subdivide when half-pitch stays at or above minP (avoids halving a true cell).
+    if (!(pitch >= 2 * minP - 1e-6)) return false;
+    // Try the fitted phase and a quarter-cell shift (comb can lock onto the wrong offset).
+    const offsets = [0, pitch / 4];
+    for (const ox of offsets) {
+      for (const oy of offsets) {
+        if (
+          majorityCellsHaveInternalGrid(
+            imgData,
+            w,
+            h,
+            pitch,
+            phaseX + ox,
+            phaseY + oy,
+            polarity
+          )
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function maybeHalvePitch(imgData, w, h, fitted, polarity, minP, maxP, vSig, hSig) {
+    let pitch = fitted.pitch;
+    let phaseX = fitted.phaseX;
+    let phaseY = fitted.phaseY;
+    let score = fitted.score;
+    for (let step = 0; step < 2; step++) {
+      if (pitch / 2 < minP) break;
+      if (
+        !cellsSuggestDoubledPitch(
+          imgData,
+          w,
+          h,
+          pitch,
+          phaseX,
+          phaseY,
+          polarity,
+          minP
+        )
+      ) {
+        break;
+      }
+      const half = pitch / 2;
+      const refined = refinePitchAndPhase(
+        vSig,
+        hSig,
+        half,
+        minP,
+        maxP
+      );
+      pitch = refined.pitch;
+      phaseX = refined.phaseX;
+      phaseY = refined.phaseY;
+      score = refined.score;
+    }
+    return { pitch, phaseX, phaseY, score };
   }
 
   function autocorrAt(signal, lag) {
@@ -1140,7 +1308,7 @@
     } catch (_) {
       return null;
     }
-    // Grass texture lives at 4–12px; printed VTT cells are much larger.
+    // Grass/noise below ~20px; a doubled pitch is corrected later by mid-cell checks.
     const minP = Math.max(20, Math.floor(Math.min(w, h) / 80));
     const maxP = Math.max(minP + 8, Math.floor(Math.min(w, h) / 4));
     // Hunt from the center outward so a second border / faded edge cannot win.
@@ -1187,7 +1355,18 @@
         }
         if (!(pitch >= minP && pitch <= maxP)) continue;
         if (roi.x1 - roi.x0 < 3.2 * pitch || roi.y1 - roi.y0 < 3.2 * pitch) continue;
-        const fitted = refinePitchAndPhase(pol.v, pol.h, pitch, minP, maxP);
+        let fitted = refinePitchAndPhase(pol.v, pol.h, pitch, minP, maxP);
+        fitted = maybeHalvePitch(
+          imgData,
+          w,
+          h,
+          fitted,
+          pol.name,
+          minP,
+          maxP,
+          pol.v,
+          pol.h
+        );
         if (
           !hasCenterThreeByThree(
             pol.v,
