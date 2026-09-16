@@ -331,8 +331,17 @@ def _show_error_dialog(message: str) -> None:
         _log(f"Could not show error dialog: {message}")
 
 
+def _gm_session_data_dir() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or str(Path.home())
+    return Path(base) / "GM Session"
+
+
 def spawn_install_and_relaunch(installer: Path, exe_path: Path | None) -> None:
-    """Detach a helper that waits for this process to exit, runs Setup, relaunches."""
+    """Detach a helper that waits for this process to exit, runs Setup, relaunches.
+
+    Writes a .ps1 under %LOCALAPPDATA%\\GM Session\\ so the helper is inspectable
+    and can append steps to update.log (not EncodedCommand-only).
+    """
     installer = installer.resolve()
     if sys.platform != "win32":
         subprocess.Popen([str(installer)], start_new_session=True)
@@ -340,27 +349,45 @@ def spawn_install_and_relaunch(installer: Path, exe_path: Path | None) -> None:
 
     exe = str(exe_path.resolve()) if exe_path else ""
     setup = str(installer)
+    data_dir = _gm_session_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    script_path = data_dir / "install_update.ps1"
+    log_path = data_dir / "update.log"
+
     # PowerShell: wait for GM Session.exe to vanish, run Inno silently, start the app.
     ps = (
+        f"$ErrorActionPreference = 'Continue'\n"
+        f"$log = {json.dumps(str(log_path))}\n"
         f"$setup = {json.dumps(setup)}\n"
         f"$exe = {json.dumps(exe)}\n"
+        "function Write-UpdateLog([string]$msg) {\n"
+        "  $line = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ' + $msg\n"
+        "  Add-Content -LiteralPath $log -Value $line -Encoding UTF8\n"
+        "}\n"
+        "Write-UpdateLog 'Helper started'\n"
         "Start-Sleep -Seconds 2\n"
+        "Write-UpdateLog 'Waiting for GM Session to exit…'\n"
         "$deadline = (Get-Date).AddMinutes(2)\n"
         "while (Get-Process -Name 'GM Session' -ErrorAction SilentlyContinue) {\n"
-        "  if ((Get-Date) -gt $deadline) { break }\n"
+        "  if ((Get-Date) -gt $deadline) { Write-UpdateLog 'Wait deadline reached'; break }\n"
         "  Start-Sleep -Seconds 1\n"
         "}\n"
+        "Write-UpdateLog ('Running installer: ' + $setup)\n"
         "Start-Process -FilePath $setup -ArgumentList "
         "'/SILENT','/NORESTART','/FORCECLOSEAPPLICATIONS' -Wait\n"
+        "Write-UpdateLog 'Installer finished'\n"
         "if ($exe -and (Test-Path -LiteralPath $exe)) {\n"
         "  Start-Sleep -Seconds 1\n"
+        "  Write-UpdateLog ('Relaunching: ' + $exe)\n"
         "  Start-Process -FilePath $exe\n"
+        "} else {\n"
+        "  Write-UpdateLog 'No exe to relaunch (missing path)'\n"
         "}\n"
+        "Write-UpdateLog 'Helper done'\n"
     )
-    encoded = ps.encode("utf-16le")
-    import base64
+    script_path.write_text(ps, encoding="utf-8")
+    _log(f"Wrote install helper script {script_path}")
 
-    b64 = base64.b64encode(encoded).decode("ascii")
     flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
     si = subprocess.STARTUPINFO()
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -368,10 +395,12 @@ def spawn_install_and_relaunch(installer: Path, exe_path: Path | None) -> None:
         [
             "powershell.exe",
             "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
             "-WindowStyle",
             "Hidden",
-            "-EncodedCommand",
-            b64,
+            "-File",
+            str(script_path),
         ],
         close_fds=True,
         stdin=subprocess.DEVNULL,
@@ -565,6 +594,79 @@ def check_and_offer_update_with_status(
         _progress(msg)
         if prompt:
             _show_error_dialog(msg)
+        return False, msg
+
+    _progress(f"Running installer {tag} — app will close and reopen…")
+    try:
+        spawn_install_and_relaunch(dest, current_app_exe())
+    except OSError as exc:
+        msg = f"Could not launch installer: {exc}"
+        _progress(msg)
+        return False, msg
+
+    return True, f"Installing {tag} — closing so the installer can replace files…"
+
+
+def install_latest_release(
+    *,
+    local_version: str | None = None,
+    app_dir: Path | None = None,
+    progress=None,
+) -> tuple[bool, str]:
+    """Update-app button path: always download + install latest Setup.exe.
+
+    Never compares versions and never returns/logs "Up to date". The button click
+    is consent. Launch-time still uses check_and_offer_update (prompt=True).
+    """
+
+    def _progress(msg: str) -> None:
+        _log(msg)
+        if progress:
+            try:
+                progress(msg)
+            except Exception:  # noqa: BLE001
+                pass
+
+    local = local_version or load_version(app_dir)
+    token = find_github_token()
+    if not token:
+        msg = token_missing_message()
+        _progress(msg)
+        return False, msg
+
+    _progress("Looking for installer on GitHub…")
+    release, asset, http_status, err = _latest_release_with_setup(token)
+    if release is None or asset is None:
+        if _needs_token(http_status, token):
+            msg = token_missing_message()
+        elif http_status is not None:
+            msg = f"Could not check updates: HTTP {http_status}"
+        else:
+            msg = f"Could not check updates: {err or 'network error'} (local {local})"
+        _progress(msg)
+        return False, msg
+
+    tag = _release_tag(release) or "latest"
+    # Deliberately no version_is_newer / "Up to date" short-circuit here.
+    _progress(f"Installing release {tag} (local {local}; button always reinstalls)…")
+
+    url = str(asset["url"])
+    fallback = asset.get("browser_download_url")
+    fallback_url = str(fallback) if fallback else None
+    asset_name = str(asset.get("name") or SETUP_ASSET_NAME)
+
+    _progress(f"Downloading {asset_name} ({tag})…")
+    tmp_dir = Path(tempfile.mkdtemp(prefix="gm-session-update-"))
+    dest = tmp_dir / (asset_name if asset_name.lower().endswith(".exe") else SETUP_ASSET_NAME)
+    ok, err, http_status = _download(url, dest, token, fallback_url=fallback_url)
+    if not ok:
+        if _needs_token(http_status, token):
+            msg = token_missing_message()
+        elif http_status is not None:
+            msg = f"Download failed: HTTP {http_status}"
+        else:
+            msg = f"Download failed: {err or 'unknown error'}"
+        _progress(msg)
         return False, msg
 
     _progress(f"Running installer {tag} — app will close and reopen…")

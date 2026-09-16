@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.5.0**).
+Version is in `VERSION` (currently **0.5.6**).
 
 ## Run — desktop app (recommended)
 
@@ -59,15 +59,17 @@ Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1
 
 ## Auto-update
 
-On launch (unless `--skip-update`), the desktop app checks GitHub Releases for [`yuemailmehbruh-blip/vtt-format`](https://github.com/yuemailmehbruh-blip/vtt-format) and may show a confirm dialog if a *newer* version exists. The in-session **Update app** button is consent to install **whatever Setup.exe is on the latest release**, even if the tag matches (handy for testing).
+On launch (unless `--skip-update`), the desktop app checks GitHub Releases for [`yuemailmehbruh-blip/vtt-format`](https://github.com/yuemailmehbruh-blip/vtt-format) and may show a confirm dialog if a *newer* version exists. The in-session **Update app** button **always** downloads and silently installs the latest Setup.exe (then relaunches), even when the local version already matches the release tag — it never reports “Up to date”.
 
 1. `GET /repos/.../releases/latest` (then `/releases` if that has no Setup.exe)
 2. Download the installer via the GitHub **API asset URL** (`Accept: application/octet-stream`). Auth is sent only to `api.github.com` — not to the S3 redirect (that 400s).
-3. Spawn a detached helper: wait for `GM Session.exe` to exit, run Inno `/SILENT /NORESTART /FORCECLOSEAPPLICATIONS`, then start the installed exe again.
+3. Write `%LOCALAPPDATA%\GM Session\install_update.ps1` and spawn it: wait for `GM Session.exe` to exit, run Inno `/SILENT /NORESTART /FORCECLOSEAPPLICATIONS`, then start the installed exe again (helper logs to `update.log`).
 4. Quit the current app so files can be replaced.
 5. Progress is written under the button and to `%LOCALAPPDATA%\GM Session\update.log`.
 
-Launch-time still skips when already up to date. **Update app** does not.
+Launch-time still skips when already up to date. **Update app** never skips on version equality.
+
+**0.5.6:** Update button always reinstalls; token draw/hit radius tracks the map grid (`≈0.45 × gridSize` in world, times zoom on screen).
 
 Auth (for private repos): `GM_SESSION_GH_TOKEN` / `GITHUB_TOKEN`, `%LOCALAPPDATA%\GM Session\github_token.txt`, or GitHub CLI `hosts.yml`. Unauthenticated `/releases/latest` 404s on a private repo; the UI then says to put a token in that file. Failures are shown under **Update app**, not swallowed.
 

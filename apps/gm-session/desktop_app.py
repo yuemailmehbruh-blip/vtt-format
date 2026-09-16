@@ -20,7 +20,7 @@ from server_lib import (
     is_frozen,
     resolve_campaign_path,
 )
-from updater import check_and_offer_update, check_and_offer_update_with_status, load_version
+from updater import check_and_offer_update, install_latest_release, load_version
 
 try:
     import webview
@@ -172,11 +172,10 @@ class DesktopApi:
                 self._push_update_status(msg, done=False)
 
             try:
-                quitting, message = check_and_offer_update_with_status(
+                # Dedicated button path — never short-circuits on version equality.
+                quitting, message = install_latest_release(
                     local_version=load_version(default_app_dir()),
                     app_dir=default_app_dir(),
-                    prompt=False,
-                    force=True,
                     progress=progress,
                 )
             except Exception as exc:  # noqa: BLE001

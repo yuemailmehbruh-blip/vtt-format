@@ -367,7 +367,7 @@
     ctx.save();
     for (const t of tokens) {
       const [cx, cy] = worldToScreen(t.x, t.y);
-      const r = Math.max(10, gridSize * 0.35 * Math.min(scale, 2));
+      const r = gridSize * 0.45 * scale; // world 0.45*grid; screen = world * scale
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.fillStyle = "#ffffff";
@@ -1665,7 +1665,8 @@
   }
 
   function tokenRadiusScreen() {
-    return Math.max(10, gridSize * 0.35 * Math.min(scale, 2));
+    // Lock draw/hit-test size to the map grid (no min-px / scale-cap floors).
+    return gridSize * 0.45 * scale;
   }
 
   /** Topmost token under screen point, or null. Tokens sit above map pan. */
