@@ -891,103 +891,191 @@
     });
   }
 
-  function stripLuminance(imgData, w, h, horizontal) {
-    const d = imgData.data;
-    if (horizontal) {
-      const y = Math.min(h - 1, Math.max(0, Math.floor(h / 2)));
-      const out = new Float64Array(w);
-      for (let x = 0; x < w; x++) {
-        const i = (y * w + x) * 4;
-        out[x] = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+  function grayAt(data, w, x, y) {
+    const i = (y * w + x) * 4;
+    return 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+  }
+
+  function smooth1d(arr, radius) {
+    const n = arr.length;
+    const out = new Float64Array(n);
+    const r = Math.max(1, radius | 0);
+    for (let i = 0; i < n; i++) {
+      let s = 0;
+      let c = 0;
+      for (let j = i - r; j <= i + r; j++) {
+        if (j < 0 || j >= n) continue;
+        s += arr[j];
+        c++;
       }
-      return out;
-    }
-    const x = Math.min(w - 1, Math.max(0, Math.floor(w / 2)));
-    const out = new Float64Array(h);
-    for (let y = 0; y < h; y++) {
-      const i = (y * w + x) * 4;
-      out[y] = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      out[i] = c ? s / c : 0;
     }
     return out;
   }
 
-  function autocorrBestLag(signal, minLag, maxLag) {
+  function energy1d(arr) {
+    let s = 0;
+    for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
+    return s;
+  }
+
+  /**
+   * Project bright/dark thin lines. Vertical lines → score per x; horizontal → per y.
+   * Uses the whole image so grass/trees on the center strip cannot win.
+   */
+  function lineProjections(imgData, w, h) {
+    const d = imgData.data;
+    const vBright = new Float64Array(w);
+    const vDark = new Float64Array(w);
+    const hBright = new Float64Array(h);
+    const hDark = new Float64Array(h);
+    const y0 = 2;
+    const y1 = h - 2;
+    const x0 = 2;
+    const x1 = w - 2;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const g = grayAt(d, w, x, y);
+        const nX = 0.5 * (grayAt(d, w, x - 1, y) + grayAt(d, w, x + 1, y));
+        const nY = 0.5 * (grayAt(d, w, x, y - 1) + grayAt(d, w, x, y + 1));
+        vBright[x] += Math.max(0, g - nX);
+        vDark[x] += Math.max(0, nX - g);
+        hBright[y] += Math.max(0, g - nY);
+        hDark[y] += Math.max(0, nY - g);
+      }
+    }
+    const vProj = energy1d(vBright) >= energy1d(vDark) ? vBright : vDark;
+    const hProj = energy1d(hBright) >= energy1d(hDark) ? hBright : hDark;
+    // Ignore the outer frame (black border / UI edge) so it does not dominate.
+    const mx = Math.max(4, Math.floor(w * 0.01));
+    const my = Math.max(4, Math.floor(h * 0.01));
+    for (let x = 0; x < mx; x++) vProj[x] = 0;
+    for (let x = w - mx; x < w; x++) vProj[x] = 0;
+    for (let y = 0; y < my; y++) hProj[y] = 0;
+    for (let y = h - my; y < h; y++) hProj[y] = 0;
+    return { vProj: smooth1d(vProj, 1), hProj: smooth1d(hProj, 1) };
+  }
+
+  function autocorrAt(signal, lag) {
     const n = signal.length;
-    if (n < minLag * 2 + 2) return null;
-    maxLag = Math.min(maxLag, Math.floor(n / 2));
-    if (maxLag < minLag) return null;
+    if (lag <= 0 || lag >= n) return 0;
     let mean = 0;
     for (let i = 0; i < n; i++) mean += signal[i];
     mean /= n;
+    let s = 0;
+    let c = 0;
+    for (let i = 0; i + lag < n; i++) {
+      s += (signal[i] - mean) * (signal[i + lag] - mean);
+      c++;
+    }
+    return c ? s / c : 0;
+  }
+
+  /**
+   * Fundamental cell pitch from a line-projection. minP is large enough that
+   * grass/noise (4–12px) cannot win; harmonics (2×, 3×, 5×) boost the true cell.
+   */
+  function bestPitch(signal, minP, maxP) {
+    const n = signal.length;
+    maxP = Math.min(maxP, Math.floor(n / 3));
+    if (maxP < minP) return null;
+    const raw = new Float64Array(maxP + 1);
+    let rawMax = 0;
+    for (let lag = minP; lag <= maxP; lag++) {
+      raw[lag] = autocorrAt(signal, lag);
+      if (raw[lag] > rawMax) rawMax = raw[lag];
+    }
+    if (!(rawMax > 0)) return null;
     let bestLag = -1;
     let bestScore = -Infinity;
-    for (let lag = minLag; lag <= maxLag; lag++) {
-      let s = 0;
-      let c = 0;
-      for (let i = 0; i + lag < n; i++) {
-        s += (signal[i] - mean) * (signal[i + lag] - mean);
-        c++;
-      }
-      const score = c ? s / c : 0;
-      if (score > bestScore) {
-        bestScore = score;
+    for (let lag = minP; lag <= maxP; lag++) {
+      let s = raw[lag];
+      if (lag * 2 <= maxP) s += 0.45 * raw[lag * 2];
+      if (lag * 3 <= maxP) s += 0.25 * raw[lag * 3];
+      if (lag * 5 <= maxP) s += 0.35 * raw[lag * 5];
+      // Slight preference for map-sized cells over remaining small texture.
+      s *= Math.log(8 + lag);
+      if (s > bestScore) {
+        bestScore = s;
         bestLag = lag;
       }
     }
-    if (bestLag < minLag || !(bestScore > 0)) return null;
+    if (bestLag < minP) return null;
+    for (const div of [2, 3]) {
+      const fund = Math.round(bestLag / div);
+      if (fund < minP || fund === bestLag) continue;
+      if (raw[fund] > 0.55 * raw[bestLag] && Math.abs(bestLag / fund - div) < 0.12) {
+        bestLag = fund;
+        break;
+      }
+    }
     return { lag: bestLag, score: bestScore };
   }
 
   function refinePitchWithFifths(signal, pitch, minP, maxP) {
     const n = signal.length;
-    const target = 5 * pitch;
-    const lo = Math.max(Math.ceil(4.2 * pitch), Math.ceil(minP * 4));
-    const hi = Math.min(Math.floor(5.8 * pitch), Math.floor(maxP * 6), Math.floor(n / 2));
+    const lo = Math.max(Math.ceil(4.4 * pitch), minP);
+    const hi = Math.min(Math.floor(5.6 * pitch), maxP, Math.floor(n / 3));
     if (hi < lo) return pitch;
-    const fifth = autocorrBestLag(signal, lo, hi);
-    if (fifth && fifth.lag >= 5 * minP) {
-      const refined = fifth.lag / 5;
+    let bestLag = -1;
+    let best = -Infinity;
+    for (let lag = lo; lag <= hi; lag++) {
+      const s = autocorrAt(signal, lag);
+      if (s > best) {
+        best = s;
+        bestLag = lag;
+      }
+    }
+    if (bestLag >= 5 * minP) {
+      const refined = bestLag / 5;
       if (refined >= minP && refined <= maxP) pitch = refined;
     }
-    // Computational 5th-square lattice from strip center; measure spans between
-    // nearest strong edges to refine further (marks are never drawn/saved).
-    const cx = n / 2;
-    const positions = [];
-    const maxK = Math.floor(Math.min(cx, n - cx) / (5 * pitch));
-    for (let k = -maxK; k <= maxK; k++) {
-      const expected = cx + 5 * k * pitch;
-      const half = Math.max(2, pitch * 0.45);
-      const a = Math.max(1, Math.floor(expected - half));
-      const b = Math.min(n - 2, Math.ceil(expected + half));
-      let bestI = Math.round(expected);
-      let bestG = -1;
-      for (let i = a; i <= b; i++) {
-        const g = Math.abs(signal[i + 1] - signal[i - 1]);
-        if (g > bestG) {
-          bestG = g;
-          bestI = i;
+    return pitch;
+  }
+
+  function localMaxima(signal, minDist) {
+    const n = signal.length;
+    const peaks = [];
+    let mean = 0;
+    let peakMax = 0;
+    for (let i = 0; i < n; i++) {
+      mean += signal[i];
+      if (signal[i] > peakMax) peakMax = signal[i];
+    }
+    mean /= n;
+    const thr = mean + 0.25 * (peakMax - mean);
+    for (let i = 2; i < n - 2; i++) {
+      const v = signal[i];
+      if (v < thr) continue;
+      if (v >= signal[i - 1] && v >= signal[i + 1] && v >= signal[i - 2] && v >= signal[i + 2]) {
+        if (!peaks.length || i - peaks[peaks.length - 1] >= minDist) {
+          peaks.push(i);
+        } else if (v > signal[peaks[peaks.length - 1]]) {
+          peaks[peaks.length - 1] = i;
         }
       }
-      if (bestG > 0) positions.push(bestI);
     }
-    positions.sort((a, b) => a - b);
-    const spans = [];
-    for (let i = 1; i < positions.length; i++) {
-      const span = positions[i] - positions[i - 1];
-      if (span > pitch * 2.5 && span < pitch * 8) spans.push(span / 5);
+    return peaks;
+  }
+
+  function estimatePhase(peaks, pitch) {
+    if (!peaks.length || !(pitch > 0)) return 0;
+    let sx = 0;
+    let sy = 0;
+    for (let i = 0; i < peaks.length; i++) {
+      const a = (2 * Math.PI * (peaks[i] / pitch)) % (2 * Math.PI);
+      sx += Math.cos(a);
+      sy += Math.sin(a);
     }
-    if (spans.length) {
-      spans.sort((a, b) => a - b);
-      const med = spans[Math.floor(spans.length / 2)];
-      if (med >= minP && med <= maxP) pitch = med;
-    }
-    return pitch;
+    let ang = Math.atan2(sy, sx);
+    if (ang < 0) ang += 2 * Math.PI;
+    return (ang / (2 * Math.PI)) * pitch;
   }
 
   function detectGridPitch(img) {
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
-    if (w < 16 || h < 16) return null;
+    if (w < 32 || h < 32) return null;
     const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = h;
@@ -1000,70 +1088,55 @@
     } catch (_) {
       return null;
     }
-    const minP = 4;
-    const maxP = Math.max(minP, Math.floor(Math.min(w, h) / 2));
-    const hStrip = stripLuminance(imgData, w, h, true);
-    const vStrip = stripLuminance(imgData, w, h, false);
-    const hHit = autocorrBestLag(hStrip, minP, maxP);
-    const vHit = autocorrBestLag(vStrip, minP, maxP);
-    if (!hHit && !vHit) return null;
+    // Grass texture lives at 4–12px; printed VTT cells are much larger.
+    const minP = Math.max(20, Math.floor(Math.min(w, h) / 80));
+    const maxP = Math.max(minP + 8, Math.floor(Math.min(w, h) / 4));
+    const { vProj, hProj } = lineProjections(imgData, w, h);
+    const vHit = bestPitch(vProj, minP, maxP);
+    const hHit = bestPitch(hProj, minP, maxP);
+    if (!vHit && !hHit) return null;
 
     let pitch;
-    let axis = "h";
-    if (hHit && vHit) {
-      const rel = Math.abs(hHit.lag - vHit.lag) / Math.max(hHit.lag, vHit.lag);
-      if (rel < 0.12) {
-        pitch = (hHit.lag + vHit.lag) / 2;
+    let axis = "v";
+    if (vHit && hHit) {
+      const rel = Math.abs(vHit.lag - hHit.lag) / Math.max(vHit.lag, hHit.lag);
+      if (rel < 0.15) {
+        pitch = (vHit.lag + hHit.lag) / 2;
         axis = "avg";
-      } else if (hHit.score >= vHit.score) {
-        pitch = hHit.lag;
-        axis = "h";
-      } else {
+      } else if (vHit.score >= hHit.score) {
         pitch = vHit.lag;
         axis = "v";
+      } else {
+        pitch = hHit.lag;
+        axis = "h";
       }
-    } else if (hHit) {
-      pitch = hHit.lag;
-      axis = "h";
-    } else {
+    } else if (vHit) {
       pitch = vHit.lag;
       axis = "v";
+    } else {
+      pitch = hHit.lag;
+      axis = "h";
     }
 
-    const strip = axis === "v" ? vStrip : hStrip;
+    const strip = axis === "h" ? hProj : vProj;
     pitch = refinePitchWithFifths(strip, pitch, minP, maxP);
-    // Also refine on the other axis when both were close
     if (axis === "avg") {
-      const p2 = refinePitchWithFifths(vStrip, pitch, minP, maxP);
+      const p2 = refinePitchWithFifths(hProj, pitch, minP, maxP);
       pitch = (pitch + p2) / 2;
     }
     if (!(pitch >= minP && pitch <= maxP)) return null;
-    return { pitch, width: w, height: h };
-  }
 
-  function nearestFifthLattice(wx, wy, g) {
-    const step = 5 * g;
-    const a = Math.round(wx / step);
-    const b = Math.round(wy / step);
-    return [a * step, b * step];
-  }
-
-  function pickImageCenterWorld() {
-    const g = gridSize;
-    const emptyish =
-      mapLayers.length === 0 &&
-      tokens.length === 0;
-    if (emptyish) {
-      return nearestFifthLattice(0, 0, g);
-    }
-    const cx = extent.x + extent.w / 2;
-    const cy = extent.y + extent.h / 2;
-    return nearestFifthLattice(cx, cy, g);
+    const minDist = Math.max(4, Math.floor(pitch * 0.45));
+    const vPeaks = localMaxima(vProj, minDist);
+    const hPeaks = localMaxima(hProj, minDist);
+    const phaseX = estimatePhase(vPeaks, pitch);
+    const phaseY = estimatePhase(hPeaks, pitch);
+    return { pitch, phaseX, phaseY, width: w, height: h };
   }
 
   /**
-   * Scale/align image so 1 detected cell = 1 map cell, crop to whole squares.
-   * Returns { blob, x, y, w, h, pitch, cropped: boolean } or null on hard failure.
+   * Scale so 1 detected cell = 1 map cell. Put detected grid LINES on map grid
+   * lines (not the image center). Crop to whole map squares. Marks are never drawn.
    */
   async function gridFitImage(img, detected) {
     const g = gridSize;
@@ -1071,18 +1144,19 @@
     const imgW = detected.width;
     const imgH = detected.height;
     const s = g / pitch;
-    const cx = imgW / 2;
-    const cy = imgH / 2;
-    const [cxWorld, cyWorld] = pickImageCenterWorld();
-    let x = cxWorld - cx * s;
-    let y = cyWorld - cy * s;
+    const phaseX = ((detected.phaseX % pitch) + pitch) % pitch;
+    const phaseY = ((detected.phaseY % pitch) + pitch) % pitch;
+
+    // Pixel `phaseX` is a vertical grid line → world x = 0 (a map grid line).
+    let x = -phaseX * s;
+    let y = -phaseY * s;
     let ww = imgW * s;
     let hh = imgH * s;
 
-    let left = Math.ceil(x / g) * g;
-    let top = Math.ceil(y / g) * g;
-    let right = Math.floor((x + ww) / g) * g;
-    let bottom = Math.floor((y + hh) / g) * g;
+    let left = Math.ceil(x / g - 1e-9) * g;
+    let top = Math.ceil(y / g - 1e-9) * g;
+    let right = Math.floor((x + ww) / g + 1e-9) * g;
+    let bottom = Math.floor((y + hh) / g + 1e-9) * g;
     let cropped = true;
     let warning = "";
     if (right <= left || bottom <= top) {
@@ -1100,20 +1174,17 @@
     const srcW = (right - left) / s;
     const srcH = (bottom - top) / s;
 
-    const outW = Math.max(1, Math.round(srcW));
-    const outH = Math.max(1, Math.round(srcH));
     const ox = Math.max(0, Math.min(imgW - 1, Math.round(srcX)));
     const oy = Math.max(0, Math.min(imgH - 1, Math.round(srcY)));
-    const ow = Math.max(1, Math.min(imgW - ox, outW));
-    const oh = Math.max(1, Math.min(imgH - oy, outH));
+    const ow = Math.max(1, Math.min(imgW - ox, Math.round(srcW)));
+    const oh = Math.max(1, Math.min(imgH - oy, Math.round(srcH)));
 
     const canvas = document.createElement("canvas");
     canvas.width = ow;
     canvas.height = oh;
-    const c = canvas.getContext("2d");
-    c.imageSmoothingEnabled = false;
-    // Crop only — no marks/overlays drawn
-    c.drawImage(img, ox, oy, ow, oh, 0, 0, ow, oh);
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, ox, oy, ow, oh, 0, 0, ow, oh);
 
     const blob = await new Promise((resolve, reject) => {
       canvas.toBlob(
@@ -1129,6 +1200,8 @@
       w: cropped ? right - left : ww,
       h: cropped ? bottom - top : hh,
       pitch,
+      phaseX,
+      phaseY,
       scale: s,
       cropped,
       warning,
@@ -1200,7 +1273,7 @@
             layerW = fitted.w;
             layerH = fitted.h;
             statusExtra =
-              ` · grid-fit pitch ${detected.pitch.toFixed(2)}px → scale ${(gridSize / detected.pitch).toFixed(3)}` +
+              ` · grid-fit ${detected.pitch.toFixed(1)}px cells, lines at ${detected.phaseX.toFixed(1)},${detected.phaseY.toFixed(1)}px` +
               (fitted.cropped ? "" : " · uncropped fallback");
             if (fitted.warning) statusExtra += ` · ${fitted.warning}`;
           }
