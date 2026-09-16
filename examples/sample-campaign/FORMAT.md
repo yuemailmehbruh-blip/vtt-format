@@ -72,13 +72,15 @@ Asset references are **sha256 hex** of files in `world/assets/by-hash/`. Logical
 ### Fixed draw order (GM Session)
 
 YAML `layers` entries of `type: tokens` (or similar) are **not** used for z-order.
-The renderer always draws:
+The play view renderer always draws:
 
 1. **Map image layers** (`type: map`, list order = bottom → top; visibility per layer)
-2. **Map geometry** — walls, doors, lights, spawns (with the map, before the grid)
-3. **Grid overlay** — togglable in the UI
-4. **Tokens** — white circles from `state/tokens/`
-5. **Additions** — stub (`drawOverlayAdditions()`); empty for now
+2. **Grid overlay** — togglable in the UI
+3. **Tokens** — white circles from `state/tokens/`
+4. **Additions** — stub (`drawOverlayAdditions()`); empty for now
+5. **Layer edit chrome** — selection/handles when editing a map layer (edit UI only)
+
+Play view **does not** draw walls, doors, lights, or spawns (YAML fields may remain unused). Sidebar map-layer list is reversed vs array order (top of list = topmost / end of array).
 
 UI prefs (grid / snap) live under `state/ui/<scene-id>.json`.
 

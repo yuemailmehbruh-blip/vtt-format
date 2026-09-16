@@ -115,19 +115,7 @@
 
   function collectPoints(sc) {
     const pts = [];
-    for (const w of sc.walls || []) {
-      pts.push([w.x1, w.y1], [w.x2, w.y2]);
-    }
-    for (const d of sc.doors || []) {
-      pts.push([d.x1, d.y1], [d.x2, d.y2]);
-    }
-    for (const L of sc.lights || []) {
-      const r = Number(L.radius) || 0;
-      pts.push([L.x - r, L.y - r], [L.x + r, L.y + r]);
-    }
-    for (const s of sc.spawns || []) {
-      pts.push([s.x, s.y]);
-    }
+    // Extent from map layers + tokens only (walls/doors/lights/spawns unused in play view)
     for (const t of tokens) {
       pts.push([t.x, t.y]);
     }
@@ -307,101 +295,6 @@
     }
   }
 
-  // Map geometry (with map, before grid)
-  function drawWalls() {
-    ctx.save();
-    ctx.strokeStyle = "#e8eefc";
-    ctx.lineWidth = Math.max(2, 3 * Math.min(scale, 2));
-    ctx.lineCap = "round";
-    for (const w of scene.walls || []) {
-      const [x1, y1] = worldToScreen(w.x1, w.y1);
-      const [x2, y2] = worldToScreen(w.x2, w.y2);
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  function drawDoors() {
-    ctx.save();
-    ctx.lineCap = "round";
-    for (const d of scene.doors || []) {
-      const [x1, y1] = worldToScreen(d.x1, d.y1);
-      const [x2, y2] = worldToScreen(d.x2, d.y2);
-      const open = !!d.open;
-      const locked = !!d.locked;
-      ctx.strokeStyle = locked ? "#ff6b6b" : open ? "#7ddea5" : "#f0c14a";
-      ctx.lineWidth = Math.max(2, 4 * Math.min(scale, 2));
-      ctx.setLineDash(open ? [6, 4] : []);
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      const mx = (x1 + x2) / 2;
-      const my = (y1 + y2) / 2;
-      ctx.setLineDash([]);
-      ctx.fillStyle = ctx.strokeStyle;
-      ctx.beginPath();
-      ctx.arc(mx, my, Math.max(3, 4 * Math.min(scale, 1.5)), 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-
-  function drawLights() {
-    ctx.save();
-    for (const L of scene.lights || []) {
-      const [cx, cy] = worldToScreen(L.x, L.y);
-      const r = (Number(L.radius) || 0) * scale;
-      const bright = (Number(L.bright) || 0) * scale;
-      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(r, 1));
-      grad.addColorStop(0, "rgba(255, 220, 120, 0.55)");
-      grad.addColorStop(
-        bright > 0 ? Math.min(0.85, bright / Math.max(r, 1)) : 0.4,
-        "rgba(255, 180, 60, 0.22)"
-      );
-      grad.addColorStop(1, "rgba(255, 160, 40, 0)");
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(cx, cy, Math.max(r, 4), 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#ffe08a";
-      ctx.beginPath();
-      ctx.arc(cx, cy, Math.max(2.5, 3 * Math.min(scale, 1.5)), 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-
-  function drawSpawns() {
-    ctx.save();
-    ctx.font = `${Math.max(11, 12 * Math.min(scale, 1.4))}px system-ui, sans-serif`;
-    ctx.textBaseline = "bottom";
-    for (const s of scene.spawns || []) {
-      const [cx, cy] = worldToScreen(s.x, s.y);
-      const r = Math.max(5, 7 * Math.min(scale, 1.5));
-      ctx.fillStyle = "#6ea8fe";
-      ctx.strokeStyle = "#dbe7ff";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - r);
-      ctx.lineTo(cx + r, cy);
-      ctx.lineTo(cx, cy + r);
-      ctx.lineTo(cx - r, cy);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      const label = s.label || s.id || "spawn";
-      ctx.fillStyle = "#e8ecf4";
-      ctx.strokeStyle = "rgba(0,0,0,0.7)";
-      ctx.lineWidth = 3;
-      ctx.strokeText(label, cx + r + 4, cy - 2);
-      ctx.fillText(label, cx + r + 4, cy - 2);
-    }
-    ctx.restore();
-  }
 
   // --- Layer 2: grid overlay ---
   function drawGrid() {
@@ -442,7 +335,7 @@
     ctx.restore();
   }
 
-  /** Selection rect + resize handles — after grid, before tokens. */
+  /** Selection rect + resize handles — edit UI after world stack. */
   function drawLayerEditChrome() {
     const layer = editingLayer();
     if (!layer || !layer.visible) return;
@@ -505,8 +398,8 @@
 
   /**
    * Fixed draw order (YAML layer types do not control z-order):
-   * 1 map images → map geometry (walls/doors/lights/spawns) →
-   * 2 grid (if on) → layer edit chrome → 3 tokens → 4 overlay additions stub
+   * 1 map images → 2 grid (if on) → 3 tokens → 4 overlay additions stub →
+   * 5 layer edit chrome (selection/handles; edit UI only)
    */
   function draw() {
     const rect = viewport.getBoundingClientRect();
@@ -514,14 +407,10 @@
     if (!scene) return;
 
     drawMapImages();
-    drawWalls();
-    drawDoors();
-    drawLights();
-    drawSpawns();
     drawGrid();
-    drawLayerEditChrome();
     drawTokens();
     drawOverlayAdditions();
+    drawLayerEditChrome();
   }
 
   function loadImageByHash(hash) {
@@ -673,7 +562,9 @@
       layerListEl.appendChild(empty);
       return;
     }
-    mapLayers.forEach((layer, index) => {
+    // UI list is reversed: top of list = topmost drawn (end of array)
+    for (let index = mapLayers.length - 1; index >= 0; index--) {
+      const layer = mapLayers[index];
       const item = document.createElement("div");
       item.className = `layer-item${editingLayerId === layer.id ? " editing" : ""}`;
 
@@ -709,7 +600,7 @@
       const upBtn = document.createElement("button");
       upBtn.type = "button";
       upBtn.className = "icon-btn";
-      upBtn.title = "Move up in list (toward top of draw order)";
+      upBtn.title = "↑ Bring forward (higher z / top of list)";
       upBtn.textContent = "↑";
       upBtn.disabled = index >= mapLayers.length - 1;
       upBtn.addEventListener("click", () => moveLayer(index, 1));
@@ -717,7 +608,7 @@
       const downBtn = document.createElement("button");
       downBtn.type = "button";
       downBtn.className = "icon-btn";
-      downBtn.title = "Move down in list (toward bottom of draw order)";
+      downBtn.title = "↓ Send back (lower z / bottom of list)";
       downBtn.textContent = "↓";
       downBtn.disabled = index <= 0;
       downBtn.addEventListener("click", () => moveLayer(index, -1));
@@ -740,7 +631,7 @@
       item.appendChild(name);
       item.appendChild(btns);
       layerListEl.appendChild(item);
-    });
+    }
   }
 
   async function loadTokens() {

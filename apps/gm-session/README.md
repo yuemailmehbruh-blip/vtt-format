@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.4.0**).
+Version is in `VERSION` (currently **0.4.1**).
 
 ## Run — desktop app (recommended)
 
@@ -50,10 +50,10 @@ Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1
   - Entries with a human sheet file show a **sheet** badge
   - **Click** an actor → open its `.sheet.txt` in a **desktop sheet window** (editable; Save writes back to disk)
   - **Drag** an actor onto the map → place a white circle token labeled with initials + name (snaps to cell centers when Snap is on)
-  - **Map layers** — eye, **Edit**, reorder ↑↓, delete; **Add layer** uploads png/jpg/webp/gif into `world/assets/by-hash/` and appends a `type: map` layer
+  - **Map layers** — eye, **Edit**, reorder ↑ bring forward / ↓ send back, delete; list shows topmost first (array stays bottom→top); **Add layer** uploads png/jpg/webp/gif into `world/assets/by-hash/` and appends as new topmost
   - **Edit mode** (one layer at a time) — drag to move, corner/edge handles to resize. Resize modes: **Aspect** (uniform scale on corners), **H only**, **V only**. **Snap layers** (sidebar) snaps position/size to grid on release (not while dragging), independent of token snap.
 - **Token snap** — free movement while dragging; on pointerup, if Snap to grid is ON, snap to cell center (`floor(x/g)*g + g/2`). Library drop / place still snaps on place.
-- **Canvas draw order** — map images → walls/doors/lights/spawns → grid (if on) → layer edit chrome → tokens → additions stub
+- **Canvas draw order** — map images → grid (if on) → tokens → additions stub → layer edit chrome (play view does not draw walls/doors/lights/spawns)
 - **Pan / zoom** — drag empty map to pan, wheel to zoom, double-click to fit. Hit-test: edit handles/body → tokens → pan
 - **Update** — fixed button bottom-left of the canvas; calls `window.pywebview.api.check_update()` (same as launch). Browser `serve.py` shows that Update needs the desktop app.
 
@@ -71,9 +71,9 @@ Auth (for private repos): try unauthenticated first; else `GM_SESSION_GH_TOKEN` 
 Publish after a Windows build:
 
 ```bash
-gh release create v0.4.0 packaging/windows/output/GM-Session-Setup.exe \
-  --title "GM Session v0.4.0" \
-  --notes "Layer edit/resize, token snap-on-release, Update button, v0.4.0."
+gh release create v0.4.1 packaging/windows/output/GM-Session-Setup.exe \
+  --title "GM Session v0.4.1" \
+  --notes "Layer edit/resize, token snap-on-release, Update button, v0.4.1."
 ```
 
 (`build.ps1` prints the exact command for the current `VERSION`.)
