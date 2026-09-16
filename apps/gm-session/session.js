@@ -913,12 +913,6 @@
     return out;
   }
 
-  function energy1d(arr) {
-    let s = 0;
-    for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
-    return s;
-  }
-
   /**
    * Project bright/dark thin lines. Vertical lines → score per x; horizontal → per y.
    * Uses the whole image so grass/trees on the center strip cannot win.
@@ -944,16 +938,23 @@
         hDark[y] += Math.max(0, nY - g);
       }
     }
-    const vProj = energy1d(vBright) >= energy1d(vDark) ? vBright : vDark;
-    const hProj = energy1d(hBright) >= energy1d(hDark) ? hBright : hDark;
     // Ignore the outer frame (black border / UI edge) so it does not dominate.
     const mx = Math.max(4, Math.floor(w * 0.01));
     const my = Math.max(4, Math.floor(h * 0.01));
-    for (let x = 0; x < mx; x++) vProj[x] = 0;
-    for (let x = w - mx; x < w; x++) vProj[x] = 0;
-    for (let y = 0; y < my; y++) hProj[y] = 0;
-    for (let y = h - my; y < h; y++) hProj[y] = 0;
-    return { vProj: smooth1d(vProj, 1), hProj: smooth1d(hProj, 1) };
+    for (const arr of [vBright, vDark]) {
+      for (let x = 0; x < mx; x++) arr[x] = 0;
+      for (let x = w - mx; x < w; x++) arr[x] = 0;
+    }
+    for (const arr of [hBright, hDark]) {
+      for (let y = 0; y < my; y++) arr[y] = 0;
+      for (let y = h - my; y < h; y++) arr[y] = 0;
+    }
+    return {
+      vBright: smooth1d(vBright, 1),
+      vDark: smooth1d(vDark, 1),
+      hBright: smooth1d(hBright, 1),
+      hDark: smooth1d(hDark, 1),
+    };
   }
 
   function autocorrAt(signal, lag) {
@@ -993,7 +994,6 @@
       if (lag * 2 <= maxP) s += 0.45 * raw[lag * 2];
       if (lag * 3 <= maxP) s += 0.25 * raw[lag * 3];
       if (lag * 5 <= maxP) s += 0.35 * raw[lag * 5];
-      // Slight preference for map-sized cells over remaining small texture.
       s *= Math.log(8 + lag);
       if (s > bestScore) {
         bestScore = s;
@@ -1033,43 +1033,51 @@
     return pitch;
   }
 
-  function localMaxima(signal, minDist) {
+  /** Sample a 1d projection along a comb of period `pitch` starting at `phase`. */
+  function combScore(signal, pitch, phase) {
     const n = signal.length;
-    const peaks = [];
-    let mean = 0;
-    let peakMax = 0;
-    for (let i = 0; i < n; i++) {
-      mean += signal[i];
-      if (signal[i] > peakMax) peakMax = signal[i];
+    if (!(pitch > 0) || n < 4) return 0;
+    let s = 0;
+    let c = 0;
+    for (let x = phase; x < n - 1; x += pitch) {
+      if (x < 0) continue;
+      const i = Math.floor(x);
+      const f = x - i;
+      s += (1 - f) * signal[i] + f * signal[i + 1];
+      c++;
     }
-    mean /= n;
-    const thr = mean + 0.25 * (peakMax - mean);
-    for (let i = 2; i < n - 2; i++) {
-      const v = signal[i];
-      if (v < thr) continue;
-      if (v >= signal[i - 1] && v >= signal[i + 1] && v >= signal[i - 2] && v >= signal[i + 2]) {
-        if (!peaks.length || i - peaks[peaks.length - 1] >= minDist) {
-          peaks.push(i);
-        } else if (v > signal[peaks[peaks.length - 1]]) {
-          peaks[peaks.length - 1] = i;
-        }
-      }
-    }
-    return peaks;
+    return c ? s / c : 0;
   }
 
-  function estimatePhase(peaks, pitch) {
-    if (!peaks.length || !(pitch > 0)) return 0;
-    let sx = 0;
-    let sy = 0;
-    for (let i = 0; i < peaks.length; i++) {
-      const a = (2 * Math.PI * (peaks[i] / pitch)) % (2 * Math.PI);
-      sx += Math.cos(a);
-      sy += Math.sin(a);
+  function combPhase(signal, pitch) {
+    if (!(pitch > 0)) return { phase: 0, score: 0 };
+    const step = Math.max(0.2, pitch / 100);
+    let bestPh = 0;
+    let bestS = -Infinity;
+    for (let ph = 0; ph < pitch; ph += step) {
+      const sc = combScore(signal, pitch, ph);
+      if (sc > bestS) {
+        bestS = sc;
+        bestPh = ph;
+      }
     }
-    let ang = Math.atan2(sy, sx);
-    if (ang < 0) ang += 2 * Math.PI;
-    return (ang / (2 * Math.PI)) * pitch;
+    return { phase: bestPh, score: bestS };
+  }
+
+  function refinePitchAndPhase(vSig, hSig, pitch0, minP, maxP) {
+    const lo = Math.max(minP, pitch0 * 0.96);
+    const hi = Math.min(maxP, pitch0 * 1.04);
+    const pStep = Math.max(0.05, pitch0 / 400);
+    let best = { pitch: pitch0, phaseX: 0, phaseY: 0, score: -Infinity };
+    for (let p = lo; p <= hi; p += pStep) {
+      const vx = combPhase(vSig, p);
+      const hy = combPhase(hSig, p);
+      const sc = vx.score + hy.score;
+      if (sc > best.score) {
+        best = { pitch: p, phaseX: vx.phase, phaseY: hy.phase, score: sc };
+      }
+    }
+    return best;
   }
 
   function detectGridPitch(img) {
@@ -1091,47 +1099,58 @@
     // Grass texture lives at 4–12px; printed VTT cells are much larger.
     const minP = Math.max(20, Math.floor(Math.min(w, h) / 80));
     const maxP = Math.max(minP + 8, Math.floor(Math.min(w, h) / 4));
-    const { vProj, hProj } = lineProjections(imgData, w, h);
-    const vHit = bestPitch(vProj, minP, maxP);
-    const hHit = bestPitch(hProj, minP, maxP);
-    if (!vHit && !hHit) return null;
-
-    let pitch;
-    let axis = "v";
-    if (vHit && hHit) {
-      const rel = Math.abs(vHit.lag - hHit.lag) / Math.max(vHit.lag, hHit.lag);
-      if (rel < 0.15) {
-        pitch = (vHit.lag + hHit.lag) / 2;
-        axis = "avg";
-      } else if (vHit.score >= hHit.score) {
+    const proj = lineProjections(imgData, w, h);
+    const polarities = [
+      { name: "bright", v: proj.vBright, h: proj.hBright },
+      { name: "dark", v: proj.vDark, h: proj.hDark },
+    ];
+    let best = null;
+    for (const pol of polarities) {
+      const vHit = bestPitch(pol.v, minP, maxP);
+      const hHit = bestPitch(pol.h, minP, maxP);
+      if (!vHit && !hHit) continue;
+      let pitch;
+      let axis = "v";
+      if (vHit && hHit) {
+        const rel = Math.abs(vHit.lag - hHit.lag) / Math.max(vHit.lag, hHit.lag);
+        if (rel < 0.15) {
+          pitch = (vHit.lag + hHit.lag) / 2;
+          axis = "avg";
+        } else if (vHit.score >= hHit.score) {
+          pitch = vHit.lag;
+          axis = "v";
+        } else {
+          pitch = hHit.lag;
+          axis = "h";
+        }
+      } else if (vHit) {
         pitch = vHit.lag;
-        axis = "v";
       } else {
         pitch = hHit.lag;
         axis = "h";
       }
-    } else if (vHit) {
-      pitch = vHit.lag;
-      axis = "v";
-    } else {
-      pitch = hHit.lag;
-      axis = "h";
+      const strip = axis === "h" ? pol.h : pol.v;
+      pitch = refinePitchWithFifths(strip, pitch, minP, maxP);
+      if (axis === "avg") {
+        const p2 = refinePitchWithFifths(pol.h, pitch, minP, maxP);
+        pitch = (pitch + p2) / 2;
+      }
+      if (!(pitch >= minP && pitch <= maxP)) continue;
+      const fitted = refinePitchAndPhase(pol.v, pol.h, pitch, minP, maxP);
+      if (!best || fitted.score > best.score) {
+        best = {
+          pitch: fitted.pitch,
+          phaseX: fitted.phaseX,
+          phaseY: fitted.phaseY,
+          score: fitted.score,
+          polarity: pol.name,
+          width: w,
+          height: h,
+        };
+      }
     }
-
-    const strip = axis === "h" ? hProj : vProj;
-    pitch = refinePitchWithFifths(strip, pitch, minP, maxP);
-    if (axis === "avg") {
-      const p2 = refinePitchWithFifths(hProj, pitch, minP, maxP);
-      pitch = (pitch + p2) / 2;
-    }
-    if (!(pitch >= minP && pitch <= maxP)) return null;
-
-    const minDist = Math.max(4, Math.floor(pitch * 0.45));
-    const vPeaks = localMaxima(vProj, minDist);
-    const hPeaks = localMaxima(hProj, minDist);
-    const phaseX = estimatePhase(vPeaks, pitch);
-    const phaseY = estimatePhase(hPeaks, pitch);
-    return { pitch, phaseX, phaseY, width: w, height: h };
+    if (!best) return null;
+    return best;
   }
 
   /**
