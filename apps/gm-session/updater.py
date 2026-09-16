@@ -190,6 +190,54 @@ def launch_installer(path: Path) -> None:
         subprocess.Popen([str(path)], start_new_session=True)
 
 
+
+def probe_update(*, local_version: str | None = None, app_dir: Path | None = None) -> dict:
+    """
+    Check GitHub Releases without prompting.
+    Returns dict with keys: status, local, message, and optionally remote, asset_url.
+    status: up_to_date | available | skipped
+    """
+    local = local_version or load_version(app_dir)
+    token = find_github_token()
+    release = _http_json(RELEASES_LATEST, token)
+    if release is None:
+        return {
+            "status": "skipped",
+            "local": local,
+            "message": f"Could not check updates (local {local})",
+        }
+    tag = str(release.get("tag_name") or release.get("name") or "").strip()
+    if not tag:
+        return {
+            "status": "skipped",
+            "local": local,
+            "message": f"No release tag (local {local})",
+        }
+    if not version_is_newer(tag, local):
+        return {
+            "status": "up_to_date",
+            "local": local,
+            "remote": tag,
+            "message": f"Up to date ({local})",
+        }
+    asset = find_setup_asset(release)
+    if asset is None:
+        return {
+            "status": "skipped",
+            "local": local,
+            "remote": tag,
+            "message": f"Update {tag} has no installer asset",
+        }
+    url, _name = asset
+    return {
+        "status": "available",
+        "local": local,
+        "remote": tag,
+        "asset_url": url,
+        "message": f"Update available ({tag})…",
+    }
+
+
 def check_and_offer_update(*, local_version: str | None = None, app_dir: Path | None = None) -> bool:
     """
     Check GitHub Releases for a newer Setup.exe. If the user accepts, download,
@@ -197,37 +245,32 @@ def check_and_offer_update(*, local_version: str | None = None, app_dir: Path | 
 
     On auth/network failure, skip silently (log only).
     """
-    local = local_version or load_version(app_dir)
-    token = find_github_token()
+    _quitting, _msg = check_and_offer_update_with_status(
+        local_version=local_version, app_dir=app_dir
+    )
+    return _quitting
 
-    release = _http_json(RELEASES_LATEST, token)
-    if release is None and token is None:
-        # Private repo likely — try again is pointless without token
-        logger.info("No release info (unauthenticated); skipping update")
-        return False
-    if release is None:
-        logger.info("No release info with token; skipping update")
-        return False
 
-    tag = str(release.get("tag_name") or release.get("name") or "").strip()
-    if not tag:
-        logger.info("Release has no tag; skipping update")
-        return False
+def check_and_offer_update_with_status(
+    *, local_version: str | None = None, app_dir: Path | None = None
+) -> tuple[bool, str]:
+    """
+    Same as check_and_offer_update, but also returns a short status string for the UI.
+    Returns (should_quit, message).
+    """
+    info = probe_update(local_version=local_version, app_dir=app_dir)
+    local = str(info.get("local") or load_version(app_dir))
+    if info["status"] != "available":
+        logger.info("%s", info.get("message"))
+        return False, str(info.get("message") or f"Up to date ({local})")
 
-    if not version_is_newer(tag, local):
-        logger.info("Up to date (local=%s remote=%s)", local, tag)
-        return False
-
-    asset = find_setup_asset(release)
-    if asset is None:
-        logger.info("Release %s has no %s asset; skipping", tag, SETUP_ASSET_NAME)
-        return False
-
-    url, _name = asset
+    tag = str(info["remote"])
+    url = str(info["asset_url"])
     if not _ask_user(tag, local):
         logger.info("User declined update %s", tag)
-        return False
+        return False, f"Update available ({tag}) — declined"
 
+    token = find_github_token()
     tmp_dir = Path(tempfile.mkdtemp(prefix="gm-session-update-"))
     dest = tmp_dir / SETUP_ASSET_NAME
     if not _download(url, dest, token):
@@ -244,12 +287,12 @@ def check_and_offer_update(*, local_version: str | None = None, app_dir: Path | 
             root.destroy()
         except Exception:  # noqa: BLE001
             pass
-        return False
+        return False, "Download failed"
 
     try:
         launch_installer(dest)
     except OSError as exc:
         logger.info("Could not launch installer: %s", exc)
-        return False
+        return False, f"Could not launch installer: {exc}"
 
-    return True
+    return True, "Update started — app will quit…"

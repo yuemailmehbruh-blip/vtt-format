@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.3.0**).
+Version is in `VERSION` (currently **0.4.0**).
 
 ## Run — desktop app (recommended)
 
@@ -50,13 +50,16 @@ Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1
   - Entries with a human sheet file show a **sheet** badge
   - **Click** an actor → open its `.sheet.txt` in a **desktop sheet window** (editable; Save writes back to disk)
   - **Drag** an actor onto the map → place a white circle token labeled with initials + name (snaps to cell centers when Snap is on)
-  - **Map layers** — eye toggle per layer; **Add layer** uploads png/jpg/webp/gif into `world/assets/by-hash/` and appends a `type: map` layer
-- **Canvas draw order** — map images → walls/doors/lights/spawns → grid (if on) → tokens → additions stub
-- **Pan / zoom** — drag empty map to pan, wheel to zoom, double-click to fit; token drag wins over pan
+  - **Map layers** — eye, **Edit**, reorder ↑↓, delete; **Add layer** uploads png/jpg/webp/gif into `world/assets/by-hash/` and appends a `type: map` layer
+  - **Edit mode** (one layer at a time) — drag to move, corner/edge handles to resize. Resize modes: **Aspect** (uniform scale on corners), **H only**, **V only**. **Snap layers** (sidebar) snaps position/size to grid on release (not while dragging), independent of token snap.
+- **Token snap** — free movement while dragging; on pointerup, if Snap to grid is ON, snap to cell center (`floor(x/g)*g + g/2`). Library drop / place still snaps on place.
+- **Canvas draw order** — map images → walls/doors/lights/spawns → grid (if on) → layer edit chrome → tokens → additions stub
+- **Pan / zoom** — drag empty map to pan, wheel to zoom, double-click to fit. Hit-test: edit handles/body → tokens → pan
+- **Update** — fixed button bottom-left of the canvas; calls `window.pywebview.api.check_update()` (same as launch). Browser `serve.py` shows that Update needs the desktop app.
 
 ## Auto-update
 
-On launch (unless `--skip-update`), the desktop app checks GitHub Releases for [`yuemailmehbruh-blip/vtt-format`](https://github.com/yuemailmehbruh-blip/vtt-format):
+On launch (unless `--skip-update`), and via the in-session **Update** button, the desktop app checks GitHub Releases for [`yuemailmehbruh-blip/vtt-format`](https://github.com/yuemailmehbruh-blip/vtt-format):
 
 1. `GET /repos/.../releases/latest`
 2. Compare release tag (strip leading `v`) to local `VERSION`
@@ -68,9 +71,9 @@ Auth (for private repos): try unauthenticated first; else `GM_SESSION_GH_TOKEN` 
 Publish after a Windows build:
 
 ```bash
-gh release create v0.3.0 packaging/windows/output/GM-Session-Setup.exe \
-  --title "GM Session v0.3.0" \
-  --notes "Map layers, grid/snap toggles, asset upload, sheet windows, auto-update."
+gh release create v0.4.0 packaging/windows/output/GM-Session-Setup.exe \
+  --title "GM Session v0.4.0" \
+  --notes "Layer edit/resize, token snap-on-release, Update button, v0.4.0."
 ```
 
 (`build.ps1` prints the exact command for the current `VERSION`.)
@@ -83,7 +86,7 @@ gh release create v0.3.0 packaging/windows/output/GM-Session-Setup.exe \
 | Actor instances | `world/actors/<id>.yaml` | Prep |
 | Human sheet docs (blank `.txt` for now) | `world/actors/<id>.sheet.txt` (via actor `sheet_doc`) | Prep / GM session save |
 | Placed tokens (session) | `state/tokens/<scene-id>.json` | GM Session (play) |
-| UI prefs (grid/snap) | `state/ui/<scene-id>.json` | GM Session (play) |
+| UI prefs (grid/snap/snapLayers) | `state/ui/<scene-id>.json` | GM Session (play) |
 
 Sample actors with sheet docs:
 
@@ -125,7 +128,7 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 | PUT | `/api/sheet/<actor_id>` | Body `{"text":"…"}` → write `.sheet.txt` |
 | GET | `/api/tokens/<scene_id>` | Placed tokens JSON |
 | PUT | `/api/tokens/<scene_id>` | Body `{"tokens":[…]}` → write `state/tokens/<id>.json` |
-| GET | `/api/ui/<scene_id>` | UI prefs (`showGrid`, `snapToGrid`) |
+| GET | `/api/ui/<scene_id>` | UI prefs (`showGrid`, `snapToGrid`, `snapLayers`) |
 | PUT | `/api/ui/<scene_id>` | Persist UI prefs to `state/ui/<id>.json` |
 | GET | `/assets/<sha256>` | Content-addressed asset |
 

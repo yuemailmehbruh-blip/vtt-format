@@ -228,6 +228,96 @@
       width: 100%;
       height: 100%;
     }
+
+    .layer-item.editing {
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 1px rgba(110, 168, 254, 0.3);
+    }
+    .layer-item .layer-btns {
+      display: flex;
+      flex-shrink: 0;
+      gap: 0.15rem;
+    }
+    .layer-item .icon-btn {
+      width: 24px;
+      height: 22px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.7rem;
+      line-height: 1;
+      padding: 0;
+    }
+    .layer-item .icon-btn:hover { border-color: var(--accent); color: var(--text); }
+    .layer-item .icon-btn.on {
+      color: var(--accent);
+      border-color: rgba(110, 168, 254, 0.5);
+    }
+    .layer-item .icon-btn.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
+    .layer-tools {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      margin: 0 0 0.5rem;
+      padding: 0.4rem 0.45rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      font-size: 0.75rem;
+    }
+    .layer-tools .row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.45rem;
+    }
+    .layer-tools label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+      cursor: pointer;
+      user-select: none;
+      color: var(--muted);
+    }
+    .layer-tools label.active { color: var(--text); }
+    .layer-tools input { accent-color: var(--accent); margin: 0; }
+    #update-bar {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0.55rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: rgba(27, 32, 48, 0.92);
+      backdrop-filter: blur(4px);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+    }
+    #btn-update {
+      font-size: 0.8rem;
+      padding: 0.3rem 0.7rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--accent);
+      cursor: pointer;
+      font-weight: 600;
+    }
+    #btn-update:hover { border-color: var(--accent); }
+    #btn-update:disabled { opacity: 0.6; cursor: wait; }
+    #update-status {
+      font-size: 0.75rem;
+      color: var(--muted);
+      max-width: 220px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     #layer-file { display: none; }
     @media (max-width: 900px) {
       #layout { grid-template-columns: 200px 1fr; }
@@ -244,7 +334,7 @@
       <label><input type="checkbox" id="toggle-snap" checked /> Snap to grid</label>
     </div>
     <span id="status"></span>
-    <span class="hint">Drag actors onto map · Drag tokens to move · Empty map pans · Wheel zoom · Click actor for sheet window</span>
+    <span class="hint">Drag actors onto map · Drag tokens · Edit map layers · Wheel zoom · Click actor for sheet</span>
   </header>
   <div id="layout">
     <aside id="library">
@@ -256,11 +346,28 @@
         <h2>Map layers</h2>
         <button type="button" class="btn-add" id="btn-add-layer" title="Upload a map image as a new layer">Add layer</button>
       </div>
+      <div class="layer-tools" id="layer-tools">
+        <div class="row">
+          <label title="Snap map layer position/size to grid on release (independent of token snap)">
+            <input type="checkbox" id="toggle-snap-layers" /> Snap layers
+          </label>
+        </div>
+        <div class="row" id="layer-resize-modes" title="Resize mode while a layer is in Edit">
+          <span style="color:var(--muted)">Resize:</span>
+          <label class="active"><input type="radio" name="layer-resize-mode" value="aspect" checked /> Aspect</label>
+          <label><input type="radio" name="layer-resize-mode" value="h" /> H only</label>
+          <label><input type="radio" name="layer-resize-mode" value="v" /> V only</label>
+        </div>
+      </div>
       <div id="layer-list"></div>
       <input type="file" id="layer-file" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif" />
     </aside>
     <div id="viewport">
       <canvas id="map"></canvas>
+      <div id="update-bar">
+        <button type="button" id="btn-update" title="Check for updates (desktop app)">Update</button>
+        <span id="update-status"></span>
+      </div>
     </div>
   </div>
   <script src="/session.js"></script>

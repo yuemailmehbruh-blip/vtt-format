@@ -19,7 +19,7 @@ from server_lib import (
     is_frozen,
     resolve_campaign_path,
 )
-from updater import check_and_offer_update, load_version
+from updater import check_and_offer_update, check_and_offer_update_with_status, load_version
 
 try:
     import webview
@@ -143,6 +143,32 @@ class DesktopApi:
             pass
 
         return "opened"
+
+    def check_update(self) -> str:
+        """JS bridge: window.pywebview.api.check_update() — same check as launch."""
+        app_dir = default_app_dir()
+        version = load_version(app_dir)
+        try:
+            quitting, message = check_and_offer_update_with_status(
+                local_version=version, app_dir=app_dir
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Update check error: %s", exc)
+            return f"Update check failed: {exc}"
+
+        if quitting:
+            def _quit_soon() -> None:
+                import time
+
+                time.sleep(0.4)
+                for win in list(webview.windows):
+                    try:
+                        win.destroy()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            threading.Thread(target=_quit_soon, name="gm-session-quit", daemon=True).start()
+        return message
 
 
 def _shutdown_server(server) -> None:

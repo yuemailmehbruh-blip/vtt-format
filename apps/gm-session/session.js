@@ -13,8 +13,11 @@
   const layerListEl = document.getElementById("layer-list");
   const toggleGridEl = document.getElementById("toggle-grid");
   const toggleSnapEl = document.getElementById("toggle-snap");
+  const toggleSnapLayersEl = document.getElementById("toggle-snap-layers");
   const btnAddLayer = document.getElementById("btn-add-layer");
   const layerFileInput = document.getElementById("layer-file");
+  const btnUpdate = document.getElementById("btn-update");
+  const updateStatusEl = document.getElementById("update-status");
 
   const params = new URLSearchParams(location.search);
   let sceneId = params.get("scene") || "docks";
@@ -37,6 +40,11 @@
 
   let showGrid = true;
   let snapToGrid = true;
+  let snapLayers = false;
+  /** @type {"aspect"|"h"|"v"} */
+  let layerResizeMode = "aspect";
+  /** @type {string|null} */
+  let editingLayerId = null;
   let uiSaveTimer = null;
 
   let scale = 1;
@@ -47,8 +55,15 @@
   let lastY = 0;
   let saveTimer = null;
 
+  const HANDLE_HALF = 5;
+  const HANDLE_NAMES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+
   function setStatus(msg) {
     statusEl.textContent = msg || "";
+  }
+
+  function setUpdateStatus(msg) {
+    if (updateStatusEl) updateStatusEl.textContent = msg || "";
   }
 
   function initials(name) {
@@ -72,6 +87,19 @@
   function maybeSnap(x, y) {
     if (!snapToGrid) return [x, y];
     return snapWorld(x, y);
+  }
+
+  function snapLayerOnRelease(layer) {
+    if (!snapLayers || !layer) return;
+    const g = gridSize;
+    layer.x = Math.round((Number(layer.x) || 0) / g) * g;
+    layer.y = Math.round((Number(layer.y) || 0) / g) * g;
+    if (layer.w != null) {
+      layer.w = Math.max(g, Math.round(Number(layer.w) / g) * g);
+    }
+    if (layer.h != null) {
+      layer.h = Math.max(g, Math.round(Number(layer.h) / g) * g);
+    }
   }
 
   function resize() {
@@ -194,6 +222,65 @@
     return [(sx - offsetX) / scale, (sy - offsetY) / scale];
   }
 
+  function layerDrawSize(layer, maxX, maxY) {
+    const img = layer.img;
+    let dw = layer.w != null ? Number(layer.w) : img ? img.naturalWidth : 0;
+    let dh = layer.h != null ? Number(layer.h) : img ? img.naturalHeight : 0;
+    if (layer.w == null && layer.h == null && img) {
+      if (dw < maxX * 0.5 || dh < maxY * 0.5) {
+        dw = Math.max(maxX, gridSize);
+        dh = Math.max(maxY, gridSize);
+      }
+    }
+    return [dw, dh];
+  }
+
+  function ensureLayerSize(layer) {
+    if (layer.w != null && layer.h != null) return;
+    const img = layer.img;
+    if (img && img.naturalWidth > 0) {
+      if (layer.w == null) layer.w = img.naturalWidth;
+      if (layer.h == null) layer.h = img.naturalHeight;
+    } else {
+      if (layer.w == null) layer.w = gridSize * 10;
+      if (layer.h == null) layer.h = gridSize * 10;
+    }
+  }
+
+  function layerWorldRect(layer) {
+    ensureLayerSize(layer);
+    return {
+      x: Number(layer.x) || 0,
+      y: Number(layer.y) || 0,
+      w: Math.max(1, Number(layer.w) || 1),
+      h: Math.max(1, Number(layer.h) || 1),
+    };
+  }
+
+  function getLayerHandleScreen(layer) {
+    const r = layerWorldRect(layer);
+    const [sx, sy] = worldToScreen(r.x, r.y);
+    const sw = r.w * scale;
+    const sh = r.h * scale;
+    return {
+      nw: [sx, sy],
+      n: [sx + sw / 2, sy],
+      ne: [sx + sw, sy],
+      e: [sx + sw, sy + sh / 2],
+      se: [sx + sw, sy + sh],
+      s: [sx + sw / 2, sy + sh],
+      sw: [sx, sy + sh],
+      w: [sx, sy + sh / 2],
+      rect: { sx, sy, sw, sh },
+      world: r,
+    };
+  }
+
+  function editingLayer() {
+    if (!editingLayerId) return null;
+    return mapLayers.find((l) => l.id === editingLayerId) || null;
+  }
+
   // --- Layer 1: map images ---
   function drawMapImages() {
     const pts = collectPoints(scene);
@@ -210,15 +297,7 @@
       if (!img || !img.complete || img.naturalWidth === 0) continue;
       const lx = Number(layer.x) || 0;
       const ly = Number(layer.y) || 0;
-      let dw = layer.w != null ? Number(layer.w) : img.naturalWidth;
-      let dh = layer.h != null ? Number(layer.h) : img.naturalHeight;
-      // Tiny placeholder stretch (same logic as legacy background)
-      if (layer.w == null && layer.h == null) {
-        if (dw < maxX * 0.5 || dh < maxY * 0.5) {
-          dw = Math.max(maxX, gridSize);
-          dh = Math.max(maxY, gridSize);
-        }
-      }
+      const [dw, dh] = layerDrawSize(layer, maxX, maxY);
       const [sx, sy] = worldToScreen(lx, ly);
       ctx.save();
       ctx.globalAlpha = 0.85;
@@ -334,7 +413,6 @@
     const endRow = Math.ceil((extent.y + extent.h) / g);
 
     ctx.save();
-    // Brighter / thicker so grid stays visible on map images
     ctx.strokeStyle = "rgba(220, 230, 250, 0.55)";
     ctx.lineWidth = Math.max(1.25, 1.5 * Math.min(scale, 1.5));
 
@@ -361,6 +439,30 @@
     ctx.lineWidth = 2.5;
     const [bx, by] = worldToScreen(extent.x, extent.y);
     ctx.strokeRect(bx, by, extent.w * scale, extent.h * scale);
+    ctx.restore();
+  }
+
+  /** Selection rect + resize handles — after grid, before tokens. */
+  function drawLayerEditChrome() {
+    const layer = editingLayer();
+    if (!layer || !layer.visible) return;
+    const hs = getLayerHandleScreen(layer);
+    const { sx, sy, sw, sh } = hs.rect;
+    ctx.save();
+    ctx.strokeStyle = "#6ea8fe";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(sx, sy, sw, sh);
+    ctx.setLineDash([]);
+    const size = HANDLE_HALF * 2;
+    for (const name of HANDLE_NAMES) {
+      const [hx, hy] = hs[name];
+      ctx.fillStyle = "#1b2030";
+      ctx.strokeStyle = "#6ea8fe";
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(hx - HANDLE_HALF, hy - HANDLE_HALF, size, size);
+      ctx.strokeRect(hx - HANDLE_HALF, hy - HANDLE_HALF, size, size);
+    }
     ctx.restore();
   }
 
@@ -404,7 +506,7 @@
   /**
    * Fixed draw order (YAML layer types do not control z-order):
    * 1 map images → map geometry (walls/doors/lights/spawns) →
-   * 2 grid (if on) → 3 tokens → 4 overlay additions stub
+   * 2 grid (if on) → layer edit chrome → 3 tokens → 4 overlay additions stub
    */
   function draw() {
     const rect = viewport.getBoundingClientRect();
@@ -417,6 +519,7 @@
     drawLights();
     drawSpawns();
     drawGrid();
+    drawLayerEditChrome();
     drawTokens();
     drawOverlayAdditions();
   }
@@ -496,11 +599,11 @@
         name: l.name,
         asset: l.asset,
         visible: !!l.visible,
+        x: Number(l.x) || 0,
+        y: Number(l.y) || 0,
       };
-      if (l.x) entry.x = l.x;
-      if (l.y) entry.y = l.y;
-      if (l.w != null) entry.w = l.w;
-      if (l.h != null) entry.h = l.h;
+      if (l.w != null) entry.w = Number(l.w);
+      if (l.h != null) entry.h = Number(l.h);
       return entry;
     });
     // Map layers first (list order = bottom→top for images), then other typed layers
@@ -529,6 +632,37 @@
     }
   }
 
+  function setEditingLayer(id) {
+    editingLayerId = id;
+    if (id) {
+      const layer = mapLayers.find((l) => l.id === id);
+      if (layer) ensureLayerSize(layer);
+    }
+    renderMapLayersList();
+    draw();
+  }
+
+  function moveLayer(index, dir) {
+    const j = index + dir;
+    if (j < 0 || j >= mapLayers.length) return;
+    const tmp = mapLayers[index];
+    mapLayers[index] = mapLayers[j];
+    mapLayers[j] = tmp;
+    renderMapLayersList();
+    draw();
+    persistSceneLayers();
+  }
+
+  async function deleteLayer(layer) {
+    if (!confirm(`Delete map layer “${layer.name || layer.id}”?`)) return;
+    mapLayers = mapLayers.filter((l) => l.id !== layer.id);
+    if (editingLayerId === layer.id) editingLayerId = null;
+    renderMapLayersList();
+    draw();
+    await persistSceneLayers();
+    setStatus(`Deleted layer “${layer.id}”`);
+  }
+
   function renderMapLayersList() {
     layerListEl.innerHTML = "";
     if (!mapLayers.length) {
@@ -539,9 +673,10 @@
       layerListEl.appendChild(empty);
       return;
     }
-    for (const layer of mapLayers) {
+    mapLayers.forEach((layer, index) => {
       const item = document.createElement("div");
-      item.className = "layer-item";
+      item.className = `layer-item${editingLayerId === layer.id ? " editing" : ""}`;
+
       const eye = document.createElement("button");
       eye.type = "button";
       eye.className = `eye ${layer.visible ? "on" : "off"}`;
@@ -553,14 +688,59 @@
         draw();
         await persistSceneLayers();
       });
+
       const name = document.createElement("span");
       name.className = `lname${layer.visible ? "" : " dim"}`;
       name.textContent = layer.name;
       name.title = `${layer.name} (${layer.asset.slice(0, 12)}…)`;
+
+      const btns = document.createElement("div");
+      btns.className = "layer-btns";
+
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = `icon-btn${editingLayerId === layer.id ? " on" : ""}`;
+      editBtn.title = editingLayerId === layer.id ? "Stop editing" : "Edit layer (move/resize)";
+      editBtn.textContent = "✎";
+      editBtn.addEventListener("click", () => {
+        setEditingLayer(editingLayerId === layer.id ? null : layer.id);
+      });
+
+      const upBtn = document.createElement("button");
+      upBtn.type = "button";
+      upBtn.className = "icon-btn";
+      upBtn.title = "Move up in list (toward top of draw order)";
+      upBtn.textContent = "↑";
+      upBtn.disabled = index >= mapLayers.length - 1;
+      upBtn.addEventListener("click", () => moveLayer(index, 1));
+
+      const downBtn = document.createElement("button");
+      downBtn.type = "button";
+      downBtn.className = "icon-btn";
+      downBtn.title = "Move down in list (toward bottom of draw order)";
+      downBtn.textContent = "↓";
+      downBtn.disabled = index <= 0;
+      downBtn.addEventListener("click", () => moveLayer(index, -1));
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "icon-btn danger";
+      delBtn.title = "Delete layer";
+      delBtn.textContent = "×";
+      delBtn.addEventListener("click", () => {
+        deleteLayer(layer);
+      });
+
+      btns.appendChild(editBtn);
+      btns.appendChild(upBtn);
+      btns.appendChild(downBtn);
+      btns.appendChild(delBtn);
+
       item.appendChild(eye);
       item.appendChild(name);
+      item.appendChild(btns);
       layerListEl.appendChild(item);
-    }
+    });
   }
 
   async function loadTokens() {
@@ -604,12 +784,14 @@
         const data = await res.json();
         showGrid = data.showGrid !== false;
         snapToGrid = data.snapToGrid !== false;
+        snapLayers = !!data.snapLayers;
       }
     } catch (_) {
-      // defaults already ON
+      // defaults already ON for grid/snap; snapLayers off
     }
     toggleGridEl.checked = showGrid;
     toggleSnapEl.checked = snapToGrid;
+    if (toggleSnapLayersEl) toggleSnapLayersEl.checked = snapLayers;
   }
 
   async function persistUiPrefs() {
@@ -620,6 +802,7 @@
         body: JSON.stringify({
           showGrid,
           snapToGrid,
+          snapLayers,
         }),
       });
     } catch (_) {
@@ -628,7 +811,7 @@
     try {
       localStorage.setItem(
         `vtt-ui:${sceneId}`,
-        JSON.stringify({ showGrid, snapToGrid })
+        JSON.stringify({ showGrid, snapToGrid, snapLayers })
       );
     } catch (_) {}
   }
@@ -661,6 +844,7 @@
     url.searchParams.set("scene", sceneId);
     history.replaceState(null, "", url);
 
+    editingLayerId = null;
     setStatus(`Loading scene “${sceneId}”…`);
     const res = await fetch(`/api/scene/${encodeURIComponent(sceneId)}`);
     if (!res.ok) {
@@ -860,6 +1044,60 @@
     snapToGrid = !!toggleSnapEl.checked;
     scheduleUiPersist();
   });
+  if (toggleSnapLayersEl) {
+    toggleSnapLayersEl.addEventListener("change", () => {
+      snapLayers = !!toggleSnapLayersEl.checked;
+      scheduleUiPersist();
+    });
+  }
+
+  for (const radio of document.querySelectorAll('input[name="layer-resize-mode"]')) {
+    radio.addEventListener("change", () => {
+      if (!radio.checked) return;
+      layerResizeMode = /** @type {"aspect"|"h"|"v"} */ (radio.value);
+      for (const lab of document.querySelectorAll("#layer-resize-modes label")) {
+        const inp = lab.querySelector("input");
+        lab.classList.toggle("active", !!(inp && inp.checked));
+      }
+    });
+  }
+
+  async function runUpdateCheck() {
+    const api =
+      window.pywebview &&
+      window.pywebview.api &&
+      typeof window.pywebview.api.check_update === "function"
+        ? window.pywebview.api
+        : null;
+
+    if (!api) {
+      setUpdateStatus("Update needs the desktop app");
+      setStatus(
+        "Update check needs the GM Session desktop app (pywebview). Browser serve.py has no updater API."
+      );
+      return;
+    }
+
+    if (btnUpdate) btnUpdate.disabled = true;
+    setUpdateStatus("Checking…");
+    try {
+      const msg = await Promise.resolve(api.check_update());
+      setUpdateStatus(String(msg || "Done"));
+      setStatus(String(msg || "Update check done"));
+    } catch (err) {
+      const text = err && err.message ? err.message : String(err);
+      setUpdateStatus(`Failed: ${text}`);
+      setStatus(`Update check failed: ${text}`);
+    } finally {
+      if (btnUpdate) btnUpdate.disabled = false;
+    }
+  }
+
+  if (btnUpdate) {
+    btnUpdate.addEventListener("click", () => {
+      runUpdateCheck();
+    });
+  }
 
   function canvasLocal(e) {
     const rect = canvas.getBoundingClientRect();
@@ -883,46 +1121,245 @@
     return null;
   }
 
-  /** @type {"none"|"pan"|"token"} */
+  function hitTestResizeHandle(sx, sy) {
+    const layer = editingLayer();
+    if (!layer || !layer.visible) return null;
+    const hs = getLayerHandleScreen(layer);
+    for (const name of HANDLE_NAMES) {
+      const [hx, hy] = hs[name];
+      if (Math.abs(sx - hx) <= HANDLE_HALF + 1 && Math.abs(sy - hy) <= HANDLE_HALF + 1) {
+        return { layer, handle: name };
+      }
+    }
+    return null;
+  }
+
+  function hitTestEditingLayerBody(sx, sy) {
+    const layer = editingLayer();
+    if (!layer || !layer.visible) return null;
+    const hs = getLayerHandleScreen(layer);
+    const { sx: rx, sy: ry, sw, sh } = hs.rect;
+    if (sx >= rx && sx <= rx + sw && sy >= ry && sy <= ry + sh) return layer;
+    return null;
+  }
+
+  function cursorForHandle(handle) {
+    const map = {
+      nw: "nwse-resize",
+      se: "nwse-resize",
+      ne: "nesw-resize",
+      sw: "nesw-resize",
+      n: "ns-resize",
+      s: "ns-resize",
+      e: "ew-resize",
+      w: "ew-resize",
+    };
+    return map[handle] || "move";
+  }
+
+  /**
+   * Apply resize from pointer world position given drag origin snapshot.
+   * Modes: aspect (uniform on corners), h (width only), v (height only).
+   */
+  function applyLayerResize(layer, handle, wx, wy, origin) {
+    const minSize = 8;
+    let x = origin.lx;
+    let y = origin.ly;
+    let w = origin.lw;
+    let h = origin.lh;
+    const right = origin.lx + origin.lw;
+    const bottom = origin.ly + origin.lh;
+    const mode = layerResizeMode;
+    const isCorner = handle.length === 2;
+    const aspect = origin.lw / Math.max(origin.lh, 1e-6);
+
+    const affectW = mode !== "v";
+    const affectH = mode !== "h";
+
+    if (handle.includes("e")) {
+      if (affectW) w = Math.max(minSize, wx - origin.lx);
+    }
+    if (handle.includes("w")) {
+      if (affectW) {
+        const newX = Math.min(wx, right - minSize);
+        w = right - newX;
+        x = newX;
+      }
+    }
+    if (handle.includes("s")) {
+      if (affectH) h = Math.max(minSize, wy - origin.ly);
+    }
+    if (handle.includes("n")) {
+      if (affectH) {
+        const newY = Math.min(wy, bottom - minSize);
+        h = bottom - newY;
+        y = newY;
+      }
+    }
+
+    // Aspect: uniform scale on corner drags (default)
+    if (mode === "aspect" && isCorner) {
+      const useW = Math.abs(w - origin.lw) >= Math.abs(h - origin.lh);
+      if (useW) {
+        h = Math.max(minSize, w / aspect);
+      } else {
+        w = Math.max(minSize, h * aspect);
+      }
+      // Re-anchor opposite corner
+      if (handle.includes("w")) x = right - w;
+      else x = origin.lx;
+      if (handle.includes("n")) y = bottom - h;
+      else y = origin.ly;
+    }
+
+    // H only: lock height (corners & edges)
+    if (mode === "h") {
+      h = origin.lh;
+      y = origin.ly;
+    }
+    // V only: lock width
+    if (mode === "v") {
+      w = origin.lw;
+      x = origin.lx;
+    }
+
+    layer.x = x;
+    layer.y = y;
+    layer.w = w;
+    layer.h = h;
+  }
+
+  /** @type {"none"|"pan"|"token"|"layer-move"|"layer-resize"} */
   let dragMode = "none";
   /** @type {any|null} */
   let draggingToken = null;
+  /** @type {any|null} */
+  let draggingLayer = null;
+  /** @type {string|null} */
+  let resizeHandle = null;
+  /** @type {{lx:number,ly:number,lw:number,lh:number,ox:number,oy:number}|null} */
+  let layerDragOrigin = null;
 
   viewport.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     const [sx, sy] = canvasLocal(e);
-    const hit = hitTestToken(sx, sy);
     lastX = e.clientX;
     lastY = e.clientY;
+
+    // 1) Editing layer: handles, then body
+    const handleHit = hitTestResizeHandle(sx, sy);
+    if (handleHit) {
+      dragMode = "layer-resize";
+      draggingLayer = handleHit.layer;
+      resizeHandle = handleHit.handle;
+      ensureLayerSize(draggingLayer);
+      const r = layerWorldRect(draggingLayer);
+      const [wx, wy] = screenToWorld(sx, sy);
+      layerDragOrigin = {
+        lx: r.x,
+        ly: r.y,
+        lw: r.w,
+        lh: r.h,
+        ox: wx,
+        oy: wy,
+      };
+      dragging = false;
+      viewport.classList.remove("dragging");
+      viewport.style.cursor = cursorForHandle(handleHit.handle);
+      viewport.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    const layerBody = hitTestEditingLayerBody(sx, sy);
+    if (layerBody) {
+      dragMode = "layer-move";
+      draggingLayer = layerBody;
+      resizeHandle = null;
+      ensureLayerSize(layerBody);
+      const r = layerWorldRect(layerBody);
+      const [wx, wy] = screenToWorld(sx, sy);
+      layerDragOrigin = {
+        lx: r.x,
+        ly: r.y,
+        lw: r.w,
+        lh: r.h,
+        ox: wx,
+        oy: wy,
+      };
+      dragging = false;
+      viewport.classList.remove("dragging");
+      viewport.style.cursor = "move";
+      viewport.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // 2) Tokens
+    const hit = hitTestToken(sx, sy);
     if (hit) {
       dragMode = "token";
       draggingToken = hit;
+      draggingLayer = null;
       dragging = false;
       viewport.classList.remove("dragging");
       viewport.style.cursor = "grabbing";
-    } else {
-      dragMode = "pan";
-      draggingToken = null;
-      dragging = true;
-      viewport.classList.add("dragging");
+      viewport.setPointerCapture(e.pointerId);
+      return;
     }
+
+    // 3) Pan
+    dragMode = "pan";
+    draggingToken = null;
+    draggingLayer = null;
+    dragging = true;
+    viewport.classList.add("dragging");
     viewport.setPointerCapture(e.pointerId);
   });
+
   viewport.addEventListener("pointermove", (e) => {
     if (dragMode === "none") {
       const [sx, sy] = canvasLocal(e);
+      const handleHit = hitTestResizeHandle(sx, sy);
+      if (handleHit) {
+        viewport.style.cursor = cursorForHandle(handleHit.handle);
+        return;
+      }
+      if (hitTestEditingLayerBody(sx, sy)) {
+        viewport.style.cursor = "move";
+        return;
+      }
       viewport.style.cursor = hitTestToken(sx, sy) ? "move" : "grab";
       return;
     }
+
     if (dragMode === "token" && draggingToken) {
+      // Free movement while dragging — snap only on pointerup
       const [sx, sy] = canvasLocal(e);
       const [wx, wy] = screenToWorld(sx, sy);
-      const [nx, ny] = maybeSnap(wx, wy);
-      draggingToken.x = nx;
-      draggingToken.y = ny;
+      draggingToken.x = wx;
+      draggingToken.y = wy;
       draw();
       return;
     }
+
+    if (dragMode === "layer-move" && draggingLayer && layerDragOrigin) {
+      const [sx, sy] = canvasLocal(e);
+      const [wx, wy] = screenToWorld(sx, sy);
+      const dx = wx - layerDragOrigin.ox;
+      const dy = wy - layerDragOrigin.oy;
+      draggingLayer.x = layerDragOrigin.lx + dx;
+      draggingLayer.y = layerDragOrigin.ly + dy;
+      draw();
+      return;
+    }
+
+    if (dragMode === "layer-resize" && draggingLayer && layerDragOrigin && resizeHandle) {
+      const [sx, sy] = canvasLocal(e);
+      const [wx, wy] = screenToWorld(sx, sy);
+      applyLayerResize(draggingLayer, resizeHandle, wx, wy, layerDragOrigin);
+      draw();
+      return;
+    }
+
     if (dragMode === "pan" && dragging) {
       offsetX += e.clientX - lastX;
       offsetY += e.clientY - lastY;
@@ -931,12 +1368,31 @@
       draw();
     }
   });
+
   function endDrag(e) {
     if (dragMode === "token" && draggingToken) {
+      if (snapToGrid) {
+        const [nx, ny] = snapWorld(draggingToken.x, draggingToken.y);
+        draggingToken.x = nx;
+        draggingToken.y = ny;
+        draw();
+      }
       schedulePersist();
+    }
+    if (
+      (dragMode === "layer-move" || dragMode === "layer-resize") &&
+      draggingLayer
+    ) {
+      snapLayerOnRelease(draggingLayer);
+      draw();
+      persistSceneLayers();
+      extent = computeExtent(scene);
     }
     dragMode = "none";
     draggingToken = null;
+    draggingLayer = null;
+    resizeHandle = null;
+    layerDragOrigin = null;
     dragging = false;
     viewport.classList.remove("dragging");
     viewport.style.cursor = "grab";
