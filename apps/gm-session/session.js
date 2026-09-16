@@ -914,19 +914,23 @@
   }
 
   /**
-   * Project bright/dark thin lines. Vertical lines → score per x; horizontal → per y.
-   * Uses the whole image so grass/trees on the center strip cannot win.
+   * Project bright/dark thin lines inside a center rectangle (not a 1px strip).
+   * Vertical lines → score per x; horizontal → per y. Pixels outside the ROI
+   * stay 0 so a decorative frame / faded margin cannot dominate.
    */
-  function lineProjections(imgData, w, h) {
+  function lineProjections(imgData, w, h, roi) {
     const d = imgData.data;
     const vBright = new Float64Array(w);
     const vDark = new Float64Array(w);
     const hBright = new Float64Array(h);
     const hDark = new Float64Array(h);
-    const y0 = 2;
-    const y1 = h - 2;
-    const x0 = 2;
-    const x1 = w - 2;
+    const x0 = Math.max(2, roi && roi.x0 != null ? roi.x0 | 0 : 2);
+    const y0 = Math.max(2, roi && roi.y0 != null ? roi.y0 | 0 : 2);
+    const x1 = Math.min(w - 2, roi && roi.x1 != null ? roi.x1 | 0 : w - 2);
+    const y1 = Math.min(h - 2, roi && roi.y1 != null ? roi.y1 | 0 : h - 2);
+    if (x1 - x0 < 8 || y1 - y0 < 8) {
+      return { vBright, vDark, hBright, hDark };
+    }
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
         const g = grayAt(d, w, x, y);
@@ -938,23 +942,63 @@
         hDark[y] += Math.max(0, nY - g);
       }
     }
-    // Ignore the outer frame (black border / UI edge) so it does not dominate.
-    const mx = Math.max(4, Math.floor(w * 0.01));
-    const my = Math.max(4, Math.floor(h * 0.01));
-    for (const arr of [vBright, vDark]) {
-      for (let x = 0; x < mx; x++) arr[x] = 0;
-      for (let x = w - mx; x < w; x++) arr[x] = 0;
-    }
-    for (const arr of [hBright, hDark]) {
-      for (let y = 0; y < my; y++) arr[y] = 0;
-      for (let y = h - my; y < h; y++) arr[y] = 0;
-    }
     return {
       vBright: smooth1d(vBright, 1),
       vDark: smooth1d(vDark, 1),
       hBright: smooth1d(hBright, 1),
       hDark: smooth1d(hDark, 1),
     };
+  }
+
+  function sample1d(signal, x) {
+    const n = signal.length;
+    if (!(x >= 0) || x >= n - 1) return 0;
+    const i = Math.floor(x);
+    const f = x - i;
+    return (1 - f) * signal[i] + f * signal[i + 1];
+  }
+
+  function medianOf(arr) {
+    if (!arr.length) return 0;
+    const a = arr.slice().sort((p, q) => p - q);
+    const m = Math.floor(a.length / 2);
+    return a.length % 2 ? a[m] : 0.5 * (a[m - 1] + a[m]);
+  }
+
+  /**
+   * Four consecutive grid lines around the image center = three cells.
+   * Fail if any of those lines is missing (faded edge / no lattice).
+   */
+  function axisHasThreeCells(signal, pitch, phase, center) {
+    if (!(pitch > 0) || signal.length < 8) return false;
+    const k = Math.round((center - phase) / pitch - 1.5);
+    const xs = [0, 1, 2, 3].map((i) => phase + (k + i) * pitch);
+    if (xs.some((x) => x < 1 || x > signal.length - 2)) return false;
+    const lo = Math.max(0, Math.floor(xs[0]));
+    const hi = Math.min(signal.length - 1, Math.ceil(xs[3]));
+    const slice = [];
+    for (let i = lo; i <= hi; i++) slice.push(signal[i]);
+    const med = medianOf(slice);
+    const strengths = xs.map((x) => sample1d(signal, x));
+    const peak = Math.max(...strengths);
+    if (!(peak > 0) || !(peak > med * 1.2)) return false;
+    const thresh = med + 0.35 * (peak - med);
+    return strengths.every((s) => s >= thresh);
+  }
+
+  function hasCenterThreeByThree(vSig, hSig, pitch, phaseX, phaseY, w, h) {
+    return (
+      axisHasThreeCells(vSig, pitch, phaseX, w / 2) &&
+      axisHasThreeCells(hSig, pitch, phaseY, h / 2)
+    );
+  }
+
+  function centerRoi(w, h, frac) {
+    const sideX = Math.max(16, Math.floor(w * frac));
+    const sideY = Math.max(16, Math.floor(h * frac));
+    const x0 = Math.floor((w - sideX) / 2);
+    const y0 = Math.floor((h - sideY) / 2);
+    return { x0, y0, x1: x0 + sideX, y1: y0 + sideY };
   }
 
   function autocorrAt(signal, lag) {
@@ -1099,55 +1143,77 @@
     // Grass texture lives at 4–12px; printed VTT cells are much larger.
     const minP = Math.max(20, Math.floor(Math.min(w, h) / 80));
     const maxP = Math.max(minP + 8, Math.floor(Math.min(w, h) / 4));
-    const proj = lineProjections(imgData, w, h);
-    const polarities = [
-      { name: "bright", v: proj.vBright, h: proj.hBright },
-      { name: "dark", v: proj.vDark, h: proj.hDark },
-    ];
+    // Hunt from the center outward so a second border / faded edge cannot win.
+    // A window must be able to hold a 3×3 of cells at minP.
+    const fractions = [0.4, 0.55, 0.7];
     let best = null;
-    for (const pol of polarities) {
-      const vHit = bestPitch(pol.v, minP, maxP);
-      const hHit = bestPitch(pol.h, minP, maxP);
-      if (!vHit && !hHit) continue;
-      let pitch;
-      let axis = "v";
-      if (vHit && hHit) {
-        const rel = Math.abs(vHit.lag - hHit.lag) / Math.max(vHit.lag, hHit.lag);
-        if (rel < 0.15) {
-          pitch = (vHit.lag + hHit.lag) / 2;
-          axis = "avg";
-        } else if (vHit.score >= hHit.score) {
+    for (const frac of fractions) {
+      const roi = centerRoi(w, h, frac);
+      if (roi.x1 - roi.x0 < 3.2 * minP || roi.y1 - roi.y0 < 3.2 * minP) continue;
+      const proj = lineProjections(imgData, w, h, roi);
+      const polarities = [
+        { name: "bright", v: proj.vBright, h: proj.hBright },
+        { name: "dark", v: proj.vDark, h: proj.hDark },
+      ];
+      for (const pol of polarities) {
+        const vHit = bestPitch(pol.v, minP, maxP);
+        const hHit = bestPitch(pol.h, minP, maxP);
+        if (!vHit && !hHit) continue;
+        let pitch;
+        let axis = "v";
+        if (vHit && hHit) {
+          const rel = Math.abs(vHit.lag - hHit.lag) / Math.max(vHit.lag, hHit.lag);
+          if (rel < 0.15) {
+            pitch = (vHit.lag + hHit.lag) / 2;
+            axis = "avg";
+          } else if (vHit.score >= hHit.score) {
+            pitch = vHit.lag;
+            axis = "v";
+          } else {
+            pitch = hHit.lag;
+            axis = "h";
+          }
+        } else if (vHit) {
           pitch = vHit.lag;
-          axis = "v";
         } else {
           pitch = hHit.lag;
           axis = "h";
         }
-      } else if (vHit) {
-        pitch = vHit.lag;
-      } else {
-        pitch = hHit.lag;
-        axis = "h";
+        const strip = axis === "h" ? pol.h : pol.v;
+        pitch = refinePitchWithFifths(strip, pitch, minP, maxP);
+        if (axis === "avg") {
+          const p2 = refinePitchWithFifths(pol.h, pitch, minP, maxP);
+          pitch = (pitch + p2) / 2;
+        }
+        if (!(pitch >= minP && pitch <= maxP)) continue;
+        if (roi.x1 - roi.x0 < 3.2 * pitch || roi.y1 - roi.y0 < 3.2 * pitch) continue;
+        const fitted = refinePitchAndPhase(pol.v, pol.h, pitch, minP, maxP);
+        if (
+          !hasCenterThreeByThree(
+            pol.v,
+            pol.h,
+            fitted.pitch,
+            fitted.phaseX,
+            fitted.phaseY,
+            w,
+            h
+          )
+        ) {
+          continue;
+        }
+        if (!best || fitted.score > best.score) {
+          best = {
+            pitch: fitted.pitch,
+            phaseX: fitted.phaseX,
+            phaseY: fitted.phaseY,
+            score: fitted.score,
+            polarity: pol.name,
+            width: w,
+            height: h,
+          };
+        }
       }
-      const strip = axis === "h" ? pol.h : pol.v;
-      pitch = refinePitchWithFifths(strip, pitch, minP, maxP);
-      if (axis === "avg") {
-        const p2 = refinePitchWithFifths(pol.h, pitch, minP, maxP);
-        pitch = (pitch + p2) / 2;
-      }
-      if (!(pitch >= minP && pitch <= maxP)) continue;
-      const fitted = refinePitchAndPhase(pol.v, pol.h, pitch, minP, maxP);
-      if (!best || fitted.score > best.score) {
-        best = {
-          pitch: fitted.pitch,
-          phaseX: fitted.phaseX,
-          phaseY: fitted.phaseY,
-          score: fitted.score,
-          polarity: pol.name,
-          width: w,
-          height: h,
-        };
-      }
+      if (best) break;
     }
     if (!best) return null;
     return best;
@@ -1280,7 +1346,7 @@
           const detected = detectGridPitch(srcImg);
           if (!detected) {
             statusExtra =
-              " · grid-fit: could not detect cell pitch — imported at natural size (0,0)";
+              " · grid-fit failed: no 3×3 of squares near the center — imported at natural size (0,0)";
           } else {
             const fitted = await gridFitImage(srcImg, detected);
             const cropBuf = await fitted.blob.arrayBuffer();
