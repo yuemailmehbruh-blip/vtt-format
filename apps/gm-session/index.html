@@ -331,9 +331,10 @@
     <h1 id="scene-name">Loading…</h1>
     <span class="badge">GM Session (offline)</span>
     <span class="meta" id="scene-meta"></span>
-    <div class="toggles" title="Grid visibility and snap are independent">
+    <div class="toggles" title="Grid visibility, snap, and nametags are independent">
       <label><input type="checkbox" id="toggle-grid" checked /> Grid</label>
       <label><input type="checkbox" id="toggle-snap" checked /> Snap to grid</label>
+      <label><input type="checkbox" id="toggle-nametags" checked /> Nametags</label>
     </div>
     <span id="status"></span>
     <span class="hint">Drag actors onto map · Drag tokens · Edit map layers · Wheel zoom · Click actor for sheet</span>
@@ -346,7 +347,12 @@
       <div id="scene-list"></div>
       <div class="section-head">
         <h2>Map layers</h2>
-        <button type="button" class="btn-add" id="btn-add-layer" title="Upload a map image as a new layer">Add layer</button>
+        <div style="display:inline-flex;align-items:center;gap:0.45rem;">
+          <label title="Image already has a drawn grid — detect pitch and align to map squares on import" style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.72rem;color:var(--muted);cursor:pointer;user-select:none;">
+            <input type="checkbox" id="toggle-grid-fit" /> Has grid
+          </label>
+          <button type="button" class="btn-add" id="btn-add-layer" title="Upload a map image as a new layer">Add layer</button>
+        </div>
       </div>
       <div class="layer-tools" id="layer-tools">
         <div class="row">

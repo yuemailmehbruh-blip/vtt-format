@@ -67,7 +67,7 @@ Double-click install on Windows 10/11 (no system browser):
 1. On a Windows build machine, run `packaging/windows/build.ps1` (needs Python + pywebview; Inno Setup 6 for the Setup.exe).
 2. Transfer `packaging/windows/output/GM-Session-Setup.exe` to the target PC.
 3. Double-click **GM-Session-Setup.exe**, then launch **GM Session** from the Start Menu.
-4. Publish for auto-update: `gh release create v0.4.2 packaging/windows/output/GM-Session-Setup.exe`
+4. Publish for auto-update: `gh release create v0.5.0 packaging/windows/output/GM-Session-Setup.exe`
 
 The installer places an editable `campaign\` folder next to the app (sample campaign). See `packaging/windows/README.md` for details.
 

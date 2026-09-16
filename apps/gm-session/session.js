@@ -13,7 +13,9 @@
   const layerListEl = document.getElementById("layer-list");
   const toggleGridEl = document.getElementById("toggle-grid");
   const toggleSnapEl = document.getElementById("toggle-snap");
+  const toggleNametagsEl = document.getElementById("toggle-nametags");
   const toggleSnapLayersEl = document.getElementById("toggle-snap-layers");
+  const toggleGridFitEl = document.getElementById("toggle-grid-fit");
   const btnAddLayer = document.getElementById("btn-add-layer");
   const layerFileInput = document.getElementById("layer-file");
   const btnUpdate = document.getElementById("btn-update");
@@ -40,6 +42,7 @@
 
   let showGrid = true;
   let snapToGrid = true;
+  let showNametags = true;
   let snapLayers = false;
   /** @type {"aspect"|"h"|"v"} */
   let layerResizeMode = "aspect";
@@ -288,7 +291,7 @@
       const [dw, dh] = layerDrawSize(layer, maxX, maxY);
       const [sx, sy] = worldToScreen(lx, ly);
       ctx.save();
-      ctx.globalAlpha = 0.85;
+      ctx.globalAlpha = 1;
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(img, sx, sy, dw * scale, dh * scale);
       ctx.restore();
@@ -380,13 +383,15 @@
       ctx.textBaseline = "middle";
       ctx.fillText(label, cx, cy);
 
-      ctx.font = `${Math.max(10, 11 * Math.min(scale, 1.3))}px system-ui, sans-serif`;
-      ctx.textBaseline = "top";
-      ctx.fillStyle = "#e8ecf4";
-      ctx.strokeStyle = "rgba(0,0,0,0.75)";
-      ctx.lineWidth = 3;
-      ctx.strokeText(t.name || "", cx, cy + r + 3);
-      ctx.fillText(t.name || "", cx, cy + r + 3);
+      if (showNametags) {
+        ctx.font = `${Math.max(10, 11 * Math.min(scale, 1.3))}px system-ui, sans-serif`;
+        ctx.textBaseline = "top";
+        ctx.fillStyle = "#e8ecf4";
+        ctx.strokeStyle = "rgba(0,0,0,0.75)";
+        ctx.lineWidth = 3;
+        ctx.strokeText(t.name || "", cx, cy + r + 3);
+        ctx.fillText(t.name || "", cx, cy + r + 3);
+      }
     }
     ctx.restore();
   }
@@ -675,13 +680,15 @@
         const data = await res.json();
         showGrid = data.showGrid !== false;
         snapToGrid = data.snapToGrid !== false;
+        showNametags = data.showNametags !== false;
         snapLayers = !!data.snapLayers;
       }
     } catch (_) {
-      // defaults already ON for grid/snap; snapLayers off
+      // defaults already ON for grid/snap/nametags; snapLayers off
     }
     toggleGridEl.checked = showGrid;
     toggleSnapEl.checked = snapToGrid;
+    if (toggleNametagsEl) toggleNametagsEl.checked = showNametags;
     if (toggleSnapLayersEl) toggleSnapLayersEl.checked = snapLayers;
   }
 
@@ -693,6 +700,7 @@
         body: JSON.stringify({
           showGrid,
           snapToGrid,
+          showNametags,
           snapLayers,
         }),
       });
@@ -702,7 +710,7 @@
     try {
       localStorage.setItem(
         `vtt-ui:${sceneId}`,
-        JSON.stringify({ showGrid, snapToGrid, snapLayers })
+        JSON.stringify({ showGrid, snapToGrid, showNametags, snapLayers })
       );
     } catch (_) {}
   }
@@ -864,25 +872,297 @@
     renderLibrary();
   }
 
+
+  // --- Grid-fit on map import (image already contains a drawn grid) ---
+
+  function loadImageFromBlob(blob) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Failed to decode image"));
+      };
+      img.src = url;
+    });
+  }
+
+  function stripLuminance(imgData, w, h, horizontal) {
+    const d = imgData.data;
+    if (horizontal) {
+      const y = Math.min(h - 1, Math.max(0, Math.floor(h / 2)));
+      const out = new Float64Array(w);
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        out[x] = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      }
+      return out;
+    }
+    const x = Math.min(w - 1, Math.max(0, Math.floor(w / 2)));
+    const out = new Float64Array(h);
+    for (let y = 0; y < h; y++) {
+      const i = (y * w + x) * 4;
+      out[y] = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+    }
+    return out;
+  }
+
+  function autocorrBestLag(signal, minLag, maxLag) {
+    const n = signal.length;
+    if (n < minLag * 2 + 2) return null;
+    maxLag = Math.min(maxLag, Math.floor(n / 2));
+    if (maxLag < minLag) return null;
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += signal[i];
+    mean /= n;
+    let bestLag = -1;
+    let bestScore = -Infinity;
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let s = 0;
+      let c = 0;
+      for (let i = 0; i + lag < n; i++) {
+        s += (signal[i] - mean) * (signal[i + lag] - mean);
+        c++;
+      }
+      const score = c ? s / c : 0;
+      if (score > bestScore) {
+        bestScore = score;
+        bestLag = lag;
+      }
+    }
+    if (bestLag < minLag || !(bestScore > 0)) return null;
+    return { lag: bestLag, score: bestScore };
+  }
+
+  function refinePitchWithFifths(signal, pitch, minP, maxP) {
+    const n = signal.length;
+    const target = 5 * pitch;
+    const lo = Math.max(Math.ceil(4.2 * pitch), Math.ceil(minP * 4));
+    const hi = Math.min(Math.floor(5.8 * pitch), Math.floor(maxP * 6), Math.floor(n / 2));
+    if (hi < lo) return pitch;
+    const fifth = autocorrBestLag(signal, lo, hi);
+    if (fifth && fifth.lag >= 5 * minP) {
+      const refined = fifth.lag / 5;
+      if (refined >= minP && refined <= maxP) pitch = refined;
+    }
+    // Computational 5th-square lattice from strip center; measure spans between
+    // nearest strong edges to refine further (marks are never drawn/saved).
+    const cx = n / 2;
+    const positions = [];
+    const maxK = Math.floor(Math.min(cx, n - cx) / (5 * pitch));
+    for (let k = -maxK; k <= maxK; k++) {
+      const expected = cx + 5 * k * pitch;
+      const half = Math.max(2, pitch * 0.45);
+      const a = Math.max(1, Math.floor(expected - half));
+      const b = Math.min(n - 2, Math.ceil(expected + half));
+      let bestI = Math.round(expected);
+      let bestG = -1;
+      for (let i = a; i <= b; i++) {
+        const g = Math.abs(signal[i + 1] - signal[i - 1]);
+        if (g > bestG) {
+          bestG = g;
+          bestI = i;
+        }
+      }
+      if (bestG > 0) positions.push(bestI);
+    }
+    positions.sort((a, b) => a - b);
+    const spans = [];
+    for (let i = 1; i < positions.length; i++) {
+      const span = positions[i] - positions[i - 1];
+      if (span > pitch * 2.5 && span < pitch * 8) spans.push(span / 5);
+    }
+    if (spans.length) {
+      spans.sort((a, b) => a - b);
+      const med = spans[Math.floor(spans.length / 2)];
+      if (med >= minP && med <= maxP) pitch = med;
+    }
+    return pitch;
+  }
+
+  function detectGridPitch(img) {
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    if (w < 16 || h < 16) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const c = canvas.getContext("2d", { willReadFrequently: true });
+    c.imageSmoothingEnabled = false;
+    c.drawImage(img, 0, 0);
+    let imgData;
+    try {
+      imgData = c.getImageData(0, 0, w, h);
+    } catch (_) {
+      return null;
+    }
+    const minP = 4;
+    const maxP = Math.max(minP, Math.floor(Math.min(w, h) / 2));
+    const hStrip = stripLuminance(imgData, w, h, true);
+    const vStrip = stripLuminance(imgData, w, h, false);
+    const hHit = autocorrBestLag(hStrip, minP, maxP);
+    const vHit = autocorrBestLag(vStrip, minP, maxP);
+    if (!hHit && !vHit) return null;
+
+    let pitch;
+    let axis = "h";
+    if (hHit && vHit) {
+      const rel = Math.abs(hHit.lag - vHit.lag) / Math.max(hHit.lag, vHit.lag);
+      if (rel < 0.12) {
+        pitch = (hHit.lag + vHit.lag) / 2;
+        axis = "avg";
+      } else if (hHit.score >= vHit.score) {
+        pitch = hHit.lag;
+        axis = "h";
+      } else {
+        pitch = vHit.lag;
+        axis = "v";
+      }
+    } else if (hHit) {
+      pitch = hHit.lag;
+      axis = "h";
+    } else {
+      pitch = vHit.lag;
+      axis = "v";
+    }
+
+    const strip = axis === "v" ? vStrip : hStrip;
+    pitch = refinePitchWithFifths(strip, pitch, minP, maxP);
+    // Also refine on the other axis when both were close
+    if (axis === "avg") {
+      const p2 = refinePitchWithFifths(vStrip, pitch, minP, maxP);
+      pitch = (pitch + p2) / 2;
+    }
+    if (!(pitch >= minP && pitch <= maxP)) return null;
+    return { pitch, width: w, height: h };
+  }
+
+  function nearestFifthLattice(wx, wy, g) {
+    const step = 5 * g;
+    const a = Math.round(wx / step);
+    const b = Math.round(wy / step);
+    return [a * step, b * step];
+  }
+
+  function pickImageCenterWorld() {
+    const g = gridSize;
+    const emptyish =
+      mapLayers.length === 0 &&
+      tokens.length === 0;
+    if (emptyish) {
+      return nearestFifthLattice(0, 0, g);
+    }
+    const cx = extent.x + extent.w / 2;
+    const cy = extent.y + extent.h / 2;
+    return nearestFifthLattice(cx, cy, g);
+  }
+
+  /**
+   * Scale/align image so 1 detected cell = 1 map cell, crop to whole squares.
+   * Returns { blob, x, y, w, h, pitch, cropped: boolean } or null on hard failure.
+   */
+  async function gridFitImage(img, detected) {
+    const g = gridSize;
+    const pitch = detected.pitch;
+    const imgW = detected.width;
+    const imgH = detected.height;
+    const s = g / pitch;
+    const cx = imgW / 2;
+    const cy = imgH / 2;
+    const [cxWorld, cyWorld] = pickImageCenterWorld();
+    let x = cxWorld - cx * s;
+    let y = cyWorld - cy * s;
+    let ww = imgW * s;
+    let hh = imgH * s;
+
+    let left = Math.ceil(x / g) * g;
+    let top = Math.ceil(y / g) * g;
+    let right = Math.floor((x + ww) / g) * g;
+    let bottom = Math.floor((y + hh) / g) * g;
+    let cropped = true;
+    let warning = "";
+    if (right <= left || bottom <= top) {
+      cropped = false;
+      warning =
+        "Grid-fit: crop empty after snap — using full scaled image (warning)";
+      left = x;
+      top = y;
+      right = x + ww;
+      bottom = y + hh;
+    }
+
+    const srcX = (left - x) / s;
+    const srcY = (top - y) / s;
+    const srcW = (right - left) / s;
+    const srcH = (bottom - top) / s;
+
+    const outW = Math.max(1, Math.round(srcW));
+    const outH = Math.max(1, Math.round(srcH));
+    const ox = Math.max(0, Math.min(imgW - 1, Math.round(srcX)));
+    const oy = Math.max(0, Math.min(imgH - 1, Math.round(srcY)));
+    const ow = Math.max(1, Math.min(imgW - ox, outW));
+    const oh = Math.max(1, Math.min(imgH - oy, outH));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = ow;
+    canvas.height = oh;
+    const c = canvas.getContext("2d");
+    c.imageSmoothingEnabled = false;
+    // Crop only — no marks/overlays drawn
+    c.drawImage(img, ox, oy, ow, oh, 0, 0, ow, oh);
+
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
+        "image/png"
+      );
+    });
+
+    return {
+      blob,
+      x: cropped ? left : x,
+      y: cropped ? top : y,
+      w: cropped ? right - left : ww,
+      h: cropped ? bottom - top : hh,
+      pitch,
+      scale: s,
+      cropped,
+      warning,
+    };
+  }
+
+  async function postAssetBuffer(buf, contentType, assetName) {
+    const res = await fetch("/api/assets", {
+      method: "POST",
+      headers: {
+        "Content-Type": contentType || "application/octet-stream",
+        "X-Asset-Name": assetName,
+      },
+      body: buf,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(`Upload failed (${res.status}): ${err.error || ""}`);
+    }
+    return res.json();
+  }
+
   async function addMapLayerFromFile(file) {
     if (!file) return;
+    const wantGridFit = !!(toggleGridFitEl && toggleGridFitEl.checked);
     setStatus(`Uploading ${file.name}…`);
     try {
       const buf = await file.arrayBuffer();
-      const res = await fetch("/api/assets", {
-        method: "POST",
-        headers: {
-          "Content-Type": file.type || "application/octet-stream",
-          "X-Asset-Name": `maps/${file.name}`,
-        },
-        body: buf,
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        setStatus(`Upload failed (${res.status}): ${err.error || ""}`);
-        return;
-      }
-      const { hash, name } = await res.json();
+      const { hash: originalHash, name } = await postAssetBuffer(
+        buf,
+        file.type || "application/octet-stream",
+        `maps/${file.name}`
+      );
+
       const baseId = String(file.name || "layer")
         .replace(/\.[^.]+$/, "")
         .replace(/[^A-Za-z0-9_-]+/g, "-")
@@ -894,16 +1174,54 @@
       while (used.has(id)) {
         id = `${baseId}-${n++}`;
       }
-      const img = await loadImageByHash(hash);
-      mapLayers.push({
+
+      let assetHash = originalHash;
+      let layerX = 0;
+      let layerY = 0;
+      let layerW = undefined;
+      let layerH = undefined;
+      let statusExtra = "";
+
+      if (wantGridFit) {
+        try {
+          const srcImg = await loadImageFromBlob(new Blob([buf], { type: file.type || "image/png" }));
+          const detected = detectGridPitch(srcImg);
+          if (!detected) {
+            statusExtra =
+              " · grid-fit: could not detect cell pitch — imported at natural size (0,0)";
+          } else {
+            const fitted = await gridFitImage(srcImg, detected);
+            const cropBuf = await fitted.blob.arrayBuffer();
+            const cropName = `maps/${file.name.replace(/\.[^.]+$/, "") || "layer"}-gridfit.png`;
+            const cropped = await postAssetBuffer(cropBuf, "image/png", cropName);
+            assetHash = cropped.hash;
+            layerX = fitted.x;
+            layerY = fitted.y;
+            layerW = fitted.w;
+            layerH = fitted.h;
+            statusExtra =
+              ` · grid-fit pitch ${detected.pitch.toFixed(2)}px → scale ${(gridSize / detected.pitch).toFixed(3)}` +
+              (fitted.cropped ? "" : " · uncropped fallback");
+            if (fitted.warning) statusExtra += ` · ${fitted.warning}`;
+          }
+        } catch (fitErr) {
+          statusExtra = ` · grid-fit failed (${fitErr}) — imported without fit`;
+        }
+      }
+
+      const img = await loadImageByHash(assetHash);
+      const layer = {
         id,
         name: file.name.replace(/\.[^.]+$/, "") || name || id,
-        asset: hash,
+        asset: assetHash,
         visible: true,
-        x: 0,
-        y: 0,
+        x: layerX,
+        y: layerY,
         img,
-      });
+      };
+      if (layerW != null) layer.w = layerW;
+      if (layerH != null) layer.h = layerH;
+      mapLayers.push(layer);
       // Ensure scene has layers key including legacy upgrade
       if (!scene.layers) scene.layers = [];
       const ok = await persistSceneLayers();
@@ -911,7 +1229,9 @@
       extent = computeExtent(scene);
       renderMapLayersList();
       draw();
-      setStatus(`Added map layer “${id}” (${hash.slice(0, 12)}…)`);
+      setStatus(
+        `Added map layer “${id}” (${assetHash.slice(0, 12)}…)${statusExtra}`
+      );
     } catch (err) {
       setStatus(`Upload error: ${err}`);
     }
@@ -935,6 +1255,13 @@
     snapToGrid = !!toggleSnapEl.checked;
     scheduleUiPersist();
   });
+  if (toggleNametagsEl) {
+    toggleNametagsEl.addEventListener("change", () => {
+      showNametags = !!toggleNametagsEl.checked;
+      draw();
+      scheduleUiPersist();
+    });
+  }
   if (toggleSnapLayersEl) {
     toggleSnapLayersEl.addEventListener("change", () => {
       snapLayers = !!toggleSnapLayersEl.checked;

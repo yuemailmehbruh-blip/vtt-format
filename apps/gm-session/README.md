@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.4.2**).
+Version is in `VERSION` (currently **0.5.0**).
 
 ## Run — desktop app (recommended)
 
@@ -45,12 +45,12 @@ Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1
 
 ## UI
 
-- **Header** — scene name + “GM Session (offline)” + **Grid** / **Snap to grid** toggles (independent; default both ON; persisted in `state/ui/<scene-id>.json`)
+- **Header** — scene name + “GM Session (offline)” + **Grid** / **Snap to grid** / **Nametags** toggles (independent; default all ON; persisted in `state/ui/<scene-id>.json` as `showGrid`, `snapToGrid`, `showNametags`)
 - **Left library** — Characters/Actors from `world/actors/*.yaml`; Scenes from `world/scenes/`; **Map layers** list
   - Entries with a human sheet file show a **sheet** badge
   - **Click** an actor → open its `.sheet.txt` in a **desktop sheet window** (editable; Save writes back to disk)
   - **Drag** an actor onto the map → place a white circle token labeled with initials + name (snaps to cell centers when Snap is on)
-  - **Map layers** — eye, **Edit**, reorder ↑ bring forward / ↓ send back, delete; list shows topmost first (array stays bottom→top); **Add layer** uploads png/jpg/webp/gif into `world/assets/by-hash/` and appends as new topmost
+  - **Map layers** — eye, **Edit**, reorder ↑ bring forward / ↓ send back, delete; list shows topmost first (array stays bottom→top); **Add layer** uploads png/jpg/webp/gif into `world/assets/by-hash/` and appends as new topmost. **Has grid** (beside Add layer): when checked, detect the image’s drawn grid pitch, scale so 1 image cell = 1 map cell, align the image center to the nearest 5th-square lattice point, crop to whole map squares, and store the cropped PNG as the layer asset (original upload is kept too). When unchecked, import at natural size at (0,0). Map images draw fully opaque.
   - **Edit mode** (one layer at a time) — drag to move, corner/edge handles to resize. Resize modes: **Aspect** (uniform scale on corners), **H only**, **V only**. **Snap layers** (sidebar) snaps position/size to grid on release (not while dragging), independent of token snap.
 - **Token snap** — free movement while dragging; on pointerup, if Snap to grid is ON, snap to cell center (`floor(x/g)*g + g/2`). Library drop / place still snaps on place.
 - **Canvas draw order** — map images → grid (if on) → tokens → additions stub → layer edit chrome (play view does not draw walls/doors/lights/spawns)
@@ -72,9 +72,9 @@ Auth (for private repos): `GM_SESSION_GH_TOKEN` / `GITHUB_TOKEN`, `%LOCALAPPDATA
 Publish after a Windows build:
 
 ```bash
-gh release create v0.4.2 packaging/windows/output/GM-Session-Setup.exe \
-  --title "GM Session v0.4.2" \
-  --notes "Update app installs the program (private-repo API download, silent Inno)."
+gh release create v0.5.0 packaging/windows/output/GM-Session-Setup.exe \
+  --title "GM Session v0.5.0" \
+  --notes "Nametags toggle, opaque map layers, Has-grid import fit."
 ```
 
 (`build.ps1` prints the exact command for the current `VERSION`.)
@@ -87,7 +87,7 @@ gh release create v0.4.2 packaging/windows/output/GM-Session-Setup.exe \
 | Actor instances | `world/actors/<id>.yaml` | Prep |
 | Human sheet docs (blank `.txt` for now) | `world/actors/<id>.sheet.txt` (via actor `sheet_doc`) | Prep / GM session save |
 | Placed tokens (session) | `state/tokens/<scene-id>.json` | GM Session (play) |
-| UI prefs (grid/snap/snapLayers) | `state/ui/<scene-id>.json` | GM Session (play) |
+| UI prefs (grid/snap/nametags/snapLayers) | `state/ui/<scene-id>.json` | GM Session (play) |
 
 Sample actors with sheet docs:
 
@@ -129,7 +129,7 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 | PUT | `/api/sheet/<actor_id>` | Body `{"text":"…"}` → write `.sheet.txt` |
 | GET | `/api/tokens/<scene_id>` | Placed tokens JSON |
 | PUT | `/api/tokens/<scene_id>` | Body `{"tokens":[…]}` → write `state/tokens/<id>.json` |
-| GET | `/api/ui/<scene_id>` | UI prefs (`showGrid`, `snapToGrid`, `snapLayers`) |
+| GET | `/api/ui/<scene_id>` | UI prefs (`showGrid`, `snapToGrid`, `showNametags`, `snapLayers`) |
 | PUT | `/api/ui/<scene_id>` | Persist UI prefs to `state/ui/<id>.json` |
 | GET | `/assets/<sha256>` | Content-addressed asset |
 
