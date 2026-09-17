@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.5.6**).
+Version is in `VERSION` (currently **0.5.13**).
 
 ## Run — desktop app (recommended)
 
@@ -50,7 +50,7 @@ Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1
   - Entries with a human sheet file show a **sheet** badge
   - **Click** an actor → open its `.sheet.txt` in a **desktop sheet window** (editable; Save writes back to disk)
   - **Drag** an actor onto the map → place a white circle token labeled with initials + name (snaps to cell centers when Snap is on)
-  - **Map layers** — eye, **Edit**, reorder ↑ bring forward / ↓ send back, delete; list shows topmost first (array stays bottom→top); **Add layer** uploads png/jpg/webp/gif into `world/assets/by-hash/` and appends as new topmost. **Has grid** (beside Add layer): when checked, stage 1 runs the 0.5.4 center-ROI hunt (strict 4/4 center 3×3); if null, stage 2 runs 0.5.5 (half-pitch correction, looser gate, 3-of-4 center lines). Both stages try alternate axis lags and 2× candidates so a subharmonic cannot block the true cell. `minP` floor is 14px (still above typical grass noise). If both fail, import at natural size (0,0). Otherwise scale 1 printed cell = 1 map cell, align lines, crop to whole squares. When unchecked, import at natural size at (0,0). Map images draw fully opaque.
+  - **Map layers** — eye, **Edit**, reorder ↑ bring forward / ↓ send back, delete; list shows topmost first (array stays bottom→top); **Add layer** uploads png/jpg/webp/gif into `world/assets/by-hash/` and appends as new topmost. **Has grid** (beside Add layer): when checked, stage 1 is the 0.5.3 full-image printed-line comb fit, then a light 0.5.5-era center 3×3 sanity check (peakMed 1.08 / threshFrac 0.22 / 3-of-4 lines). If stage 1 is null or fails sanity, stage 2 runs 0.5.5 (center ROI + half-pitch + looser gate) with 0.5.12 pieces kept inside stage 2 only (`minP` floor 14, multi-candidate lags, 3-of-4). Stage 1 keeps classic `minP` floor 20. If both fail, import at natural size (0,0). Otherwise scale 1 printed cell = 1 map cell, align lines, crop to whole squares. When unchecked, import at natural size at (0,0). Map images draw fully opaque.
   - **Edit mode** (one layer at a time) — drag to move, corner/edge handles to resize (aspect locked). **Scale** opens a dialog for width/height in tiles; **Flip H** / **Flip V** / **Rotate** transform the layer. **Snap layers** (sidebar) snaps position/size to grid on release (not while dragging), independent of token snap.
 - **Token snap** — free movement while dragging; on pointerup, if Snap to grid is ON, snap to cell center (`floor(x/g)*g + g/2`). Library drop / place still snaps on place.
 - **Canvas draw order** — map images → grid (if on) → tokens → additions stub → layer edit chrome (play view does not draw walls/doors/lights/spawns)
@@ -171,3 +171,7 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 ## 0.5.12
 
 - Has-grid: `minP` floor 20→14; multi-candidate lags (primary, other axis, 2×) so subharmonic autocorr peaks cannot block the true cell; stage 2 accepts 3-of-4 center comb lines (chat-sized Jahaka / water-center maps). Still 0.5.4→0.5.5 staging — not 0.5.8.
+
+## 0.5.13
+
+- Has-grid: two-stage is now **0.5.3 → 0.5.5** (not 0.5.4→0.5.5). Stage 1 = full-image 0.5.3 comb fit + light lattice sanity (0.5.5-era center 3×3, 3-of-4 / 1.08 / 0.22) so a wrong non-null pitch (Jahaka) cannot block stage 2. Stage 2 keeps 0.5.12 pieces (`minP` 14, multi-cand, 3-of-4, maybeHalve). Not 0.5.7/0.5.8.

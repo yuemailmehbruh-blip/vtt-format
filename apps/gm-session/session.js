@@ -1361,7 +1361,65 @@
   }
 
   /**
-   * Shared ROI polarity hunt used by 0.5.4 / 0.5.5 stages.
+   * 0.5.3-style full-image polarity pick: best single lag per polarity (no
+   * multi-candidate / 2× hunt). Returns fitted pitch/phase plus the winning
+   * projection signals for lattice sanity checks.
+   */
+  function pickPitchFromProjections(proj, minP, maxP) {
+    const polarities = [
+      { name: "bright", v: proj.vBright, h: proj.hBright },
+      { name: "dark", v: proj.vDark, h: proj.hDark },
+    ];
+    let best = null;
+    for (const pol of polarities) {
+      const vHit = bestPitch(pol.v, minP, maxP);
+      const hHit = bestPitch(pol.h, minP, maxP);
+      if (!vHit && !hHit) continue;
+      let pitch;
+      let axis = "v";
+      if (vHit && hHit) {
+        const rel = Math.abs(vHit.lag - hHit.lag) / Math.max(vHit.lag, hHit.lag);
+        if (rel < 0.15) {
+          pitch = (vHit.lag + hHit.lag) / 2;
+          axis = "avg";
+        } else if (vHit.score >= hHit.score) {
+          pitch = vHit.lag;
+          axis = "v";
+        } else {
+          pitch = hHit.lag;
+          axis = "h";
+        }
+      } else if (vHit) {
+        pitch = vHit.lag;
+      } else {
+        pitch = hHit.lag;
+        axis = "h";
+      }
+      const strip = axis === "h" ? pol.h : pol.v;
+      pitch = refinePitchWithFifths(strip, pitch, minP, maxP);
+      if (axis === "avg") {
+        const p2 = refinePitchWithFifths(pol.h, pitch, minP, maxP);
+        pitch = (pitch + p2) / 2;
+      }
+      if (!(pitch >= minP && pitch <= maxP)) continue;
+      const fitted = refinePitchAndPhase(pol.v, pol.h, pitch, minP, maxP);
+      if (!best || fitted.score > best.score) {
+        best = {
+          pitch: fitted.pitch,
+          phaseX: fitted.phaseX,
+          phaseY: fitted.phaseY,
+          score: fitted.score,
+          polarity: pol.name,
+          vSig: pol.v,
+          hSig: pol.h,
+        };
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Shared ROI polarity hunt used by stage 2 (0.5.5 + 0.5.12 pieces).
    * `opts.halve` enables 0.5.5 mid-cell doubling correction.
    * `opts.peakMed` / `opts.threshFrac` select the center-3×3 gate strength.
    * `opts.minLines` how many of the 4 center comb lines must clear the gate (4 or 3).
@@ -1462,22 +1520,49 @@
     return best;
   }
 
-  /** Stage 1: 0.5.4 — center ROI hunt, strict center 3×3 (4/4 lines), no half-pitch. */
+  /**
+   * Stage 1: 0.5.3 full-image printed-line comb fit (b5c88d4 / 0.5.9).
+   * Then a *light* lattice sanity check — 0.5.5-era center 3×3 with peakMed
+   * 1.08 / threshFrac 0.22 / **3-of-4** center comb lines (not the strict
+   * 0.5.4 1.2/0.35/4-of-4 gate). Wrong non-null pitches (e.g. Jahaka ~50px
+   * with no real center lattice) fail and fall through to stage 2.
+   */
   function detectGridPitchStage1(imgData, w, h, minP, maxP) {
-    const hit = detectGridPitchInCenterRois(imgData, w, h, minP, maxP, {
-      peakMed: 1.2,
-      threshFrac: 0.35,
-      halve: false,
-      minLines: 4,
-    });
+    const proj = lineProjections(imgData, w, h);
+    const hit = pickPitchFromProjections(proj, minP, maxP);
     if (!hit) return null;
-    return { ...hit, stage: 1 };
+    if (
+      !hasCenterThreeByThree(
+        hit.vSig,
+        hit.hSig,
+        hit.pitch,
+        hit.phaseX,
+        hit.phaseY,
+        w,
+        h,
+        1.08,
+        0.22,
+        3
+      )
+    ) {
+      return null;
+    }
+    return {
+      pitch: hit.pitch,
+      phaseX: hit.phaseX,
+      phaseY: hit.phaseY,
+      score: hit.score,
+      polarity: hit.polarity,
+      width: w,
+      height: h,
+      stage: 1,
+    };
   }
 
   /**
-   * Stage 2: 0.5.5 — same center hunt plus mid-cell doubling correction, a
-   * slightly looser 3×3 gate, and 3-of-4 center lines (chat-sized / water-center
-   * maps). Runs only when stage 1 returns null.
+   * Stage 2: 0.5.5 center ROI + maybeHalve + looser gate, plus 0.5.12 pieces
+   * that help Jahaka (minP floor 14 via caller, multi-candidate lags, 3-of-4
+   * center lines). Runs when stage 1 is null or fails lattice sanity.
    */
   function detectGridPitchStage2(imgData, w, h, minP, maxP) {
     const hit = detectGridPitchInCenterRois(imgData, w, h, minP, maxP, {
@@ -1506,13 +1591,14 @@
     } catch (_) {
       return null;
     }
-    // Floor 14 still rejects typical grass/noise (4–12px); allows ~16px chat-JPG cells.
-    // Doubled pitch is corrected in stage 2 by mid-cell checks.
-    const minP = Math.max(14, Math.floor(Math.min(w, h) / 80));
-    const maxP = Math.max(minP + 8, Math.floor(Math.min(w, h) / 4));
-    const stage1 = detectGridPitchStage1(imgData, w, h, minP, maxP);
+    // Stage 1 uses classic 0.5.3 minP floor 20 (grass/noise rejection).
+    // Stage 2 uses floor 14 so ~16px chat-JPG cells (Jahaka) can lock.
+    const minP1 = Math.max(20, Math.floor(Math.min(w, h) / 80));
+    const minP2 = Math.max(14, Math.floor(Math.min(w, h) / 80));
+    const maxP = Math.max(minP2 + 8, Math.floor(Math.min(w, h) / 4));
+    const stage1 = detectGridPitchStage1(imgData, w, h, minP1, maxP);
     if (stage1) return stage1;
-    return detectGridPitchStage2(imgData, w, h, minP, maxP);
+    return detectGridPitchStage2(imgData, w, h, minP2, maxP);
   }
 
   /**
@@ -1642,7 +1728,7 @@
           const detected = detectGridPitch(srcImg);
           if (!detected) {
             statusExtra =
-              " · grid-fit: no grid (0.5.4→0.5.5 stages) — imported at natural size (0,0)";
+              " · grid-fit: no grid (0.5.3→0.5.5 stages) — imported at natural size (0,0)";
           } else {
             const fitted = await gridFitImage(srcImg, detected);
             const cropBuf = await fitted.blob.arrayBuffer();
