@@ -2462,111 +2462,44 @@
 
   window.addEventListener("resize", resize);
 
-  // --- Dice / roll dock (bottom-right) ---
-  function rollUniformInt(sides) {
-    const n = Math.max(1, Math.floor(Number(sides) || 1));
-    return 1 + Math.floor(Math.random() * n);
+  // --- Rolls pop-out (bottom-right button) ---
+  function openRolls() {
+    const api =
+      window.pywebview &&
+      window.pywebview.api &&
+      typeof window.pywebview.api.open_rolls === "function"
+        ? window.pywebview.api
+        : null;
+
+    if (api) {
+      Promise.resolve(api.open_rolls())
+        .then(() => setStatus("Rolls window opened"))
+        .catch((err) =>
+          setStatus(`Could not open rolls: ${err && err.message ? err.message : err}`)
+        );
+      return;
+    }
+
+    // Browser / serve.py fallback: open the standalone page.
+    const w = window.open(
+      "/rolls.html",
+      "gm-session-rolls",
+      "width=420,height=560,menubar=no,toolbar=no,location=no,status=no"
+    );
+    if (w) {
+      setStatus("Rolls window opened");
+    } else {
+      setStatus(
+        "Could not open Rolls window (popup blocked?). Use the GM Session desktop app, or allow pop-ups for this origin."
+      );
+    }
   }
 
-  /** Box–Muller normal sample, rounded to nearest integer. */
-  function sampleBell(mean, stdev) {
-    const m = Number(mean);
-    const s = Number(stdev);
-    if (!(s > 0) || !Number.isFinite(m) || !Number.isFinite(s)) return null;
-    let u = 0;
-    let v = 0;
-    while (u === 0) u = Math.random();
-    while (v === 0) v = Math.random();
-    const z = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-    return Math.round(m + z * s);
-  }
-
-  /** @type {{label: string, result: number, detail: string}[]} */
-  const rollHistory = [];
-  const rollHistoryEl = document.getElementById("roll-history");
-  const rollHistoryListEl = document.getElementById("roll-history-list");
-  const btnRollClear = document.getElementById("btn-roll-clear");
   const btnRolls = document.getElementById("btn-rolls");
-  const rollPopover = document.getElementById("roll-popover");
-  const dieSidesEl = document.getElementById("die-sides");
-  const btnDieRoll = document.getElementById("btn-die-roll");
-  const bellMeanEl = document.getElementById("bell-mean");
-  const bellStdevEl = document.getElementById("bell-stdev");
-  const btnBellSample = document.getElementById("btn-bell-sample");
-
-  function setRollPopoverOpen(open) {
-    if (!rollPopover || !btnRolls) return;
-    rollPopover.classList.toggle("open", !!open);
-    btnRolls.setAttribute("aria-expanded", open ? "true" : "false");
-  }
-
-  function renderRollHistory() {
-    if (!rollHistoryListEl || !rollHistoryEl) return;
-    rollHistoryListEl.innerHTML = "";
-    for (const entry of rollHistory) {
-      const line = document.createElement("div");
-      line.className = "roll-line";
-      line.innerHTML =
-        `${escapeHtml(entry.label)} → <span class="roll-val">${escapeHtml(String(entry.result))}</span>` +
-        (entry.detail ? ` <span style="color:var(--muted)">${escapeHtml(entry.detail)}</span>` : "");
-      rollHistoryListEl.appendChild(line);
-    }
-    const has = rollHistory.length > 0;
-    rollHistoryEl.classList.toggle("visible", has);
-    if (has) {
-      rollHistoryEl.scrollTop = rollHistoryEl.scrollHeight;
-    }
-  }
-
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  function appendRoll(label, result, detail) {
-    rollHistory.push({ label, result, detail: detail || "" });
-    renderRollHistory();
-    setStatus(`${label} → ${result}`);
-  }
-
-  if (btnRolls && rollPopover) {
+  if (btnRolls) {
     btnRolls.addEventListener("click", (e) => {
       e.stopPropagation();
-      setRollPopoverOpen(!rollPopover.classList.contains("open"));
-    });
-    rollPopover.addEventListener("click", (e) => e.stopPropagation());
-    document.addEventListener("click", () => setRollPopoverOpen(false));
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") setRollPopoverOpen(false);
-    });
-  }
-  if (btnRollClear) {
-    btnRollClear.addEventListener("click", () => {
-      rollHistory.length = 0;
-      renderRollHistory();
-    });
-  }
-  if (btnDieRoll) {
-    btnDieRoll.addEventListener("click", () => {
-      const sides = Math.max(1, Math.floor(Number(dieSidesEl && dieSidesEl.value) || 1));
-      if (dieSidesEl) dieSidesEl.value = String(sides);
-      const result = rollUniformInt(sides);
-      appendRoll(`Dice 1–${sides}`, result, "");
-    });
-  }
-  if (btnBellSample) {
-    btnBellSample.addEventListener("click", () => {
-      const mean = Number(bellMeanEl && bellMeanEl.value);
-      const stdev = Number(bellStdevEl && bellStdevEl.value);
-      const result = sampleBell(mean, stdev);
-      if (result == null) {
-        setStatus("Bell sample needs finite mean and σ > 0");
-        return;
-      }
-      appendRoll(`Bell μ=${mean} σ=${stdev}`, result, "");
+      openRolls();
     });
   }
 

@@ -35,7 +35,7 @@ Assets are **content-addressed**: files live at `world/assets/by-hash/<sha256-he
 
 ## GM Session (offline DM foundation)
 
-Desktop app (**pywebview**): editable map layers + grid/snap toggles + library sidebar + drag-to-place tokens + **Update app** (upgrades the installed program). Sheets open as separate desktop windows. Blank sheet docs live under the campaign path.
+Desktop app (**pywebview**): editable map layers + grid/snap toggles + library sidebar + drag-to-place tokens + **Update app** (upgrades the installed program). Sheets and **Rolls** open as separate desktop windows. Blank sheet docs live under the campaign path.
 
 ```bash
 pip install -r packages/campaign-format/requirements.txt
@@ -54,7 +54,7 @@ python apps/gm-session/serve.py
 - Each actor has a human sheet at `world/actors/<id>.sheet.txt`
 - Drag an actor onto the map → white circle token (`size_tiles` diameter); placements persist in `state/tokens/<scene>.json`
 - Click an actor → sheet window (desktop app) with **Sheet** + **Appearance** tabs; Save writes `.sheet.txt` / actor appearance
-- Select tokens on the map; snap Center|Corner; bottom-right Rolls dock (dice + bell + history)
+- Select tokens on the map; snap Center|Corner; bottom-right **Rolls** opens a pop-out window (dice + bell + history)
 - Auto-update on launch via GitHub Releases (`GM-Session-Setup.exe`); see `apps/gm-session/README.md`
 - Play view draws map layers + grid + tokens only (walls/doors/lights/spawns are not rendered)
 

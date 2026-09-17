@@ -176,6 +176,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/sheet.js":
             self._send_file(app / "sheet.js")
             return
+        if path == "/rolls.html":
+            self._send_file(app / "rolls.html")
+            return
+        if path == "/rolls.js":
+            self._send_file(app / "rolls.js")
+            return
         if path == "/favicon.ico":
             self._send(204, b"", "image/x-icon")
             return

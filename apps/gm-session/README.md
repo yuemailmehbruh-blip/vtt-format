@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.5.15**).
+Version is in `VERSION` (currently **0.5.16**).
 
 ## Run — desktop app (recommended)
 
@@ -23,7 +23,7 @@ pip install pywebview
 python apps/gm-session/desktop_app.py --skip-update
 ```
 
-Opens a **pywebview** window titled “GM Session” (not Chrome / the system browser). Character sheets open as **additional desktop windows** via `window.pywebview.api.open_sheet(actor_id)`.
+Opens a **pywebview** window titled “GM Session” (not Chrome / the system browser). Character sheets open as **additional desktop windows** via `window.pywebview.api.open_sheet(actor_id)`. Rolls open via `window.pywebview.api.open_rolls()` (single reusable window).
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -33,7 +33,7 @@ Opens a **pywebview** window titled “GM Session” (not Chrome / the system br
 | `--port` | `8765` | Bind port |
 | `--skip-update` | off | Skip GitHub Releases update check |
 
-Closing the main window stops the local HTTP server and exits. Closing a sheet window only closes that sheet. Re-clicking the same actor focuses the existing sheet window.
+Closing the main window stops the local HTTP server and exits (sheet and Rolls windows are closed too). Closing a sheet window only closes that sheet. Re-clicking the same actor focuses the existing sheet window. Re-clicking **Rolls** focuses the existing Rolls window.
 
 ## Run — browser debug (`serve.py`)
 
@@ -57,7 +57,7 @@ Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1
 - **Token select** — click a token to select (accent ring); click empty map (without much drag) clears selection; double-click token opens that actor’s sheet; library “active” follows the selected token’s actor
 - **Token size** — circle diameter in tiles (`size_tiles`); world radius = `(size_tiles * gridSize) / 2`. Canonical value on actor YAML `appearance.size_tiles`; copied onto tokens when placed; Appearance save updates all tokens for that actor on the current scene
 - **Pan / zoom** — drag empty map to pan, wheel to zoom, double-click empty map to fit. Hit-test: edit handles/body → tokens → pan
-- **Roll dock** — bottom-right over the map (above the corner; Update app stays bottom-left). **Rolls** opens an upward popover with **Dice roll** (uniform 1–x) and **Bell curve sample** (Normal μ,σ rounded). Session roll history panel above the button (newest at bottom, auto-scroll; Clear; in-memory only).
+- **Rolls** — bottom-right button over the map (Update app stays bottom-left). Opens a **pop-out window** (like sheets) with **Dice roll** (uniform 1–x), **Bell curve sample** (Normal μ,σ rounded), and session roll history (newest at bottom, auto-scroll; Clear; in-memory only). Desktop: `open_rolls()`; browser `serve.py` falls back to `window.open('/rolls.html')`.
 - **Update app** — fixed button bottom-left of the canvas; upgrades the installed program (not the map). Looks on GitHub Releases for a Setup.exe, downloads it, runs the installer, quits, then relaunches. Status text under the button tracks that. Browser `serve.py` has no updater API.
 
 ## Auto-update
@@ -129,6 +129,9 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 |--------|------|---------|
 | GET | `/` | App UI |
 | GET | `/sheet.html` | Sheet pop-out UI (desktop window) |
+| GET | `/sheet.js` | Sheet pop-out script |
+| GET | `/rolls.html` | Rolls pop-out UI (desktop window) |
+| GET | `/rolls.js` | Rolls pop-out script |
 | GET | `/api/library` | Actors + scenes for the sidebar |
 | GET | `/api/scene/<id>` | Scene YAML as JSON |
 | PUT | `/api/scene/<id>/layers` | Body `{"layers":[…]}` → rewrite only the `layers` key |
@@ -194,3 +197,6 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Corner snapping** — Snap to grid keeps the checkbox; add **Center** | **Corner** segmented control (persisted `snapTarget`). Corner snaps token centers to grid intersections (`round(x/g)*g`); Center keeps cell centers.
 - **Roll dock** — header dice strip removed. Bottom-right **Rolls** menu (Dice roll / Bell curve sample) with session roll history panel above it; Update app remains bottom-left.
 
+## 0.5.16
+
+- **Rolls pop-out** — bottom-right **Rolls** button opens a dedicated window (`rolls.html` / `open_rolls()`), matching character sheets. Inline popover/history chrome removed from the map; dice, bell sample, and history live in the pop-out.

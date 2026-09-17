@@ -99,12 +99,13 @@ def _actor_title(campaign_root: Path, actor_id: str) -> str:
 
 
 class DesktopApi:
-    """JS bridge: open_sheet, appearance_saved, check_update."""
+    """JS bridge: open_sheet, open_rolls, appearance_saved, check_update."""
 
     def __init__(self, base_url: str, campaign_root: Path) -> None:
         self.base_url = base_url.rstrip("/")
         self.campaign_root = campaign_root
         self._sheets: dict[str, object] = {}
+        self._rolls_window: object | None = None
 
     def open_sheet(self, actor_id: str) -> str:
         actor_id = (actor_id or "").strip()
@@ -138,6 +139,43 @@ class DesktopApi:
         def _on_closed() -> None:
             if self._sheets.get(actor_id) is window:
                 del self._sheets[actor_id]
+
+        try:
+            window.events.closed += _on_closed
+        except Exception:  # noqa: BLE001
+            pass
+
+        return "opened"
+
+
+    def open_rolls(self) -> str:
+        """Open or focus a single reusable Rolls pop-out window."""
+        existing = self._rolls_window
+        if existing is not None and existing in webview.windows:
+            try:
+                existing.show()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                existing.restore()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            return "focused"
+
+        url = f"{self.base_url}/rolls.html"
+        window = webview.create_window(
+            "Rolls",
+            url,
+            js_api=self,
+            width=420,
+            height=560,
+            min_size=(320, 420),
+        )
+        self._rolls_window = window
+
+        def _on_closed() -> None:
+            if self._rolls_window is window:
+                self._rolls_window = None
 
         try:
             window.events.closed += _on_closed
@@ -303,13 +341,19 @@ def run_desktop(
     )
 
     def on_main_closed() -> None:
-        # Closing the main window ends the app; sheet windows go with the process.
+        # Closing the main window ends the app; sheet/rolls windows go with the process.
         for actor_id, win in list(api._sheets.items()):
             try:
                 win.destroy()  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001
                 pass
             api._sheets.pop(actor_id, None)
+        if api._rolls_window is not None:
+            try:
+                api._rolls_window.destroy()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            api._rolls_window = None
         _shutdown_server(server)
 
     try:
