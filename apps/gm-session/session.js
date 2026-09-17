@@ -44,8 +44,8 @@
   let snapToGrid = true;
   let showNametags = true;
   let snapLayers = false;
-  /** @type {"aspect"|"h"|"v"} */
-  let layerResizeMode = "aspect";
+  /** Resize handles always use aspect on corners; edges stretch one axis. */
+  const layerResizeMode = "aspect";
   /** @type {string|null} */
   let editingLayerId = null;
   let uiSaveTimer = null;
@@ -272,6 +272,17 @@
     return mapLayers.find((l) => l.id === editingLayerId) || null;
   }
 
+  function layerFlipX(layer) {
+    return !!layer.flipX;
+  }
+  function layerFlipY(layer) {
+    return !!layer.flipY;
+  }
+  function layerRotation(layer) {
+    const r = Number(layer.rotation) || 0;
+    return ((r % 360) + 360) % 360;
+  }
+
   // --- Layer 1: map images ---
   function drawMapImages() {
     const pts = collectPoints(scene);
@@ -290,10 +301,26 @@
       const ly = Number(layer.y) || 0;
       const [dw, dh] = layerDrawSize(layer, maxX, maxY);
       const [sx, sy] = worldToScreen(lx, ly);
+      const sw = dw * scale;
+      const sh = dh * scale;
+      const rot = layerRotation(layer);
+      const fx = layerFlipX(layer);
+      const fy = layerFlipY(layer);
       ctx.save();
       ctx.globalAlpha = 1;
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(img, sx, sy, dw * scale, dh * scale);
+      if (rot || fx || fy) {
+        // AABB is layer.w×h; after 90/270 the content box is the swapped size.
+        const odd = rot === 90 || rot === 270;
+        const cw = (odd ? sh : sw);
+        const ch = (odd ? sw : sh);
+        ctx.translate(sx + sw / 2, sy + sh / 2);
+        if (rot) ctx.rotate((rot * Math.PI) / 180);
+        ctx.scale(fx ? -1 : 1, fy ? -1 : 1);
+        ctx.drawImage(img, -cw / 2, -ch / 2, cw, ch);
+      } else {
+        ctx.drawImage(img, sx, sy, sw, sh);
+      }
       ctx.restore();
     }
   }
@@ -454,6 +481,9 @@
         y: Number(l.y) || 0,
         w: l.w != null ? Number(l.w) : undefined,
         h: l.h != null ? Number(l.h) : undefined,
+        flipX: !!l.flipX,
+        flipY: !!l.flipY,
+        rotation: ((Number(l.rotation) || 0) % 360 + 360) % 360,
       }));
     }
     // Legacy: scene.background counts as bottom map layer
@@ -498,6 +528,10 @@
       };
       if (l.w != null) entry.w = Number(l.w);
       if (l.h != null) entry.h = Number(l.h);
+      if (l.flipX) entry.flipX = true;
+      if (l.flipY) entry.flipY = true;
+      const rot = ((Number(l.rotation) || 0) % 360 + 360) % 360;
+      if (rot) entry.rotation = rot;
       return entry;
     });
     // Map layers first (list order = bottom→top for images), then other typed layers
@@ -557,6 +591,16 @@
     setStatus(`Deleted layer “${layer.id}”`);
   }
 
+  function layerTileSize(layer) {
+    ensureLayerSize(layer);
+    const w = Number(layer.w);
+    const h = Number(layer.h);
+    if (!(w > 0) || !(h > 0) || !(gridSize > 0)) return null;
+    const tw = Math.round((w / gridSize) * 10) / 10;
+    const th = Math.round((h / gridSize) * 10) / 10;
+    return { w: tw, h: th };
+  }
+
   function renderMapLayersList() {
     layerListEl.innerHTML = "";
     if (!mapLayers.length) {
@@ -585,10 +629,20 @@
         await persistSceneLayers();
       });
 
+      const meta = document.createElement("div");
+      meta.className = "lmeta";
       const name = document.createElement("span");
       name.className = `lname${layer.visible ? "" : " dim"}`;
       name.textContent = layer.name;
       name.title = `${layer.name} (${layer.asset.slice(0, 12)}…)`;
+      const sizeEl = document.createElement("span");
+      sizeEl.className = "lsize";
+      const tiles = layerTileSize(layer);
+      sizeEl.textContent = tiles
+        ? `${tiles.w}×${tiles.h} tiles`
+        : "size unknown";
+      meta.appendChild(name);
+      meta.appendChild(sizeEl);
 
       const btns = document.createElement("div");
       btns.className = "layer-btns";
@@ -633,7 +687,7 @@
       btns.appendChild(delBtn);
 
       item.appendChild(eye);
-      item.appendChild(name);
+      item.appendChild(meta);
       item.appendChild(btns);
       layerListEl.appendChild(item);
     }
@@ -915,18 +969,22 @@
 
   /**
    * Project bright/dark thin lines. Vertical lines → score per x; horizontal → per y.
-   * Uses the whole image so grass/trees on the center strip cannot win.
+   * Optional `roi` limits accumulation (stage-2 center search). Outside ROI stays 0.
+   * Full-image mode also zeros the outer 1% frame.
    */
-  function lineProjections(imgData, w, h) {
+  function lineProjections(imgData, w, h, roi) {
     const d = imgData.data;
     const vBright = new Float64Array(w);
     const vDark = new Float64Array(w);
     const hBright = new Float64Array(h);
     const hDark = new Float64Array(h);
-    const y0 = 2;
-    const y1 = h - 2;
-    const x0 = 2;
-    const x1 = w - 2;
+    const x0 = Math.max(2, roi && roi.x0 != null ? roi.x0 | 0 : 2);
+    const y0 = Math.max(2, roi && roi.y0 != null ? roi.y0 | 0 : 2);
+    const x1 = Math.min(w - 2, roi && roi.x1 != null ? roi.x1 | 0 : w - 2);
+    const y1 = Math.min(h - 2, roi && roi.y1 != null ? roi.y1 | 0 : h - 2);
+    if (x1 - x0 < 8 || y1 - y0 < 8) {
+      return { vBright, vDark, hBright, hDark };
+    }
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
         const g = grayAt(d, w, x, y);
@@ -938,16 +996,17 @@
         hDark[y] += Math.max(0, nY - g);
       }
     }
-    // Ignore the outer frame (black border / UI edge) so it does not dominate.
-    const mx = Math.max(4, Math.floor(w * 0.01));
-    const my = Math.max(4, Math.floor(h * 0.01));
-    for (const arr of [vBright, vDark]) {
-      for (let x = 0; x < mx; x++) arr[x] = 0;
-      for (let x = w - mx; x < w; x++) arr[x] = 0;
-    }
-    for (const arr of [hBright, hDark]) {
-      for (let y = 0; y < my; y++) arr[y] = 0;
-      for (let y = h - my; y < h; y++) arr[y] = 0;
+    if (!roi) {
+      const mx = Math.max(4, Math.floor(w * 0.01));
+      const my = Math.max(4, Math.floor(h * 0.01));
+      for (const arr of [vBright, vDark]) {
+        for (let x = 0; x < mx; x++) arr[x] = 0;
+        for (let x = w - mx; x < w; x++) arr[x] = 0;
+      }
+      for (const arr of [hBright, hDark]) {
+        for (let y = 0; y < my; y++) arr[y] = 0;
+        for (let y = h - my; y < h; y++) arr[y] = 0;
+      }
     }
     return {
       vBright: smooth1d(vBright, 1),
@@ -955,6 +1014,54 @@
       hBright: smooth1d(hBright, 1),
       hDark: smooth1d(hDark, 1),
     };
+  }
+
+  function sample1d(signal, x) {
+    const n = signal.length;
+    if (!(x >= 0) || x >= n - 1) return 0;
+    const i = Math.floor(x);
+    const f = x - i;
+    return (1 - f) * signal[i] + f * signal[i + 1];
+  }
+
+  function medianOf(arr) {
+    if (!arr.length) return 0;
+    const a = arr.slice().sort((p, q) => p - q);
+    const m = Math.floor(a.length / 2);
+    return a.length % 2 ? a[m] : 0.5 * (a[m - 1] + a[m]);
+  }
+
+  function centerRoi(w, h, frac) {
+    const sideX = Math.max(16, Math.floor(w * frac));
+    const sideY = Math.max(16, Math.floor(h * frac));
+    const x0 = Math.floor((w - sideX) / 2);
+    const y0 = Math.floor((h - sideY) / 2);
+    return { x0, y0, x1: x0 + sideX, y1: y0 + sideY };
+  }
+
+  /** Four consecutive comb lines around center = three cells. */
+  function axisHasThreeCells(signal, pitch, phase, center) {
+    if (!(pitch > 0) || signal.length < 8) return false;
+    const k = Math.round((center - phase) / pitch - 1.5);
+    const xs = [0, 1, 2, 3].map((i) => phase + (k + i) * pitch);
+    if (xs.some((x) => x < 1 || x > signal.length - 2)) return false;
+    const lo = Math.max(0, Math.floor(xs[0]));
+    const hi = Math.min(signal.length - 1, Math.ceil(xs[3]));
+    const slice = [];
+    for (let i = lo; i <= hi; i++) slice.push(signal[i]);
+    const med = medianOf(slice);
+    const strengths = xs.map((x) => sample1d(signal, x));
+    const peak = Math.max(...strengths);
+    if (!(peak > 0) || !(peak > med * 1.08)) return false;
+    const thresh = med + 0.22 * (peak - med);
+    return strengths.every((s) => s >= thresh);
+  }
+
+  function hasCenterThreeByThree(vSig, hSig, pitch, phaseX, phaseY, w, h) {
+    return (
+      axisHasThreeCells(vSig, pitch, phaseX, w / 2) &&
+      axisHasThreeCells(hSig, pitch, phaseY, h / 2)
+    );
   }
 
   function autocorrAt(signal, lag) {
@@ -1080,26 +1187,7 @@
     return best;
   }
 
-  function detectGridPitch(img) {
-    const w = img.naturalWidth || img.width;
-    const h = img.naturalHeight || img.height;
-    if (w < 32 || h < 32) return null;
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const c = canvas.getContext("2d", { willReadFrequently: true });
-    c.imageSmoothingEnabled = false;
-    c.drawImage(img, 0, 0);
-    let imgData;
-    try {
-      imgData = c.getImageData(0, 0, w, h);
-    } catch (_) {
-      return null;
-    }
-    // Grass texture lives at 4–12px; printed VTT cells are much larger.
-    const minP = Math.max(20, Math.floor(Math.min(w, h) / 80));
-    const maxP = Math.max(minP + 8, Math.floor(Math.min(w, h) / 4));
-    const proj = lineProjections(imgData, w, h);
+  function pickPitchFromProjections(proj, minP, maxP) {
     const polarities = [
       { name: "bright", v: proj.vBright, h: proj.hBright },
       { name: "dark", v: proj.vDark, h: proj.hDark },
@@ -1144,13 +1232,97 @@
           phaseY: fitted.phaseY,
           score: fitted.score,
           polarity: pol.name,
-          width: w,
-          height: h,
+          vSig: pol.v,
+          hSig: pol.h,
         };
       }
     }
-    if (!best) return null;
     return best;
+  }
+
+  /** Stage 1: full-image printed-line comb fit (0.5.3 behavior). */
+  function detectGridPitchStage1(imgData, w, h, minP, maxP) {
+    const proj = lineProjections(imgData, w, h);
+    const hit = pickPitchFromProjections(proj, minP, maxP);
+    if (!hit) return null;
+    return {
+      pitch: hit.pitch,
+      phaseX: hit.phaseX,
+      phaseY: hit.phaseY,
+      score: hit.score,
+      polarity: hit.polarity,
+      width: w,
+      height: h,
+      stage: 1,
+    };
+  }
+
+  /**
+   * Stage 2: only if stage 1 found nothing. Center ROI search that must lock a
+   * 3×3 of squares near the image center (no half-tiling).
+   */
+  function detectGridPitchStage2(imgData, w, h, minP, maxP) {
+    const fractions = [0.4, 0.55, 0.7];
+    let best = null;
+    for (const frac of fractions) {
+      const roi = centerRoi(w, h, frac);
+      if (roi.x1 - roi.x0 < 3.2 * minP || roi.y1 - roi.y0 < 3.2 * minP) continue;
+      const proj = lineProjections(imgData, w, h, roi);
+      const hit = pickPitchFromProjections(proj, minP, maxP);
+      if (!hit) continue;
+      if (roi.x1 - roi.x0 < 3.2 * hit.pitch || roi.y1 - roi.y0 < 3.2 * hit.pitch) {
+        continue;
+      }
+      if (
+        !hasCenterThreeByThree(
+          hit.vSig,
+          hit.hSig,
+          hit.pitch,
+          hit.phaseX,
+          hit.phaseY,
+          w,
+          h
+        )
+      ) {
+        continue;
+      }
+      const cand = {
+        pitch: hit.pitch,
+        phaseX: hit.phaseX,
+        phaseY: hit.phaseY,
+        score: hit.score,
+        polarity: hit.polarity,
+        width: w,
+        height: h,
+        stage: 2,
+      };
+      if (!best || cand.score > best.score) best = cand;
+      break;
+    }
+    return best;
+  }
+
+  function detectGridPitch(img) {
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    if (w < 32 || h < 32) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const c = canvas.getContext("2d", { willReadFrequently: true });
+    c.imageSmoothingEnabled = false;
+    c.drawImage(img, 0, 0);
+    let imgData;
+    try {
+      imgData = c.getImageData(0, 0, w, h);
+    } catch (_) {
+      return null;
+    }
+    const minP = Math.max(20, Math.floor(Math.min(w, h) / 80));
+    const maxP = Math.max(minP + 8, Math.floor(Math.min(w, h) / 4));
+    const stage1 = detectGridPitchStage1(imgData, w, h, minP, maxP);
+    if (stage1) return stage1;
+    return detectGridPitchStage2(imgData, w, h, minP, maxP);
   }
 
   /**
@@ -1280,7 +1452,7 @@
           const detected = detectGridPitch(srcImg);
           if (!detected) {
             statusExtra =
-              " · grid-fit: could not detect cell pitch — imported at natural size (0,0)";
+              " · grid-fit: no grid (stage 1 + center 3×3) — imported at natural size (0,0)";
           } else {
             const fitted = await gridFitImage(srcImg, detected);
             const cropBuf = await fitted.blob.arrayBuffer();
@@ -1292,7 +1464,7 @@
             layerW = fitted.w;
             layerH = fitted.h;
             statusExtra =
-              ` · grid-fit ${detected.pitch.toFixed(1)}px cells, lines at ${detected.phaseX.toFixed(1)},${detected.phaseY.toFixed(1)}px` +
+              ` · grid-fit ${detected.pitch.toFixed(1)}px cells (stage ${detected.stage || 1}), lines at ${detected.phaseX.toFixed(1)},${detected.phaseY.toFixed(1)}px` +
               (fitted.cropped ? "" : " · uncropped fallback");
             if (fitted.warning) statusExtra += ` · ${fitted.warning}`;
           }
@@ -1310,6 +1482,9 @@
         x: layerX,
         y: layerY,
         img,
+        flipX: false,
+        flipY: false,
+        rotation: 0,
       };
       if (layerW != null) layer.w = layerW;
       if (layerH != null) layer.h = layerH;
@@ -1361,14 +1536,96 @@
     });
   }
 
-  for (const radio of document.querySelectorAll('input[name="layer-resize-mode"]')) {
-    radio.addEventListener("change", () => {
-      if (!radio.checked) return;
-      layerResizeMode = /** @type {"aspect"|"h"|"v"} */ (radio.value);
-      for (const lab of document.querySelectorAll("#layer-resize-modes label")) {
-        const inp = lab.querySelector("input");
-        lab.classList.toggle("active", !!(inp && inp.checked));
-      }
+  const btnLayerScale = document.getElementById("btn-layer-scale");
+  const btnLayerFlipH = document.getElementById("btn-layer-flip-h");
+  const btnLayerFlipV = document.getElementById("btn-layer-flip-v");
+  const btnLayerRotate = document.getElementById("btn-layer-rotate");
+  const scaleDialog = document.getElementById("layer-scale-dialog");
+  const scaleTilesW = document.getElementById("scale-tiles-w");
+  const scaleTilesH = document.getElementById("scale-tiles-h");
+  const scaleApply = document.getElementById("scale-apply");
+  const scaleCancel = document.getElementById("scale-cancel");
+
+  function requireEditingLayer() {
+    const layer = editingLayer();
+    if (!layer) {
+      setStatus("Select Edit on a map layer first");
+      return null;
+    }
+    ensureLayerSize(layer);
+    return layer;
+  }
+
+  function openScaleDialog() {
+    const layer = requireEditingLayer();
+    if (!layer || !scaleDialog) return;
+    const tiles = layerTileSize(layer);
+    if (scaleTilesW) scaleTilesW.value = tiles ? String(tiles.w) : "10";
+    if (scaleTilesH) scaleTilesH.value = tiles ? String(tiles.h) : "10";
+    if (typeof scaleDialog.showModal === "function") scaleDialog.showModal();
+    else scaleDialog.setAttribute("open", "");
+  }
+
+  function applyScaleDialog() {
+    const layer = requireEditingLayer();
+    if (!layer) return;
+    const tw = Math.max(0.5, Number(scaleTilesW && scaleTilesW.value) || 0);
+    const th = Math.max(0.5, Number(scaleTilesH && scaleTilesH.value) || 0);
+    layer.w = tw * gridSize;
+    layer.h = th * gridSize;
+    if (snapLayers) snapLayerOnRelease(layer);
+    draw();
+    renderMapLayersList();
+    persistSceneLayers();
+    setStatus(`Scaled ${layer.name} to ${tw}×${th} tiles`);
+    if (scaleDialog) {
+      if (typeof scaleDialog.close === "function") scaleDialog.close();
+      else scaleDialog.removeAttribute("open");
+    }
+  }
+
+  function toggleLayerFlip(axis) {
+    const layer = requireEditingLayer();
+    if (!layer) return;
+    if (axis === "h") layer.flipX = !layer.flipX;
+    else layer.flipY = !layer.flipY;
+    draw();
+    persistSceneLayers();
+    setStatus(
+      `${layer.name}: flip ${axis.toUpperCase()} ${axis === "h" ? (layer.flipX ? "on" : "off") : layer.flipY ? "on" : "off"}`
+    );
+  }
+
+  function rotateLayerCw() {
+    const layer = requireEditingLayer();
+    if (!layer) return;
+    const prev = layerRotation(layer);
+    const next = (prev + 90) % 360;
+    // Keep axis-aligned bounds: swap w/h on odd 90° steps.
+    const w = Number(layer.w) || 0;
+    const h = Number(layer.h) || 0;
+    if (w > 0 && h > 0) {
+      layer.w = h;
+      layer.h = w;
+    }
+    layer.rotation = next;
+    if (snapLayers) snapLayerOnRelease(layer);
+    draw();
+    renderMapLayersList();
+    persistSceneLayers();
+    setStatus(`${layer.name}: rotated to ${next}°`);
+  }
+
+  if (btnLayerScale) btnLayerScale.addEventListener("click", openScaleDialog);
+  if (btnLayerFlipH) btnLayerFlipH.addEventListener("click", () => toggleLayerFlip("h"));
+  if (btnLayerFlipV) btnLayerFlipV.addEventListener("click", () => toggleLayerFlip("v"));
+  if (btnLayerRotate) btnLayerRotate.addEventListener("click", rotateLayerCw);
+  if (scaleApply) scaleApply.addEventListener("click", applyScaleDialog);
+  if (scaleCancel) {
+    scaleCancel.addEventListener("click", () => {
+      if (!scaleDialog) return;
+      if (typeof scaleDialog.close === "function") scaleDialog.close();
+      else scaleDialog.removeAttribute("open");
     });
   }
 
@@ -1513,30 +1770,18 @@
       }
     }
 
-    // Aspect: uniform scale on corner drags (default)
-    if (mode === "aspect" && isCorner) {
+    // Aspect on corners; edge handles still stretch one axis (affectW/affectH).
+    if (isCorner) {
       const useW = Math.abs(w - origin.lw) >= Math.abs(h - origin.lh);
       if (useW) {
         h = Math.max(minSize, w / aspect);
       } else {
         w = Math.max(minSize, h * aspect);
       }
-      // Re-anchor opposite corner
       if (handle.includes("w")) x = right - w;
       else x = origin.lx;
       if (handle.includes("n")) y = bottom - h;
       else y = origin.ly;
-    }
-
-    // H only: lock height (corners & edges)
-    if (mode === "h") {
-      h = origin.lh;
-      y = origin.ly;
-    }
-    // V only: lock width
-    if (mode === "v") {
-      w = origin.lw;
-      x = origin.lx;
     }
 
     layer.x = x;

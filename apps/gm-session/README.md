@@ -156,3 +156,9 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 ## 0.5.9
 
 - Has-grid rolled back to the 0.5.3 printed-line comb fit (before center 3×3 / half-pitch / major-5th experiments). Update app and grid-locked tokens unchanged.
+
+## 0.5.10
+
+- Has-grid: stage 1 is the full-image 0.5.3 comb fit; stage 2 (center ROI + required center 3×3) runs only if stage 1 finds nothing. No half-tiling.
+- Map layer list shows size in tiles under the name.
+- Resize mode radios removed (aspect locked). Scale / Flip H / Flip V / Rotate buttons added.

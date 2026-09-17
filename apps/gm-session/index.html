@@ -142,14 +142,69 @@
     }
     .layer-item .eye.on { color: var(--ok); border-color: rgba(125, 222, 165, 0.35); }
     .layer-item .eye.off { opacity: 0.55; }
-    .layer-item .lname {
+    .layer-item .lmeta {
       flex: 1;
       min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+      overflow: hidden;
+    }
+    .layer-item .lname {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
     .layer-item .lname.dim { color: var(--muted); }
+    .layer-item .lsize {
+      font-size: 0.68rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .layer-xform-btn {
+      flex: 1;
+      min-width: 0;
+      padding: 0.28rem 0.2rem;
+      font-size: 0.72rem;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .layer-xform-btn:hover { border-color: var(--accent); color: var(--text); }
+    .layer-xform-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #layer-scale-dialog {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.9rem 1rem;
+      background: var(--panel);
+      color: var(--text);
+      max-width: 280px;
+    }
+    #layer-scale-dialog::backdrop { background: rgba(0,0,0,0.45); }
+    #layer-scale-dialog h3 { margin: 0 0 0.6rem; font-size: 0.9rem; }
+    #layer-scale-dialog .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    #layer-scale-dialog label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.72rem; color: var(--muted); }
+    #layer-scale-dialog input {
+      padding: 0.35rem 0.4rem;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+    }
+    #layer-scale-dialog .actions { display: flex; gap: 0.4rem; justify-content: flex-end; margin-top: 0.75rem; }
+    #layer-scale-dialog .actions button {
+      padding: 0.3rem 0.65rem;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+    }
+    #layer-scale-dialog .actions button.primary { border-color: var(--accent); color: var(--accent); }
     .lib-item {
       display: flex;
       align-items: center;
@@ -360,11 +415,11 @@
             <input type="checkbox" id="toggle-snap-layers" /> Snap layers
           </label>
         </div>
-        <div class="row" id="layer-resize-modes" title="Resize mode while a layer is in Edit">
-          <span style="color:var(--muted)">Resize:</span>
-          <label class="active"><input type="radio" name="layer-resize-mode" value="aspect" checked /> Aspect</label>
-          <label><input type="radio" name="layer-resize-mode" value="h" /> H only</label>
-          <label><input type="radio" name="layer-resize-mode" value="v" /> V only</label>
+        <div class="row" id="layer-xforms" title="Transform the layer in Edit">
+          <button type="button" class="layer-xform-btn" id="btn-layer-scale" title="Set width/height in tiles">Scale</button>
+          <button type="button" class="layer-xform-btn" id="btn-layer-flip-h" title="Mirror horizontally">Flip H</button>
+          <button type="button" class="layer-xform-btn" id="btn-layer-flip-v" title="Mirror vertically">Flip V</button>
+          <button type="button" class="layer-xform-btn" id="btn-layer-rotate" title="Rotate 90° clockwise">Rotate</button>
         </div>
       </div>
       <div id="layer-list"></div>
