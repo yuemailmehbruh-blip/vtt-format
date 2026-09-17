@@ -1043,7 +1043,7 @@
    * Four consecutive comb lines around center = three cells.
    * `peakMed` / `threshFrac`: 0.5.4 used 1.2 / 0.35; 0.5.5 loosened to 1.08 / 0.22.
    */
-  function axisHasThreeCells(signal, pitch, phase, center, peakMed, threshFrac) {
+  function axisHasThreeCells(signal, pitch, phase, center, peakMed, threshFrac, minLines) {
     if (!(pitch > 0) || signal.length < 8) return false;
     const k = Math.round((center - phase) / pitch - 1.5);
     const xs = [0, 1, 2, 3].map((i) => phase + (k + i) * pitch);
@@ -1057,15 +1057,18 @@
     const peak = Math.max(...strengths);
     const pm = peakMed == null ? 1.08 : peakMed;
     const tf = threshFrac == null ? 0.22 : threshFrac;
+    const need = minLines == null ? 4 : minLines;
     if (!(peak > 0) || !(peak > med * pm)) return false;
     const thresh = med + tf * (peak - med);
-    return strengths.every((s) => s >= thresh);
+    let hits = 0;
+    for (const s of strengths) if (s >= thresh) hits++;
+    return hits >= need;
   }
 
-  function hasCenterThreeByThree(vSig, hSig, pitch, phaseX, phaseY, w, h, peakMed, threshFrac) {
+  function hasCenterThreeByThree(vSig, hSig, pitch, phaseX, phaseY, w, h, peakMed, threshFrac, minLines) {
     return (
-      axisHasThreeCells(vSig, pitch, phaseX, w / 2, peakMed, threshFrac) &&
-      axisHasThreeCells(hSig, pitch, phaseY, h / 2, peakMed, threshFrac)
+      axisHasThreeCells(vSig, pitch, phaseX, w / 2, peakMed, threshFrac, minLines) &&
+      axisHasThreeCells(hSig, pitch, phaseY, h / 2, peakMed, threshFrac, minLines)
     );
   }
 
@@ -1361,12 +1364,16 @@
    * Shared ROI polarity hunt used by 0.5.4 / 0.5.5 stages.
    * `opts.halve` enables 0.5.5 mid-cell doubling correction.
    * `opts.peakMed` / `opts.threshFrac` select the center-3×3 gate strength.
+   * `opts.minLines` how many of the 4 center comb lines must clear the gate (4 or 3).
+   * Tries primary lag, the other axis lag, then 2× those (first pass wins per polarity)
+   * so a subharmonic autocorr peak cannot block the true cell.
    */
   function detectGridPitchInCenterRois(imgData, w, h, minP, maxP, opts) {
     const fractions = [0.4, 0.55, 0.7];
     const peakMed = opts && opts.peakMed != null ? opts.peakMed : 1.2;
     const threshFrac = opts && opts.threshFrac != null ? opts.threshFrac : 0.35;
     const doHalve = !!(opts && opts.halve);
+    const minLines = opts && opts.minLines != null ? opts.minLines : 4;
     let best = null;
     for (const frac of fractions) {
       const roi = centerRoi(w, h, frac);
@@ -1380,73 +1387,74 @@
         const vHit = bestPitch(pol.v, minP, maxP);
         const hHit = bestPitch(pol.h, minP, maxP);
         if (!vHit && !hHit) continue;
-        let pitch;
-        let axis = "v";
+        const ordered = [];
+        const addCand = (p) => {
+          if (!(p >= minP && p <= maxP)) return;
+          const key = Math.round(p * 2) / 2;
+          if (ordered.some((x) => Math.round(x * 2) / 2 === key)) return;
+          ordered.push(p);
+        };
         if (vHit && hHit) {
           const rel = Math.abs(vHit.lag - hHit.lag) / Math.max(vHit.lag, hHit.lag);
-          if (rel < 0.15) {
-            pitch = (vHit.lag + hHit.lag) / 2;
-            axis = "avg";
-          } else if (vHit.score >= hHit.score) {
-            pitch = vHit.lag;
-            axis = "v";
-          } else {
-            pitch = hHit.lag;
-            axis = "h";
-          }
+          if (rel < 0.15) addCand((vHit.lag + hHit.lag) / 2);
+          addCand(vHit.score >= hHit.score ? vHit.lag : hHit.lag);
+          addCand(vHit.lag);
+          addCand(hHit.lag);
         } else if (vHit) {
-          pitch = vHit.lag;
+          addCand(vHit.lag);
         } else {
-          pitch = hHit.lag;
-          axis = "h";
+          addCand(hHit.lag);
         }
-        const strip = axis === "h" ? pol.h : pol.v;
-        pitch = refinePitchWithFifths(strip, pitch, minP, maxP);
-        if (axis === "avg") {
+        for (const p of ordered.slice()) addCand(2 * p);
+
+        for (const pitch0 of ordered) {
+          let pitch = refinePitchWithFifths(pol.v, pitch0, minP, maxP);
           const p2 = refinePitchWithFifths(pol.h, pitch, minP, maxP);
           pitch = (pitch + p2) / 2;
-        }
-        if (!(pitch >= minP && pitch <= maxP)) continue;
-        if (roi.x1 - roi.x0 < 3.2 * pitch || roi.y1 - roi.y0 < 3.2 * pitch) continue;
-        let fitted = refinePitchAndPhase(pol.v, pol.h, pitch, minP, maxP);
-        if (doHalve) {
-          fitted = maybeHalvePitch(
-            imgData,
-            w,
-            h,
-            fitted,
-            pol.name,
-            minP,
-            maxP,
-            pol.v,
-            pol.h
-          );
-        }
-        if (
-          !hasCenterThreeByThree(
-            pol.v,
-            pol.h,
-            fitted.pitch,
-            fitted.phaseX,
-            fitted.phaseY,
-            w,
-            h,
-            peakMed,
-            threshFrac
-          )
-        ) {
-          continue;
-        }
-        if (!best || fitted.score > best.score) {
-          best = {
-            pitch: fitted.pitch,
-            phaseX: fitted.phaseX,
-            phaseY: fitted.phaseY,
-            score: fitted.score,
-            polarity: pol.name,
-            width: w,
-            height: h,
-          };
+          if (!(pitch >= minP && pitch <= maxP)) continue;
+          if (roi.x1 - roi.x0 < 3.2 * pitch || roi.y1 - roi.y0 < 3.2 * pitch) continue;
+          let fitted = refinePitchAndPhase(pol.v, pol.h, pitch, minP, maxP);
+          if (doHalve) {
+            fitted = maybeHalvePitch(
+              imgData,
+              w,
+              h,
+              fitted,
+              pol.name,
+              minP,
+              maxP,
+              pol.v,
+              pol.h
+            );
+          }
+          if (
+            !hasCenterThreeByThree(
+              pol.v,
+              pol.h,
+              fitted.pitch,
+              fitted.phaseX,
+              fitted.phaseY,
+              w,
+              h,
+              peakMed,
+              threshFrac,
+              minLines
+            )
+          ) {
+            continue;
+          }
+          if (!best || fitted.score > best.score) {
+            best = {
+              pitch: fitted.pitch,
+              phaseX: fitted.phaseX,
+              phaseY: fitted.phaseY,
+              score: fitted.score,
+              polarity: pol.name,
+              width: w,
+              height: h,
+            };
+          }
+          break; // first passing candidate for this polarity
         }
       }
       if (best) break;
@@ -1454,26 +1462,29 @@
     return best;
   }
 
-  /** Stage 1: 0.5.4 — center ROI hunt, strict center 3×3, no half-pitch. */
+  /** Stage 1: 0.5.4 — center ROI hunt, strict center 3×3 (4/4 lines), no half-pitch. */
   function detectGridPitchStage1(imgData, w, h, minP, maxP) {
     const hit = detectGridPitchInCenterRois(imgData, w, h, minP, maxP, {
       peakMed: 1.2,
       threshFrac: 0.35,
       halve: false,
+      minLines: 4,
     });
     if (!hit) return null;
     return { ...hit, stage: 1 };
   }
 
   /**
-   * Stage 2: 0.5.5 — same center hunt plus mid-cell doubling correction and a
-   * slightly looser 3×3 gate. Runs only when stage 1 returns null.
+   * Stage 2: 0.5.5 — same center hunt plus mid-cell doubling correction, a
+   * slightly looser 3×3 gate, and 3-of-4 center lines (chat-sized / water-center
+   * maps). Runs only when stage 1 returns null.
    */
   function detectGridPitchStage2(imgData, w, h, minP, maxP) {
     const hit = detectGridPitchInCenterRois(imgData, w, h, minP, maxP, {
       peakMed: 1.08,
       threshFrac: 0.22,
       halve: true,
+      minLines: 3,
     });
     if (!hit) return null;
     return { ...hit, stage: 2 };
@@ -1495,8 +1506,9 @@
     } catch (_) {
       return null;
     }
-    // Grass/noise below ~20px; a doubled pitch is corrected in stage 2 by mid-cell checks.
-    const minP = Math.max(20, Math.floor(Math.min(w, h) / 80));
+    // Floor 14 still rejects typical grass/noise (4–12px); allows ~16px chat-JPG cells.
+    // Doubled pitch is corrected in stage 2 by mid-cell checks.
+    const minP = Math.max(14, Math.floor(Math.min(w, h) / 80));
     const maxP = Math.max(minP + 8, Math.floor(Math.min(w, h) / 4));
     const stage1 = detectGridPitchStage1(imgData, w, h, minP, maxP);
     if (stage1) return stage1;
@@ -1630,7 +1642,7 @@
           const detected = detectGridPitch(srcImg);
           if (!detected) {
             statusExtra =
-              " · grid-fit: no grid (0.5.4 center 3×3 + 0.5.5 half-pitch fallback) — imported at natural size (0,0)";
+              " · grid-fit: no grid (0.5.4→0.5.5 stages) — imported at natural size (0,0)";
           } else {
             const fitted = await gridFitImage(srcImg, detected);
             const cropBuf = await fitted.blob.arrayBuffer();
