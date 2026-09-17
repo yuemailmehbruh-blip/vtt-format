@@ -76,54 +76,188 @@
       accent-color: var(--accent);
       margin: 0;
     }
-    .tools {
+    .snap-target {
       display: inline-flex;
-      align-items: center;
-      gap: 0.55rem;
-      padding: 0.2rem 0.55rem;
+      align-items: stretch;
+      margin-left: 0.15rem;
       border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .snap-target button {
+      padding: 0.12rem 0.45rem;
+      border: none;
+      border-right: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.75rem;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .snap-target button:last-child { border-right: none; }
+    .snap-target button:hover { color: var(--text); }
+    .snap-target button.active {
+      background: rgba(110, 168, 254, 0.22);
+      color: var(--accent);
+    }
+    #roll-dock {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      z-index: 6;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 0.4rem;
+      max-width: min(320px, calc(100% - 20px));
+      pointer-events: none;
+    }
+    #roll-dock > * { pointer-events: auto; }
+    #roll-history {
+      display: none;
+      width: 100%;
+      max-height: 200px;
+      overflow-y: auto;
+      padding: 0.45rem 0.55rem;
       border-radius: 8px;
-      background: var(--panel-2);
+      border: 1px solid var(--border);
+      background: rgba(27, 32, 48, 0.94);
+      backdrop-filter: blur(4px);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35);
       font-size: 0.78rem;
-      flex-wrap: wrap;
     }
-    .tools .tool-group {
-      display: inline-flex;
+    #roll-history.visible { display: block; }
+    #roll-history .roll-history-head {
+      display: flex;
       align-items: center;
-      gap: 0.28rem;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.35rem;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
     }
-    .tools label { color: var(--muted); user-select: none; }
-    .tools input[type="number"] {
-      width: 3.2rem;
-      padding: 0.15rem 0.3rem;
+    #roll-history .roll-history-head button {
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.7rem;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 500;
+    }
+    #roll-history .roll-history-head button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    #roll-history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    #roll-history-list .roll-line {
+      color: var(--text);
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    #roll-history-list .roll-line .roll-val {
+      color: var(--ok);
+      font-weight: 700;
+    }
+    #roll-menu-wrap {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+    #btn-rolls {
+      padding: 0.35rem 0.75rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: rgba(27, 32, 48, 0.94);
+      color: var(--accent);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.85rem;
+      font-weight: 700;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+      backdrop-filter: blur(4px);
+    }
+    #btn-rolls:hover { border-color: var(--accent); }
+    #btn-rolls[aria-expanded="true"] {
+      border-color: var(--accent);
+      background: rgba(110, 168, 254, 0.15);
+    }
+    #roll-popover {
+      display: none;
+      position: absolute;
+      right: 0;
+      bottom: calc(100% + 0.4rem);
+      width: min(280px, calc(100vw - 40px));
+      padding: 0.55rem 0.65rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: rgba(27, 32, 48, 0.97);
+      backdrop-filter: blur(4px);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+    }
+    #roll-popover.open { display: block; }
+    #roll-popover .roll-entry {
+      padding: 0.35rem 0;
+    }
+    #roll-popover .roll-entry + .roll-entry {
+      border-top: 1px solid var(--border);
+      margin-top: 0.25rem;
+      padding-top: 0.55rem;
+    }
+    #roll-popover .roll-entry-title {
+      font-weight: 700;
+      font-size: 0.82rem;
+      color: var(--text);
+      margin-bottom: 0.35rem;
+    }
+    #roll-popover .roll-fields {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    #roll-popover label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      user-select: none;
+    }
+    #roll-popover input[type="number"] {
+      width: 3.4rem;
+      padding: 0.2rem 0.35rem;
       border-radius: 4px;
       border: 1px solid var(--border);
       background: var(--bg);
       color: var(--text);
       font: inherit;
+      font-size: 0.82rem;
     }
-    .tools button {
-      padding: 0.18rem 0.45rem;
+    #roll-popover button.roll-go {
+      padding: 0.22rem 0.55rem;
       border-radius: 5px;
       border: 1px solid var(--border);
       background: transparent;
       color: var(--accent);
       cursor: pointer;
       font: inherit;
-      font-weight: 600;
+      font-size: 0.8rem;
+      font-weight: 700;
     }
-    .tools button:hover { border-color: var(--accent); }
-    .tools .result {
-      color: var(--ok);
-      font-weight: 600;
-      min-width: 1.5rem;
-    }
-    .tools .sep {
-      width: 1px;
-      height: 1.1rem;
-      background: var(--border);
-      margin: 0 0.1rem;
-    }
+    #roll-popover button.roll-go:hover { border-color: var(--accent); }
     #status { color: var(--accent); font-size: 0.85rem; }
     #layout {
       display: grid;
@@ -437,24 +571,11 @@
     <div class="toggles" title="Grid visibility, snap, and nametags are independent">
       <label><input type="checkbox" id="toggle-grid" checked /> Grid</label>
       <label><input type="checkbox" id="toggle-snap" checked /> Snap to grid</label>
+      <span class="snap-target" id="snap-target" role="group" aria-label="Snap target" title="Where token centers snap when Snap to grid is on">
+        <button type="button" data-snap-target="center" class="active" id="snap-target-center">Center</button>
+        <button type="button" data-snap-target="corner" id="snap-target-corner">Corner</button>
+      </span>
       <label><input type="checkbox" id="toggle-nametags" checked /> Nametags</label>
-    </div>
-    <div class="tools" title="Quick dice tools">
-      <div class="tool-group">
-        <label for="die-sides">1–</label>
-        <input type="number" id="die-sides" min="1" step="1" value="20" />
-        <button type="button" id="btn-die-roll">Roll</button>
-        <span class="result" id="die-result">—</span>
-      </div>
-      <span class="sep" aria-hidden="true"></span>
-      <div class="tool-group">
-        <label for="bell-mean">μ</label>
-        <input type="number" id="bell-mean" step="any" value="10" />
-        <label for="bell-stdev">σ</label>
-        <input type="number" id="bell-stdev" min="0.0001" step="any" value="3" />
-        <button type="button" id="btn-bell-sample">Sample</button>
-        <span class="result" id="bell-result">—</span>
-      </div>
     </div>
     <span id="status"></span>
     <span class="hint" id="header-hint">Click token to select · Double-click token for sheet · Drag actors onto map · Wheel zoom</span>
@@ -495,6 +616,38 @@
       <div id="update-bar">
         <button type="button" id="btn-update" title="Update app">Update app</button>
         <span id="update-status"></span>
+      </div>
+      <div id="roll-dock" aria-label="Dice rolls">
+        <div id="roll-history" aria-live="polite">
+          <div class="roll-history-head">
+            <span>Roll history</span>
+            <button type="button" id="btn-roll-clear" title="Clear this session's rolls">Clear</button>
+          </div>
+          <div id="roll-history-list"></div>
+        </div>
+        <div id="roll-menu-wrap">
+          <div id="roll-popover" role="dialog" aria-label="Roll tools">
+            <div class="roll-entry">
+              <div class="roll-entry-title">Dice roll</div>
+              <div class="roll-fields">
+                <label for="die-sides">1–</label>
+                <input type="number" id="die-sides" min="1" step="1" value="20" />
+                <button type="button" class="roll-go" id="btn-die-roll">Roll</button>
+              </div>
+            </div>
+            <div class="roll-entry">
+              <div class="roll-entry-title">Bell curve sample</div>
+              <div class="roll-fields">
+                <label for="bell-mean">μ</label>
+                <input type="number" id="bell-mean" step="any" value="10" />
+                <label for="bell-stdev">σ</label>
+                <input type="number" id="bell-stdev" min="0.0001" step="any" value="3" />
+                <button type="button" class="roll-go" id="btn-bell-sample">Sample</button>
+              </div>
+            </div>
+          </div>
+          <button type="button" id="btn-rolls" aria-expanded="false" aria-controls="roll-popover" title="Open roll tools">🎲 Rolls</button>
+        </div>
       </div>
     </div>
   </div>

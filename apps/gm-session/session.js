@@ -15,6 +15,7 @@
   const toggleSnapEl = document.getElementById("toggle-snap");
   const toggleNametagsEl = document.getElementById("toggle-nametags");
   const toggleSnapLayersEl = document.getElementById("toggle-snap-layers");
+  const snapTargetEl = document.getElementById("snap-target");
   const toggleGridFitEl = document.getElementById("toggle-grid-fit");
   const btnAddLayer = document.getElementById("btn-add-layer");
   const layerFileInput = document.getElementById("layer-file");
@@ -47,6 +48,8 @@
 
   let showGrid = true;
   let snapToGrid = true;
+  /** @type {"center"|"corner"} */
+  let snapTarget = "center";
   let showNametags = true;
   let snapLayers = false;
   /** Resize handles always use aspect on corners; edges stretch one axis. */
@@ -86,10 +89,22 @@
 
   function snapWorld(x, y) {
     const g = gridSize;
+    if (snapTarget === "corner") {
+      return [Math.round(x / g) * g, Math.round(y / g) * g];
+    }
     return [
       Math.floor(x / g) * g + g / 2,
       Math.floor(y / g) * g + g / 2,
     ];
+  }
+
+  function syncSnapTargetUi() {
+    if (!snapTargetEl) return;
+    const mode = snapTarget === "corner" ? "corner" : "center";
+    snapTarget = mode;
+    snapTargetEl.querySelectorAll("button[data-snap-target]").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-snap-target") === mode);
+    });
   }
 
   function maybeSnap(x, y) {
@@ -769,14 +784,18 @@
         snapToGrid = data.snapToGrid !== false;
         showNametags = data.showNametags !== false;
         snapLayers = !!data.snapLayers;
+        if (data.snapTarget === "corner" || data.snapTarget === "center") {
+          snapTarget = data.snapTarget;
+        }
       }
     } catch (_) {
-      // defaults already ON for grid/snap/nametags; snapLayers off
+      // defaults already ON for grid/snap/nametags; snapLayers off; snapTarget center
     }
     toggleGridEl.checked = showGrid;
     toggleSnapEl.checked = snapToGrid;
     if (toggleNametagsEl) toggleNametagsEl.checked = showNametags;
     if (toggleSnapLayersEl) toggleSnapLayersEl.checked = snapLayers;
+    syncSnapTargetUi();
   }
 
   async function persistUiPrefs() {
@@ -787,6 +806,7 @@
         body: JSON.stringify({
           showGrid,
           snapToGrid,
+          snapTarget,
           showNametags,
           snapLayers,
         }),
@@ -797,7 +817,7 @@
     try {
       localStorage.setItem(
         `vtt-ui:${sceneId}`,
-        JSON.stringify({ showGrid, snapToGrid, showNametags, snapLayers })
+        JSON.stringify({ showGrid, snapToGrid, snapTarget, showNametags, snapLayers })
       );
     } catch (_) {}
   }
@@ -1838,6 +1858,17 @@
     snapToGrid = !!toggleSnapEl.checked;
     scheduleUiPersist();
   });
+  if (snapTargetEl) {
+    snapTargetEl.addEventListener("click", (e) => {
+      const btn = e.target && e.target.closest && e.target.closest("button[data-snap-target]");
+      if (!btn) return;
+      const mode = btn.getAttribute("data-snap-target");
+      if (mode !== "center" && mode !== "corner") return;
+      snapTarget = mode;
+      syncSnapTargetUi();
+      scheduleUiPersist();
+    });
+  }
   if (toggleNametagsEl) {
     toggleNametagsEl.addEventListener("change", () => {
       showNametags = !!toggleNametagsEl.checked;
@@ -2431,7 +2462,7 @@
 
   window.addEventListener("resize", resize);
 
-  // --- Dice tools ---
+  // --- Dice / roll dock (bottom-right) ---
   function rollUniformInt(sides) {
     const n = Math.max(1, Math.floor(Number(sides) || 1));
     return 1 + Math.floor(Math.random() * n);
@@ -2450,21 +2481,80 @@
     return Math.round(m + z * s);
   }
 
+  /** @type {{label: string, result: number, detail: string}[]} */
+  const rollHistory = [];
+  const rollHistoryEl = document.getElementById("roll-history");
+  const rollHistoryListEl = document.getElementById("roll-history-list");
+  const btnRollClear = document.getElementById("btn-roll-clear");
+  const btnRolls = document.getElementById("btn-rolls");
+  const rollPopover = document.getElementById("roll-popover");
   const dieSidesEl = document.getElementById("die-sides");
-  const dieResultEl = document.getElementById("die-result");
   const btnDieRoll = document.getElementById("btn-die-roll");
   const bellMeanEl = document.getElementById("bell-mean");
   const bellStdevEl = document.getElementById("bell-stdev");
-  const bellResultEl = document.getElementById("bell-result");
   const btnBellSample = document.getElementById("btn-bell-sample");
 
+  function setRollPopoverOpen(open) {
+    if (!rollPopover || !btnRolls) return;
+    rollPopover.classList.toggle("open", !!open);
+    btnRolls.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function renderRollHistory() {
+    if (!rollHistoryListEl || !rollHistoryEl) return;
+    rollHistoryListEl.innerHTML = "";
+    for (const entry of rollHistory) {
+      const line = document.createElement("div");
+      line.className = "roll-line";
+      line.innerHTML =
+        `${escapeHtml(entry.label)} → <span class="roll-val">${escapeHtml(String(entry.result))}</span>` +
+        (entry.detail ? ` <span style="color:var(--muted)">${escapeHtml(entry.detail)}</span>` : "");
+      rollHistoryListEl.appendChild(line);
+    }
+    const has = rollHistory.length > 0;
+    rollHistoryEl.classList.toggle("visible", has);
+    if (has) {
+      rollHistoryEl.scrollTop = rollHistoryEl.scrollHeight;
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function appendRoll(label, result, detail) {
+    rollHistory.push({ label, result, detail: detail || "" });
+    renderRollHistory();
+    setStatus(`${label} → ${result}`);
+  }
+
+  if (btnRolls && rollPopover) {
+    btnRolls.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setRollPopoverOpen(!rollPopover.classList.contains("open"));
+    });
+    rollPopover.addEventListener("click", (e) => e.stopPropagation());
+    document.addEventListener("click", () => setRollPopoverOpen(false));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") setRollPopoverOpen(false);
+    });
+  }
+  if (btnRollClear) {
+    btnRollClear.addEventListener("click", () => {
+      rollHistory.length = 0;
+      renderRollHistory();
+    });
+  }
   if (btnDieRoll) {
     btnDieRoll.addEventListener("click", () => {
       const sides = Math.max(1, Math.floor(Number(dieSidesEl && dieSidesEl.value) || 1));
       if (dieSidesEl) dieSidesEl.value = String(sides);
       const result = rollUniformInt(sides);
-      if (dieResultEl) dieResultEl.textContent = String(result);
-      setStatus(`Roll 1–${sides}: ${result}`);
+      appendRoll(`Dice 1–${sides}`, result, "");
     });
   }
   if (btnBellSample) {
@@ -2476,8 +2566,7 @@
         setStatus("Bell sample needs finite mean and σ > 0");
         return;
       }
-      if (bellResultEl) bellResultEl.textContent = String(result);
-      setStatus(`Bell N(${mean}, ${stdev}²) → ${result}`);
+      appendRoll(`Bell μ=${mean} σ=${stdev}`, result, "");
     });
   }
 

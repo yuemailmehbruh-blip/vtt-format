@@ -273,10 +273,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
             if scene_id:
                 ui_path = self.campaign_root / "state" / "ui" / f"{scene_id}.json"
-                defaults = {"scene": scene_id, "showGrid": True, "snapToGrid": True, "showNametags": True, "snapLayers": False}
+                defaults = {"scene": scene_id, "showGrid": True, "snapToGrid": True, "snapTarget": "center", "showNametags": True, "snapLayers": False}
             else:
                 ui_path = self.campaign_root / "state" / "ui.json"
-                defaults = {"showGrid": True, "snapToGrid": True, "showNametags": True, "snapLayers": False}
+                defaults = {"showGrid": True, "snapToGrid": True, "snapTarget": "center", "showNametags": True, "snapLayers": False}
             if not ui_path.is_file():
                 self._send_json(200, defaults)
                 return

@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.5.14**).
+Version is in `VERSION` (currently **0.5.15**).
 
 ## Run — desktop app (recommended)
 
@@ -45,18 +45,19 @@ Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1
 
 ## UI
 
-- **Header** — scene name + “GM Session (offline)” + **Grid** / **Snap to grid** / **Nametags** toggles (independent; default all ON; persisted in `state/ui/<scene-id>.json` as `showGrid`, `snapToGrid`, `showNametags`) + compact **dice tools** (uniform 1–x roll; bell-curve Normal(μ,σ) sample rounded to nearest int)
+- **Header** — scene name + “GM Session (offline)” + **Grid** / **Snap to grid** + **Center|Corner** snap target / **Nametags** toggles (independent; default grid/snap/nametags ON, snap target **Center**; persisted in `state/ui/<scene-id>.json` as `showGrid`, `snapToGrid`, `snapTarget`, `showNametags`)
 - **Left library** — Characters/Actors from `world/actors/*.yaml`; Scenes from `world/scenes/`; **Map layers** list
   - Entries with a human sheet file show a **sheet** badge
   - **Click** an actor → open its sheet window (**Sheet** tab = `.sheet.txt`; **Appearance** tab = token size in tiles + stubs for graphic/auras)
-  - **Drag** an actor onto the map → place a white circle token labeled with initials + name; diameter = actor `appearance.size_tiles` (default 1); snaps to cell centers when Snap is on
+  - **Drag** an actor onto the map → place a white circle token labeled with initials + name; diameter = actor `appearance.size_tiles` (default 1); snaps per Center/Corner mode when Snap is on
   - **Map layers** — eye, **Edit**, reorder ↑ bring forward / ↓ send back, delete; list shows topmost first (array stays bottom→top); **Add layer** uploads png/jpg/webp/gif into `world/assets/by-hash/` and appends as new topmost. **Has grid** (beside Add layer): when checked, stage 1 is the 0.5.3 full-image printed-line comb fit, then a light 0.5.5-era center 3×3 sanity check (peakMed 1.08 / threshFrac 0.22 / 3-of-4 lines). If stage 1 is null or fails sanity, stage 2 runs 0.5.5 (center ROI + half-pitch + looser gate) with 0.5.12 pieces kept inside stage 2 only (`minP` floor 14, multi-candidate lags, 3-of-4). Stage 1 keeps classic `minP` floor 20. If both fail, import at natural size (0,0). Otherwise scale 1 printed cell = 1 map cell, align lines, crop to whole squares. When unchecked, import at natural size at (0,0). Map images draw fully opaque.
   - **Edit mode** (one layer at a time) — drag to move, corner/edge handles to resize (aspect locked). **Scale** opens a dialog for width/height in tiles; **Flip H** / **Flip V** / **Rotate** transform the layer. **Snap layers** (sidebar) snaps position/size to grid on release (not while dragging), independent of token snap.
-- **Token snap** — free movement while dragging; on pointerup, if Snap to grid is ON, snap to cell center (`floor(x/g)*g + g/2`). Library drop / place still snaps on place.
+- **Token snap** — free movement while dragging; on pointerup, if Snap to grid is ON, snap by mode: **Center** → cell centers (`floor(x/g)*g + g/2`); **Corner** → grid intersections (`round(x/g)*g`). Library drop / place uses the same mode. Mode is a segmented control next to Snap to grid; persisted as `snapTarget` (`"center"` | `"corner"`).
 - **Canvas draw order** — map images → grid (if on) → tokens → additions stub → layer edit chrome (play view does not draw walls/doors/lights/spawns)
 - **Token select** — click a token to select (accent ring); click empty map (without much drag) clears selection; double-click token opens that actor’s sheet; library “active” follows the selected token’s actor
 - **Token size** — circle diameter in tiles (`size_tiles`); world radius = `(size_tiles * gridSize) / 2`. Canonical value on actor YAML `appearance.size_tiles`; copied onto tokens when placed; Appearance save updates all tokens for that actor on the current scene
 - **Pan / zoom** — drag empty map to pan, wheel to zoom, double-click empty map to fit. Hit-test: edit handles/body → tokens → pan
+- **Roll dock** — bottom-right over the map (above the corner; Update app stays bottom-left). **Rolls** opens an upward popover with **Dice roll** (uniform 1–x) and **Bell curve sample** (Normal μ,σ rounded). Session roll history panel above the button (newest at bottom, auto-scroll; Clear; in-memory only).
 - **Update app** — fixed button bottom-left of the canvas; upgrades the installed program (not the map). Looks on GitHub Releases for a Setup.exe, downloads it, runs the installer, quits, then relaunches. Status text under the button tracks that. Browser `serve.py` has no updater API.
 
 ## Auto-update
@@ -93,7 +94,7 @@ gh release create v0.5.1 packaging/windows/output/GM-Session-Setup.exe \
 | Actor instances (incl. `appearance.size_tiles`) | `world/actors/<id>.yaml` | Prep / GM Appearance save |
 | Human sheet docs (blank `.txt` for now) | `world/actors/<id>.sheet.txt` (via actor `sheet_doc`) | Prep / GM session save |
 | Placed tokens (session) | `state/tokens/<scene-id>.json` | GM Session (play) |
-| UI prefs (grid/snap/nametags/snapLayers) | `state/ui/<scene-id>.json` | GM Session (play) |
+| UI prefs (grid/snap/snapTarget/nametags/snapLayers) | `state/ui/<scene-id>.json` | GM Session (play) |
 
 Sample actors with sheet docs:
 
@@ -137,7 +138,7 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 | PUT | `/api/actor/<actor_id>/appearance` | Body `{"appearance":{"size_tiles":N}}` → merge into actor YAML |
 | GET | `/api/tokens/<scene_id>` | Placed tokens JSON (includes `size_tiles`) |
 | PUT | `/api/tokens/<scene_id>` | Body `{"tokens":[…]}` → write `state/tokens/<id>.json` |
-| GET | `/api/ui/<scene_id>` | UI prefs (`showGrid`, `snapToGrid`, `showNametags`, `snapLayers`) |
+| GET | `/api/ui/<scene_id>` | UI prefs (`showGrid`, `snapToGrid`, `snapTarget`, `showNametags`, `snapLayers`) |
 | PUT | `/api/ui/<scene_id>` | Persist UI prefs to `state/ui/<id>.json` |
 | GET | `/assets/<sha256>` | Content-addressed asset |
 
@@ -187,3 +188,9 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Sheet Appearance tab** — Sheet | Appearance; token size input + stub sections (token graphic, auras). Map updates live via pywebview `appearance_saved` bridge and `BroadcastChannel('gm-session-appearance')`.
 - **Dice tools** — header strip: uniform roll 1–x; bell-curve Normal(μ, σ) sample rounded to nearest integer.
 - **Migration** — missing `size_tiles` → 1 (slightly larger than the old 0.9×grid diameter; acceptable).
+
+## 0.5.15
+
+- **Corner snapping** — Snap to grid keeps the checkbox; add **Center** | **Corner** segmented control (persisted `snapTarget`). Corner snaps token centers to grid intersections (`round(x/g)*g`); Center keeps cell centers.
+- **Roll dock** — header dice strip removed. Bottom-right **Rolls** menu (Dice roll / Bell curve sample) with session roll history panel above it; Update app remains bottom-left.
+
