@@ -35,7 +35,7 @@ Assets are **content-addressed**: files live at `world/assets/by-hash/<sha256-he
 
 ## GM Session (offline DM foundation)
 
-Desktop app (**pywebview**): editable map layers + grid/snap toggles + library sidebar + drag-to-place tokens + **Update app** (upgrades the installed program). Sheets and **Rolls** open as separate desktop windows. Blank sheet docs live under the campaign path.
+Desktop app (**pywebview**): editable map layers + grid/snap toggles + library sidebar + drag-to-place tokens + **Update app** (upgrades the installed program). Sheets, **Rolls**, and **Sheet builder** open as separate desktop windows. Blank sheet docs live under the campaign path.
 
 ```bash
 pip install -r packages/campaign-format/requirements.txt
@@ -55,6 +55,7 @@ python apps/gm-session/serve.py
 - Drag an actor onto the map → white circle token (`size_tiles` diameter); placements persist in `state/tokens/<scene>.json`
 - Click an actor → sheet window (desktop app) with **Sheet** + **Appearance** tabs; Save writes `.sheet.txt` / actor appearance
 - Select tokens on the map; snap Center|Corner; bottom-right **Rolls** opens a pop-out window (dice + bell + history)
+- Library **Sheet builder** opens a wide pop-out to lay out field widgets and wire closed formula automations (WIP under `editor-scratch/sheets/`; compile to `build/sheets/`)
 - Auto-update on launch via GitHub Releases (`GM-Session-Setup.exe`); see `apps/gm-session/README.md`
 - Play view draws map layers + grid + tokens only (walls/doors/lights/spawns are not rendered)
 
@@ -137,3 +138,7 @@ python apps/grid-viewer/serve.py
 ## License
 
 Scaffold for inspection and zipping; treat as yours.
+
+## 0.6.0 — Sheet builder
+
+GM Session gains a **Sheet builder** window: declarative display widgets (boxes/circles bound to fields) plus a Simulink-style automation graph that compiles to closed formulas (`floor`, `+−*/`, field names). Editor WIP: `editor-scratch/sheets/<id>.builder.json`. Play still never calls AI and still uses `.sheet.txt` docs for now (rendered sheet UI is future work).

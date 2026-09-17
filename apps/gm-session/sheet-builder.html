@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sheet builder</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #12151c;
+      --panel: #1b2030;
+      --text: #e8ecf4;
+      --muted: #9aa3b5;
+      --accent: #6ea8fe;
+      --border: #2c3448;
+      --ok: #7ddea5;
+      --warn: #e8c07d;
+      --err: #f07178;
+      --node: #243049;
+      --wire: #6ea8fe;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .head {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      padding: 0.55rem 0.75rem;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .head strong { font-size: 0.95rem; margin-right: 0.35rem; }
+    .head label { color: var(--muted); font-size: 0.78rem; }
+    select, input[type="text"], input[type="number"] {
+      padding: 0.28rem 0.45rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      padding: 0.3rem 0.65rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    button.primary {
+      background: #2a4a7a;
+      border-color: #3d6cb0;
+      color: var(--text);
+      font-weight: 600;
+    }
+    button.primary:hover { filter: brightness(1.08); color: var(--text); }
+    button.active {
+      border-color: var(--accent);
+      background: rgba(110, 168, 254, 0.18);
+      color: var(--accent);
+    }
+    button.danger:hover { border-color: var(--err); color: var(--err); }
+    #status {
+      flex: 1;
+      min-width: 8rem;
+      text-align: right;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    #status.ok { color: var(--ok); }
+    #status.err { color: var(--err); }
+    #status.warn { color: var(--warn); }
+
+    #split {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      position: relative;
+    }
+    .pane {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      background: var(--bg);
+    }
+    #pane-display { width: 50%; }
+    #pane-graph { width: 50%; }
+    #splitter {
+      width: 6px;
+      cursor: col-resize;
+      background: var(--border);
+      flex-shrink: 0;
+      position: relative;
+      z-index: 2;
+    }
+    #splitter:hover, #splitter.dragging { background: var(--accent); }
+    .pane-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+      padding: 0.4rem 0.55rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+      flex-shrink: 0;
+    }
+    .pane-bar h2 {
+      margin: 0 0.4rem 0 0;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .palette {
+      display: flex;
+      gap: 0.25rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .palette .sep {
+      width: 1px;
+      height: 1.1rem;
+      background: var(--border);
+      margin: 0 0.2rem;
+    }
+    .canvas-wrap {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+      overflow: hidden;
+      background:
+        linear-gradient(rgba(44,52,72,0.35) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(44,52,72,0.35) 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+    .canvas-wrap svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+    .props {
+      border-top: 1px solid var(--border);
+      padding: 0.45rem 0.55rem;
+      background: var(--panel);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      align-items: center;
+      flex-shrink: 0;
+      min-height: 2.4rem;
+    }
+    .props label { color: var(--muted); font-size: 0.75rem; display: flex; align-items: center; gap: 0.3rem; }
+    .props .hint { color: var(--muted); font-size: 0.75rem; font-style: italic; }
+    .formula-preview {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.78rem;
+      color: var(--ok);
+      word-break: break-all;
+    }
+    /* SVG widget / node styles via classes */
+    .widget-box { fill: #243049; stroke: var(--accent); stroke-width: 2; }
+    .widget-circle { fill: #243049; stroke: #7ddea5; stroke-width: 2; }
+    .widget-selected { stroke: #e8c07d; stroke-width: 3; }
+    .widget-label { fill: var(--text); font-size: 11px; text-anchor: middle; pointer-events: none; }
+    .widget-value { fill: var(--accent); font-size: 16px; font-weight: 700; text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+    .node-rect { fill: var(--node); stroke: var(--border); stroke-width: 1.5; rx: 8; }
+    .node-selected .node-rect { stroke: var(--accent); stroke-width: 2.5; }
+    .node-title { fill: var(--text); font-size: 11px; font-weight: 600; pointer-events: none; }
+    .node-sub { fill: var(--muted); font-size: 10px; pointer-events: none; }
+    .port { fill: #3d6cb0; stroke: #8eb6ff; stroke-width: 1; cursor: crosshair; }
+    .port-in { fill: #3a6b4a; stroke: #7ddea5; }
+    .wire { fill: none; stroke: var(--wire); stroke-width: 2; pointer-events: stroke; }
+    .wire-temp { stroke-dasharray: 4 3; opacity: 0.8; }
+    .wire-selected { stroke: #e8c07d; stroke-width: 3; }
+  </style>
+</head>
+<body>
+  <div class="head">
+    <strong>Sheet builder</strong>
+    <label for="sheet-select">Sheet</label>
+    <select id="sheet-select" title="Sheets from build/sheets/"></select>
+    <input type="text" id="sheet-name" placeholder="Sheet name" style="width:10rem" />
+    <button type="button" class="primary" id="btn-save" title="Save to editor-scratch">Save</button>
+    <button type="button" class="primary" id="btn-compile" title="Compile graph → build/sheets YAML">Compile</button>
+    <button type="button" id="btn-reload" title="Reload from disk">Reload</button>
+    <span id="status"></span>
+  </div>
+
+  <div id="split">
+    <section class="pane" id="pane-display">
+      <div class="pane-bar">
+        <h2>Display</h2>
+        <div class="palette" id="display-tools">
+          <button type="button" data-tool="select" class="active" title="Select / move">Select</button>
+          <button type="button" data-tool="box" title="Add box widget">Add box</button>
+          <button type="button" data-tool="circle" title="Add circle widget">Add circle</button>
+          <button type="button" data-tool="delete" class="danger" title="Delete selected">Delete</button>
+        </div>
+      </div>
+      <div class="canvas-wrap" id="display-wrap">
+        <svg id="display-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+      <div class="props" id="display-props">
+        <span class="hint">Select a widget to bind a field</span>
+      </div>
+    </section>
+
+    <div id="splitter" title="Drag to resize"></div>
+
+    <section class="pane" id="pane-graph">
+      <div class="pane-bar">
+        <h2>Automations</h2>
+        <div class="palette" id="graph-palette">
+          <button type="button" data-kind="field" title="Field source/sink">Field</button>
+          <button type="button" data-kind="const" title="Constant number">Constant</button>
+          <span class="sep"></span>
+          <button type="button" data-kind="op" data-op="+" title="Add">+</button>
+          <button type="button" data-kind="op" data-op="-" title="Subtract">−</button>
+          <button type="button" data-kind="op" data-op="*" title="Multiply">×</button>
+          <button type="button" data-kind="op" data-op="/" title="Divide">÷</button>
+          <button type="button" data-kind="op" data-op="floor" title="floor(x)">floor</button>
+          <span class="sep"></span>
+          <button type="button" id="btn-graph-select" class="active" title="Select / move / wire">Select</button>
+          <button type="button" id="btn-graph-delete" class="danger" title="Delete selected node/wire">Delete</button>
+        </div>
+      </div>
+      <div class="canvas-wrap" id="graph-wrap">
+        <svg id="graph-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+      <div class="props" id="graph-props">
+        <span class="hint">Drag palette items onto canvas · click output→input to wire</span>
+      </div>
+    </section>
+  </div>
+
+  <script src="/sheet-builder.js"></script>
+</body>
+</html>

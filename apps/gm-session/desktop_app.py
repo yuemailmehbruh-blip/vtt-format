@@ -99,13 +99,14 @@ def _actor_title(campaign_root: Path, actor_id: str) -> str:
 
 
 class DesktopApi:
-    """JS bridge: open_sheet, open_rolls, appearance_saved, check_update."""
+    """JS bridge: open_sheet, open_rolls, open_sheet_builder, appearance_saved, check_update."""
 
     def __init__(self, base_url: str, campaign_root: Path) -> None:
         self.base_url = base_url.rstrip("/")
         self.campaign_root = campaign_root
         self._sheets: dict[str, object] = {}
         self._rolls_window: object | None = None
+        self._sheet_builder_window: object | None = None
 
     def open_sheet(self, actor_id: str) -> str:
         actor_id = (actor_id or "").strip()
@@ -176,6 +177,53 @@ class DesktopApi:
         def _on_closed() -> None:
             if self._rolls_window is window:
                 self._rolls_window = None
+
+        try:
+            window.events.closed += _on_closed
+        except Exception:  # noqa: BLE001
+            pass
+
+        return "opened"
+
+
+    def open_sheet_builder(self, sheet_id: str = "player") -> str:
+        """Open or focus the Sheet builder pop-out (~1100×720)."""
+        sheet_id = (sheet_id or "player").strip() or "player"
+        existing = self._sheet_builder_window
+        if existing is not None and existing in webview.windows:
+            try:
+                existing.show()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                existing.restore()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            # Navigate if a different sheet requested
+            try:
+                url = (
+                    f"{self.base_url}/sheet-builder.html"
+                    f"?sheet={quote(sheet_id, safe='')}"
+                )
+                existing.load_url(url)  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            return "focused"
+
+        url = f"{self.base_url}/sheet-builder.html?sheet={quote(sheet_id, safe='')}"
+        window = webview.create_window(
+            "Sheet builder",
+            url,
+            js_api=self,
+            width=1100,
+            height=720,
+            min_size=(800, 560),
+        )
+        self._sheet_builder_window = window
+
+        def _on_closed() -> None:
+            if self._sheet_builder_window is window:
+                self._sheet_builder_window = None
 
         try:
             window.events.closed += _on_closed
@@ -354,6 +402,12 @@ def run_desktop(
             except Exception:  # noqa: BLE001
                 pass
             api._rolls_window = None
+        if api._sheet_builder_window is not None:
+            try:
+                api._sheet_builder_window.destroy()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            api._sheet_builder_window = None
         _shutdown_server(server)
 
     try:

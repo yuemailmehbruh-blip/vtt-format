@@ -182,12 +182,34 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/rolls.js":
             self._send_file(app / "rolls.js")
             return
+        if path == "/sheet-builder.html":
+            self._send_file(app / "sheet-builder.html")
+            return
+        if path == "/sheet-builder.js":
+            self._send_file(app / "sheet-builder.js")
+            return
         if path == "/favicon.ico":
             self._send(204, b"", "image/x-icon")
             return
 
         if path == "/api/library":
             self._api_library()
+            return
+
+        if path == "/api/sheet-builder" or path == "/api/sheet-builder/":
+            self._api_sheet_builder_list()
+            return
+
+        if path.startswith("/api/sheet-builder/"):
+            rest = path[len("/api/sheet-builder/") :].strip("/")
+            if "/" in rest:
+                self._send_json(404, {"error": "not found"})
+                return
+            sheet_id = rest
+            if not _safe_segment(sheet_id):
+                self._send_json(400, {"error": "invalid sheet id"})
+                return
+            self._api_sheet_builder_get(sheet_id)
             return
 
         if path.startswith("/api/scene/"):
@@ -323,6 +345,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
+
+        if path.startswith("/api/sheet-builder/"):
+            rest = path[len("/api/sheet-builder/") :].strip("/")
+            if rest.endswith("/compile") or "/" in rest:
+                self._send_json(404, {"error": "not found"})
+                return
+            sheet_id = rest
+            if not _safe_segment(sheet_id):
+                self._send_json(400, {"error": "invalid sheet id"})
+                return
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            self._api_sheet_builder_put(sheet_id, body)
+            return
 
         if path.startswith("/api/sheet/"):
             actor_id = path[len("/api/sheet/") :].strip("/")
@@ -628,6 +667,20 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
+        if path.startswith("/api/sheet-builder/") and path.endswith("/compile"):
+            mid = path[len("/api/sheet-builder/") : -len("/compile")].strip("/")
+            sheet_id = mid
+            if not _safe_segment(sheet_id):
+                self._send_json(400, {"error": "invalid sheet id"})
+                return
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            self._api_sheet_builder_compile(sheet_id, body)
+            return
+
         if path == "/api/assets":
             self._api_post_asset()
             return
@@ -690,6 +743,215 @@ class Handler(BaseHTTPRequestHandler):
             encoding="utf-8",
         )
         self._send_json(200, {"hash": digest, "name": name, "bytes": len(raw)})
+
+
+    def _builder_scratch_path(self, sheet_id: str) -> Path:
+        return (
+            self.campaign_root
+            / "editor-scratch"
+            / "sheets"
+            / f"{sheet_id}.builder.json"
+        )
+
+    def _sheet_yaml_path(self, sheet_id: str) -> Path:
+        return self.campaign_root / "build" / "sheets" / f"{sheet_id}.yaml"
+
+    def _seed_builder_from_yaml(self, sheet_id: str) -> dict | None:
+        """Load build/sheets/<id>.yaml into a builder document skeleton."""
+        ypath = self._sheet_yaml_path(sheet_id)
+        if not ypath.is_file():
+            return None
+        data = yaml.safe_load(ypath.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            return None
+        fields = data.get("fields") if isinstance(data.get("fields"), dict) else {}
+        layout = data.get("layout") if isinstance(data.get("layout"), dict) else {}
+        widgets = layout.get("widgets") if isinstance(layout.get("widgets"), list) else []
+        return {
+            "sheet_id": data.get("id") or sheet_id,
+            "name": data.get("name") or sheet_id,
+            "permissions": data.get("permissions"),
+            "fields": fields,
+            "layout": {"widgets": widgets},
+            "graph": {"nodes": [], "edges": []},
+            "_source": "yaml",
+        }
+
+    def _api_sheet_builder_list(self) -> None:
+        sheets_dir = self.campaign_root / "build" / "sheets"
+        scratch_dir = self.campaign_root / "editor-scratch" / "sheets"
+        ids: set[str] = set()
+        if sheets_dir.is_dir():
+            for p in sheets_dir.glob("*.yaml"):
+                ids.add(p.stem)
+        if scratch_dir.is_dir():
+            for p in scratch_dir.glob("*.builder.json"):
+                ids.add(p.name[: -len(".builder.json")])
+        out = []
+        for sid in sorted(ids):
+            out.append(
+                {
+                    "id": sid,
+                    "has_yaml": self._sheet_yaml_path(sid).is_file(),
+                    "has_builder": self._builder_scratch_path(sid).is_file(),
+                }
+            )
+        self._send_json(200, {"sheets": out})
+
+    def _api_sheet_builder_get(self, sheet_id: str) -> None:
+        scratch = self._builder_scratch_path(sheet_id)
+        if scratch.is_file():
+            try:
+                data = json.loads(scratch.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                self._send_json(500, {"error": "invalid builder JSON"})
+                return
+            if not isinstance(data, dict):
+                self._send_json(500, {"error": "builder JSON must be an object"})
+                return
+            data.setdefault("sheet_id", sheet_id)
+            data["_source"] = "scratch"
+            self._send_json(200, data)
+            return
+        seeded = self._seed_builder_from_yaml(sheet_id)
+        if seeded is not None:
+            self._send_json(200, seeded)
+            return
+        self._send_json(
+            200,
+            {
+                "sheet_id": sheet_id,
+                "name": sheet_id,
+                "fields": {},
+                "layout": {"widgets": []},
+                "graph": {"nodes": [], "edges": []},
+                "_source": "empty",
+            },
+        )
+
+    def _write_builder_scratch(self, sheet_id: str, body: dict) -> dict:
+        out = {
+            "sheet_id": sheet_id,
+            "name": str(body.get("name") or sheet_id),
+            "fields": body.get("fields") if isinstance(body.get("fields"), dict) else {},
+            "permissions": body.get("permissions"),
+            "layout": body.get("layout")
+            if isinstance(body.get("layout"), dict)
+            else {"widgets": []},
+            "graph": body.get("graph")
+            if isinstance(body.get("graph"), dict)
+            else {"nodes": [], "edges": []},
+        }
+        scratch = self._builder_scratch_path(sheet_id)
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        scratch.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+        return out
+
+    def _api_sheet_builder_put(self, sheet_id: str, body) -> None:
+        if not isinstance(body, dict):
+            self._send_json(400, {"error": "body must be an object"})
+            return
+        self._write_builder_scratch(sheet_id, body)
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "sheet_id": sheet_id,
+                "path": f"editor-scratch/sheets/{sheet_id}.builder.json",
+            },
+        )
+
+    def _api_sheet_builder_compile(self, sheet_id: str, body) -> None:
+        """Write/update build/sheets/<id>.yaml from builder document (fields + layout)."""
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            self._send_json(400, {"error": "body must be an object"})
+            return
+
+        if not body.get("fields") and not body.get("graph"):
+            scratch = self._builder_scratch_path(sheet_id)
+            if scratch.is_file():
+                try:
+                    body = json.loads(scratch.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    self._send_json(400, {"error": "invalid scratch JSON"})
+                    return
+
+        fields_in = body.get("fields") if isinstance(body.get("fields"), dict) else {}
+        layout_in = body.get("layout") if isinstance(body.get("layout"), dict) else {}
+        name = str(body.get("name") or sheet_id)
+        permissions = body.get("permissions")
+
+        ypath = self._sheet_yaml_path(sheet_id)
+        existing: dict = {}
+        if ypath.is_file():
+            loaded = yaml.safe_load(ypath.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict):
+                existing = loaded
+
+        if permissions is None:
+            permissions = existing.get("permissions")
+        if permissions is None:
+            permissions = {
+                "notes": (
+                    "player_visible / player_editable / gm_only; "
+                    "formula fields are read-only except recomputation"
+                )
+            }
+
+        merged_fields: dict = {}
+        if isinstance(existing.get("fields"), dict):
+            for k, v in existing["fields"].items():
+                if isinstance(v, dict):
+                    merged_fields[k] = dict(v)
+        for k, v in fields_in.items():
+            if not isinstance(v, dict):
+                continue
+            base = merged_fields.get(k, {})
+            entry = {**base, **v}
+            if entry.get("formula"):
+                entry["editable"] = False
+            merged_fields[k] = entry
+
+        out = {
+            "id": sheet_id,
+            "name": name,
+            "permissions": permissions,
+            "fields": merged_fields,
+        }
+        widgets = layout_in.get("widgets") if isinstance(layout_in.get("widgets"), list) else []
+        if widgets:
+            out["layout"] = {"widgets": widgets}
+        elif isinstance(existing.get("layout"), dict):
+            out["layout"] = existing["layout"]
+
+        ypath.parent.mkdir(parents=True, exist_ok=True)
+        dumped = yaml.safe_dump(
+            out,
+            sort_keys=False,
+            default_flow_style=False,
+            allow_unicode=True,
+        )
+        header = (
+            f"# {name} sheet — declarative fields + closed formulas.\n"
+            f"# Compiled from editor-scratch/sheets/{sheet_id}.builder.json "
+            f"(sheet builder).\n"
+        )
+        ypath.write_text(header + dumped, encoding="utf-8")
+
+        # Keep scratch in sync
+        self._write_builder_scratch(sheet_id, body if isinstance(body, dict) else {})
+
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "sheet_id": sheet_id,
+                "path": f"build/sheets/{sheet_id}.yaml",
+                "fields": list(merged_fields.keys()),
+            },
+        )
 
     def _api_library(self) -> None:
         actors = []

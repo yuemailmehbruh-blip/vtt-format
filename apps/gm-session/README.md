@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.5.17**).
+Version is in `VERSION` (currently **0.6.0**).
 
 ## Run — desktop app (recommended)
 
@@ -23,7 +23,7 @@ pip install pywebview
 python apps/gm-session/desktop_app.py --skip-update
 ```
 
-Opens a **pywebview** window titled “GM Session” (not Chrome / the system browser). Character sheets open as **additional desktop windows** via `window.pywebview.api.open_sheet(actor_id)`. Rolls open via `window.pywebview.api.open_rolls()` (single reusable window).
+Opens a **pywebview** window titled “GM Session” (not Chrome / the system browser). Character sheets open as **additional desktop windows** via `window.pywebview.api.open_sheet(actor_id)`. Rolls open via `window.pywebview.api.open_rolls()` (single reusable window). Sheet builder opens via `window.pywebview.api.open_sheet_builder(sheet_id?)` (~1100×720).
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -33,7 +33,7 @@ Opens a **pywebview** window titled “GM Session” (not Chrome / the system br
 | `--port` | `8765` | Bind port |
 | `--skip-update` | off | Skip GitHub Releases update check |
 
-Closing the main window stops the local HTTP server and exits (sheet and Rolls windows are closed too). Closing a sheet window only closes that sheet. Re-clicking the same actor focuses the existing sheet window. Re-clicking **Rolls** focuses the existing Rolls window.
+Closing the main window stops the local HTTP server and exits (sheet, Rolls, and Sheet builder windows are closed too). Closing a sheet window only closes that sheet. Re-clicking the same actor focuses the existing sheet window. Re-clicking **Rolls** / **Sheet builder** focuses the existing window.
 
 ## Run — browser debug (`serve.py`)
 
@@ -90,7 +90,8 @@ gh release create v0.5.1 packaging/windows/output/GM-Session-Setup.exe \
 
 | Concern | Path | Who writes |
 |---------|------|------------|
-| Sheet **schemas** (YAML) | `build/sheets/*.yaml` | Editor |
+| Sheet **schemas** (YAML) | `build/sheets/*.yaml` | Editor / Sheet builder compile |
+| Sheet builder WIP | `editor-scratch/sheets/<id>.builder.json` | Sheet builder (not play) |
 | Actor instances (incl. `appearance.size_tiles`) | `world/actors/<id>.yaml` | Prep / GM Appearance save |
 | Human sheet docs (blank `.txt` for now) | `world/actors/<id>.sheet.txt` (via actor `sheet_doc`) | Prep / GM session save |
 | Placed tokens (session) | `state/tokens/<scene-id>.json` | GM Session (play) |
@@ -132,6 +133,12 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 | GET | `/sheet.js` | Sheet pop-out script |
 | GET | `/rolls.html` | Rolls pop-out UI (desktop window) |
 | GET | `/rolls.js` | Rolls pop-out script |
+| GET | `/sheet-builder.html` | Sheet builder pop-out UI |
+| GET | `/sheet-builder.js` | Sheet builder script |
+| GET | `/api/sheet-builder` | List sheet ids (`build/sheets` + scratch) |
+| GET | `/api/sheet-builder/<id>` | Load builder JSON (scratch or seed from YAML) |
+| PUT | `/api/sheet-builder/<id>` | Save builder JSON → `editor-scratch/sheets/` |
+| POST | `/api/sheet-builder/<id>/compile` | Compile → `build/sheets/<id>.yaml` |
 | GET | `/api/library` | Actors + scenes for the sidebar |
 | GET | `/api/scene/<id>` | Scene YAML as JSON |
 | PUT | `/api/scene/<id>/layers` | Body `{"layers":[…]}` → rewrite only the `layers` key |
@@ -204,3 +211,8 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 ## 0.5.17
 
 - **Map chrome clicks** — `#update-bar` / `#roll-dock` sit above the canvas but viewport `pointerdown`/`dblclick` ignored `event.target`, so button clicks bubbled into pan and blank-space `fitToView`. Early-out via `isMapChrome()` plus `stopPropagation` on the bars; `pointer-events: auto` on both docks.
+
+## 0.6.0
+
+- **Sheet builder** — new pop-out window (`sheet-builder.html` / `open_sheet_builder`): display canvas (box/circle field widgets) + automation flowchart (closed ops only). Persist `editor-scratch/sheets/<id>.builder.json`; compile into `build/sheets/<id>.yaml` (optional `layout:` for future play renderer).
+- **Out of scope (this release)** — full play-time rendered sheet replacing `.sheet.txt`; text widgets / images / auras; undo stack beyond basic; multi-page sheets.

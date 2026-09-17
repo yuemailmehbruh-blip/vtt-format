@@ -19,6 +19,8 @@ ui_datas = [
     (str(APP / "sheet.js"), "gm-session"),
     (str(APP / "rolls.html"), "gm-session"),
     (str(APP / "rolls.js"), "gm-session"),
+    (str(APP / "sheet-builder.html"), "gm-session"),
+    (str(APP / "sheet-builder.js"), "gm-session"),
     (str(APP / "VERSION"), "gm-session"),
 ]
 

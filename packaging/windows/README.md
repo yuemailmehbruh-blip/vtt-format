@@ -41,7 +41,7 @@ The script:
 
 ### Bundled UI (important)
 
-`gm-session.spec` must include **`index.html`, `session.js`, `sheet.html`, `sheet.js`, `rolls.html`, `rolls.js`, and `VERSION`** under `gm-session/`. Older builds that only shipped `index.html` + `session.js` caused sheet windows to **404**.
+`gm-session.spec` must include **`index.html`, `session.js`, `sheet.html`, `sheet.js`, `rolls.html`, `rolls.js`, `sheet-builder.html`, `sheet-builder.js`, and `VERSION`** under `gm-session/`. Older builds that only shipped `index.html` + `session.js` caused sheet windows to **404**.
 
 ## Install (end user)
 

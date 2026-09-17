@@ -2527,6 +2527,49 @@
     });
   }
 
+  // --- Sheet builder pop-out ---
+  function openSheetBuilder(sheetId) {
+    const id = (sheetId || "player").trim() || "player";
+    const api =
+      window.pywebview &&
+      window.pywebview.api &&
+      typeof window.pywebview.api.open_sheet_builder === "function"
+        ? window.pywebview.api
+        : null;
+
+    if (api) {
+      Promise.resolve(api.open_sheet_builder(id))
+        .then(() => setStatus(`Sheet builder opened (${id})`))
+        .catch((err) =>
+          setStatus(
+            `Could not open sheet builder: ${err && err.message ? err.message : err}`
+          )
+        );
+      return;
+    }
+
+    const w = window.open(
+      `/sheet-builder.html?sheet=${encodeURIComponent(id)}`,
+      "gm-session-sheet-builder",
+      "width=1100,height=720,menubar=no,toolbar=no,location=no,status=no"
+    );
+    if (w) {
+      setStatus(`Sheet builder opened (${id})`);
+    } else {
+      setStatus(
+        "Could not open Sheet builder (popup blocked?). Use the GM Session desktop app, or allow pop-ups for this origin."
+      );
+    }
+  }
+
+  const btnSheetBuilder = document.getElementById("btn-sheet-builder");
+  if (btnSheetBuilder) {
+    btnSheetBuilder.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openSheetBuilder("player");
+    });
+  }
+
   async function boot() {
     layout.classList.add("no-sheet");
     resize();

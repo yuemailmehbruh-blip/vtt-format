@@ -1,6 +1,7 @@
 # Player character sheet — declarative fields + closed formulas.
 # Permissions: players see/edit own sheet fields marked player_visible / player_editable.
 # GM sees all. Formulas are closed (no arbitrary code); only named ops over sheet fields.
+# Optional layout: from sheet builder (future play renderer; not used by play yet).
 id: player
 name: Player Character
 permissions:
@@ -83,3 +84,27 @@ fields:
     visibility: player_visible
     editable: player_editable
     default: ""
+
+layout:
+  widgets:
+    - id: w_str
+      shape: box
+      field: STR
+      x: 40
+      y: 40
+      w: 72
+      h: 56
+    - id: w_str_mod
+      shape: circle
+      field: STR_mod
+      x: 160
+      y: 36
+      w: 64
+      h: 64
+    - id: w_hp
+      shape: box
+      field: hp_current
+      x: 40
+      y: 140
+      w: 72
+      h: 56
