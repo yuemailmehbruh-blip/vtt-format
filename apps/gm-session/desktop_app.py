@@ -99,7 +99,7 @@ def _actor_title(campaign_root: Path, actor_id: str) -> str:
 
 
 class DesktopApi:
-    """JS bridge: open_sheet, open_rolls, open_sheet_builder, appearance_saved, check_update."""
+    """JS bridge: open_sheet, open_rolls, open_sheet_builder, appearance_saved, session_roll, check_update."""
 
     def __init__(self, base_url: str, campaign_root: Path) -> None:
         self.base_url = base_url.rstrip("/")
@@ -263,6 +263,40 @@ class DesktopApi:
             except Exception:  # noqa: BLE001
                 pass
         return f"notified:{notified}"
+
+    def session_roll(self, label, result, detail="", t=None) -> str:
+        """Forward a sheet (or other) roll into the Rolls window session history.
+
+        Evaluates window.__gmAppendRoll on `_rolls_window` when open.
+        Returns "ok", "focused" (window present but evaluate failed), or "no-window".
+        """
+        label = "" if label is None else str(label)
+        detail = "" if detail is None else str(detail)
+        # JSON-escape all values for safe evaluate_js
+        args = [json.dumps(label), json.dumps(result), json.dumps(detail)]
+        if t is not None:
+            try:
+                args.append(json.dumps(int(t) if isinstance(t, float) and t == int(t) else t))
+            except (TypeError, ValueError):
+                args.append(json.dumps(t))
+        js = "window.__gmAppendRoll && window.__gmAppendRoll(" + ", ".join(args) + ")"
+
+        win = self._rolls_window
+        if win is None or win not in webview.windows:
+            return "no-window"
+        try:
+            win.evaluate_js(js)
+            return "ok"
+        except Exception:  # noqa: BLE001
+            try:
+                win.show()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                win.evaluate_js(js)
+                return "ok"
+            except Exception:  # noqa: BLE001
+                return "focused"
 
     def _push_update_status(self, message: str, done: bool = False) -> None:
         payload = json.dumps(message)

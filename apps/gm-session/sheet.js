@@ -27,6 +27,8 @@
   let liveValues = {};
 
   const APPEARANCE_CHANNEL = "gm-session-appearance";
+  const ROLL_CHANNEL = "gm-session-roll";
+  const ROLL_HISTORY_KEY = "gm-session-roll-history";
 
   function setStatus(msg) {
     statusEl.textContent = msg || "";
@@ -253,6 +255,67 @@
     return 1 + Math.floor(Math.random() * n);
   }
 
+  /** localStorage shared across pywebview windows (sessionStorage is not). */
+  function rollStore() {
+    try {
+      return window.localStorage;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function appendRollToStorage(entry) {
+    const store = rollStore();
+    if (!store) return;
+    let list = [];
+    try {
+      const raw = store.getItem(ROLL_HISTORY_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      list = Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      list = [];
+    }
+    list.push(entry);
+    try {
+      store.setItem(ROLL_HISTORY_KEY, JSON.stringify(list));
+    } catch (_) {}
+  }
+
+  /**
+   * Publish a layout-button roll to session history (storage + BroadcastChannel
+   * + pywebview session_roll bridge). Keeps sheet toast separately.
+   */
+  function publishRoll(buttonLabel, result, detail) {
+    const actorName =
+      (titleEl && titleEl.textContent && titleEl.textContent.trim()) ||
+      actorId ||
+      "Actor";
+    const label = `${actorName}: ${buttonLabel}`;
+    const entry = {
+      label,
+      result,
+      detail: detail || "",
+      t: Date.now(),
+    };
+    appendRollToStorage(entry);
+    try {
+      if (typeof BroadcastChannel !== "undefined") {
+        const ch = new BroadcastChannel(ROLL_CHANNEL);
+        ch.postMessage(entry);
+        ch.close();
+      }
+    } catch (_) {}
+    const api =
+      window.pywebview &&
+      window.pywebview.api &&
+      typeof window.pywebview.api.session_roll === "function"
+        ? window.pywebview.api
+        : null;
+    if (api) {
+      Promise.resolve(api.session_roll(label, result, detail || "", entry.t)).catch(() => {});
+    }
+  }
+
   function layoutBounds(list) {
     let maxX = 320;
     let maxY = 220;
@@ -337,6 +400,7 @@
         const result = rollDie(sides);
         showRollToast(`${label}: ${result} (d${sides})`);
         setStatus(`${label} → ${result}`);
+        publishRoll(label, result, `d${sides}`);
       });
     });
 

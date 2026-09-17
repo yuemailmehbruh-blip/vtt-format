@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  const ROLL_CHANNEL = "gm-session-roll";
+  const ROLL_HISTORY_KEY = "gm-session-roll-history";
+
   const dieSidesEl = document.getElementById("die-sides");
   const btnDieRoll = document.getElementById("btn-die-roll");
   const bellMeanEl = document.getElementById("bell-mean");
@@ -10,8 +13,54 @@
   const rollHistoryListEl = document.getElementById("roll-history-list");
   const statusEl = document.getElementById("status");
 
-  /** @type {{label: string, result: number, detail: string}[]} */
+  /** @type {{label: string, result: number, detail: string, t?: number}[]} */
   const rollHistory = [];
+
+  /** localStorage: shared across pywebview windows; cleared only via Clear. */
+  function rollStore() {
+    try {
+      return window.localStorage;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readStoredHistory() {
+    const store = rollStore();
+    if (!store) return [];
+    try {
+      const raw = store.getItem(ROLL_HISTORY_KEY);
+      if (!raw) return [];
+      const list = JSON.parse(raw);
+      if (!Array.isArray(list)) return [];
+      return list
+        .filter((e) => e && typeof e === "object")
+        .map((e) => ({
+          label: String(e.label || ""),
+          result: e.result,
+          detail: String(e.detail || ""),
+          t: typeof e.t === "number" ? e.t : undefined,
+        }));
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function writeStoredHistory() {
+    const store = rollStore();
+    if (!store) return;
+    try {
+      store.setItem(ROLL_HISTORY_KEY, JSON.stringify(rollHistory));
+    } catch (_) {}
+  }
+
+  function clearStoredHistory() {
+    const store = rollStore();
+    if (!store) return;
+    try {
+      store.removeItem(ROLL_HISTORY_KEY);
+    } catch (_) {}
+  }
 
   function setStatus(msg) {
     statusEl.textContent = msg || "";
@@ -67,10 +116,53 @@
     rollHistoryListEl.scrollTop = rollHistoryListEl.scrollHeight;
   }
 
-  function appendRoll(label, result, detail) {
-    rollHistory.push({ label, result, detail: detail || "" });
+  function entryKey(e) {
+    return `${e.t ?? ""}|${e.label}|${e.result}|${e.detail || ""}`;
+  }
+
+  /**
+   * Append a roll to in-memory history + localStorage and re-render.
+   * Dedupes identical (t,label,result,detail) so BroadcastChannel + pywebview
+   * bridges do not double-append the same sheet roll.
+   */
+  function appendRoll(label, result, detail, t) {
+    const entry = {
+      label: String(label || ""),
+      result,
+      detail: detail != null ? String(detail) : "",
+      t: typeof t === "number" ? t : Date.now(),
+    };
+    const key = entryKey(entry);
+    if (rollHistory.some((e) => entryKey(e) === key)) {
+      return;
+    }
+    // Soft dedupe: same label/result/detail within 2s (BC + bridge race without t)
+    for (let i = rollHistory.length - 1; i >= 0; i--) {
+      const e = rollHistory[i];
+      if (
+        e.label === entry.label &&
+        e.result === entry.result &&
+        (e.detail || "") === (entry.detail || "")
+      ) {
+        const te = typeof e.t === "number" ? e.t : 0;
+        if (!te || entry.t - te < 2000 || Date.now() - te < 2000) {
+          return;
+        }
+      }
+      if (typeof e.t === "number" && Date.now() - e.t > 5000) break;
+    }
+    rollHistory.push(entry);
+    writeStoredHistory();
     renderRollHistory();
-    setStatus(`${label} → ${result}`);
+    setStatus(`${entry.label} → ${entry.result}`);
+  }
+
+  function hydrateFromStorage() {
+    const stored = readStoredHistory();
+    rollHistory.length = 0;
+    for (const e of stored) {
+      rollHistory.push(e);
+    }
   }
 
   if (btnDieRoll) {
@@ -98,11 +190,26 @@
   if (btnRollClear) {
     btnRollClear.addEventListener("click", () => {
       rollHistory.length = 0;
+      clearStoredHistory();
       renderRollHistory();
       setStatus("History cleared");
     });
   }
 
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      const ch = new BroadcastChannel(ROLL_CHANNEL);
+      ch.onmessage = (ev) => {
+        const data = ev && ev.data;
+        if (!data || typeof data !== "object") return;
+        appendRoll(data.label, data.result, data.detail, data.t);
+      };
+    }
+  } catch (_) {}
+
+  window.__gmAppendRoll = appendRoll;
+
+  hydrateFromStorage();
   renderRollHistory();
   setStatus("Ready");
 })();

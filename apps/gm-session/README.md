@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.1**).
+Version is in `VERSION` (currently **0.6.2**).
 
 ## Run — desktop app (recommended)
 
@@ -57,7 +57,7 @@ Open the printed URL (e.g. [http://127.0.0.1:8765/?scene=docks](http://127.0.0.1
 - **Token select** — click a token to select (accent ring); click empty map (without much drag) clears selection; double-click token opens that actor’s sheet; library “active” follows the selected token’s actor
 - **Token size** — circle diameter in tiles (`size_tiles`); world radius = `(size_tiles * gridSize) / 2`. Canonical value on actor YAML `appearance.size_tiles`; copied onto tokens when placed; Appearance save updates all tokens for that actor on the current scene
 - **Pan / zoom** — drag empty map to pan, wheel to zoom, double-click empty map to fit. Hit-test: edit handles/body → tokens → pan
-- **Rolls** — bottom-right button over the map (Update app stays bottom-left). Opens a **pop-out window** (like sheets) with **Dice roll** (uniform 1–x), **Bell curve sample** (Normal μ,σ rounded), and session roll history (newest at bottom, auto-scroll; Clear; in-memory only). Desktop: `open_rolls()`; browser `serve.py` falls back to `window.open('/rolls.html')`.
+- **Rolls** — bottom-right button over the map (Update app stays bottom-left). Opens a **pop-out window** (like sheets) with **Dice roll** (uniform 1–x), **Bell curve sample** (Normal μ,σ rounded), and session roll history (newest at bottom, auto-scroll; Clear; shared via `localStorage` key `gm-session-roll-history` + `BroadcastChannel('gm-session-roll')` / pywebview `session_roll`). Desktop: `open_rolls()`; browser `serve.py` falls back to `window.open('/rolls.html')`.
 - **Update app** — fixed button bottom-left of the canvas; upgrades the installed program (not the map). Looks on GitHub Releases for a Setup.exe, downloads it, runs the installer, quits, then relaunches. Status text under the button tracks that. Browser `serve.py` has no updater API.
 
 ## Auto-update
@@ -223,4 +223,8 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+
+## 0.6.2
+
+- **Sheet rolls → Rolls history** — layout button rolls publish to the Rolls pop-out session history (`Actor: Button` + `dN` detail) via shared `gm-session-roll` BroadcastChannel, `localStorage` (`gm-session-roll-history`), and desktop `session_roll` → `window.__gmAppendRoll`. History hydrates on Rolls reopen; Clear clears storage too. Sheet toast unchanged.
 
