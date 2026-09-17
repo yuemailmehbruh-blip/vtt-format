@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.5.16**).
+Version is in `VERSION` (currently **0.5.17**).
 
 ## Run — desktop app (recommended)
 
@@ -200,3 +200,7 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 ## 0.5.16
 
 - **Rolls pop-out** — bottom-right **Rolls** button opens a dedicated window (`rolls.html` / `open_rolls()`), matching character sheets. Inline popover/history chrome removed from the map; dice, bell sample, and history live in the pop-out.
+
+## 0.5.17
+
+- **Map chrome clicks** — `#update-bar` / `#roll-dock` sit above the canvas but viewport `pointerdown`/`dblclick` ignored `event.target`, so button clicks bubbled into pan and blank-space `fitToView`. Early-out via `isMapChrome()` plus `stopPropagation` on the bars; `pointer-events: auto` on both docks.

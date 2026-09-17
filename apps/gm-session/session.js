@@ -2013,7 +2013,8 @@
   }
 
   if (btnUpdate) {
-    btnUpdate.addEventListener("click", () => {
+    btnUpdate.addEventListener("click", (e) => {
+      e.stopPropagation();
       runUpdateCheck();
     });
   }
@@ -2211,6 +2212,13 @@
     layer.h = h;
   }
 
+
+  /** True if event target is Update/Rolls (or other) chrome over the map. */
+  function isMapChrome(el) {
+    if (!el || typeof el.closest !== "function") return false;
+    return Boolean(el.closest("#update-bar, #roll-dock, .map-chrome"));
+  }
+
   /** @type {"none"|"pan"|"token"|"layer-move"|"layer-resize"} */
   let dragMode = "none";
   /** @type {any|null} */
@@ -2223,6 +2231,7 @@
   let layerDragOrigin = null;
 
   viewport.addEventListener("pointerdown", (e) => {
+    if (isMapChrome(e.target)) return;
     if (e.button !== 0) return;
     const [sx, sy] = canvasLocal(e);
     lastX = e.clientX;
@@ -2404,6 +2413,7 @@
   viewport.addEventListener(
     "wheel",
     (e) => {
+      if (isMapChrome(e.target)) return;
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
@@ -2421,6 +2431,7 @@
   );
 
   viewport.addEventListener("dblclick", (e) => {
+    if (isMapChrome(e.target)) return;
     const [sx, sy] = canvasLocal(e);
     const hit = hitTestToken(sx, sy);
     if (hit && hit.actor_id) {
@@ -2461,6 +2472,19 @@
   });
 
   window.addEventListener("resize", resize);
+
+
+  // Belt-and-suspenders: map chrome must not bubble into viewport pan/fit
+  function stopMapChromeBubble(e) {
+    e.stopPropagation();
+  }
+  for (const id of ["update-bar", "roll-dock"]) {
+    const chrome = document.getElementById(id);
+    if (!chrome) continue;
+    for (const type of ["pointerdown", "dblclick", "click"]) {
+      chrome.addEventListener(type, stopMapChromeBubble);
+    }
+  }
 
   // --- Rolls pop-out (bottom-right button) ---
   function openRolls() {
