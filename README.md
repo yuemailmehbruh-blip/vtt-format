@@ -52,8 +52,9 @@ python apps/gm-session/serve.py
 
 - Library lists actors from `world/actors/` (sample: dock-tough, party-fighter, blank-npc)
 - Each actor has a human sheet at `world/actors/<id>.sheet.txt`
-- Drag an actor onto the map → white circle token; placements persist in `state/tokens/<scene>.json`
-- Click an actor → sheet window (desktop app); Save writes `.sheet.txt` on disk
+- Drag an actor onto the map → white circle token (`size_tiles` diameter); placements persist in `state/tokens/<scene>.json`
+- Click an actor → sheet window (desktop app) with **Sheet** + **Appearance** tabs; Save writes `.sheet.txt` / actor appearance
+- Select tokens on the map; header dice tools (1–x and bell-curve sample)
 - Auto-update on launch via GitHub Releases (`GM-Session-Setup.exe`); see `apps/gm-session/README.md`
 - Play view draws map layers + grid + tokens only (walls/doors/lights/spawns are not rendered)
 

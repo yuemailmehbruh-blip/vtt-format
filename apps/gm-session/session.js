@@ -36,6 +36,11 @@
   let library = null;
   let selectedActorId = null;
   let currentSheetActorId = null;
+  /** @type {string|null} */
+  let selectedTokenId = null;
+  let pointerDownX = 0;
+  let pointerDownY = 0;
+  let pointerMoved = false;
 
   let extent = { x: 0, y: 0, w: 1400, h: 1400 };
   let gridSize = 70;
@@ -390,16 +395,40 @@
   }
 
   // --- Layer 3: tokens ---
+  function tokenSizeTiles(t) {
+    const n = Number(t && t.size_tiles);
+    return n > 0 ? n : 1;
+  }
+
+  /** World-space radius from diameter in tiles. */
+  function tokenRadiusWorld(t) {
+    return (tokenSizeTiles(t) * gridSize) / 2;
+  }
+
+  function tokenRadiusScreen(t) {
+    return tokenRadiusWorld(t) * scale;
+  }
+
   function drawTokens() {
     ctx.save();
     for (const t of tokens) {
       const [cx, cy] = worldToScreen(t.x, t.y);
-      const r = gridSize * 0.45 * scale; // world 0.45*grid; screen = world * scale
+      const r = tokenRadiusScreen(t);
+      const selected = selectedTokenId && t.id === selectedTokenId;
+
+      if (selected) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r + Math.max(3, 4 * Math.min(scale, 1.5)), 0, Math.PI * 2);
+        ctx.strokeStyle = "#6ea8fe";
+        ctx.lineWidth = Math.max(2.5, 3.5 * Math.min(scale, 1.5));
+        ctx.stroke();
+      }
+
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.fillStyle = "#ffffff";
       ctx.fill();
-      ctx.strokeStyle = "rgba(20, 24, 36, 0.85)";
+      ctx.strokeStyle = selected ? "#6ea8fe" : "rgba(20, 24, 36, 0.85)";
       ctx.lineWidth = Math.max(1.5, 2 * Math.min(scale, 1.5));
       ctx.stroke();
 
@@ -701,6 +730,10 @@
     }
     const data = await res.json();
     tokens = Array.isArray(data.tokens) ? data.tokens : [];
+    for (const t of tokens) {
+      const n = Number(t.size_tiles);
+      t.size_tiles = n > 0 ? n : 1;
+    }
   }
 
   async function persistTokens() {
@@ -779,6 +812,11 @@
   function placeToken(actor, worldX, worldY) {
     const [x, y] = maybeSnap(worldX, worldY);
     const name = actor.name || actor.id;
+    let size = Number(
+      actor.size_tiles ??
+        (actor.appearance && actor.appearance.size_tiles)
+    );
+    if (!(size > 0)) size = 1;
     tokens.push({
       id: `${actor.id}-${Date.now()}-${Math.floor(Math.random() * 1e4)}`,
       actor_id: actor.id,
@@ -786,6 +824,7 @@
       label: initials(name),
       x,
       y,
+      size_tiles: size,
     });
     draw();
     schedulePersist();
@@ -798,6 +837,7 @@
     history.replaceState(null, "", url);
 
     editingLayerId = null;
+    selectedTokenId = null;
     setStatus(`Loading scene “${sceneId}”…`);
     const res = await fetch(`/api/scene/${encodeURIComponent(sceneId)}`);
     if (!res.ok) {
@@ -1952,23 +1992,97 @@
     return [e.clientX - rect.left, e.clientY - rect.top];
   }
 
-  function tokenRadiusScreen() {
-    // Lock draw/hit-test size to the map grid (no min-px / scale-cap floors).
-    return gridSize * 0.45 * scale;
-  }
-
   /** Topmost token under screen point, or null. Tokens sit above map pan. */
   function hitTestToken(sx, sy) {
-    const r = tokenRadiusScreen();
     for (let i = tokens.length - 1; i >= 0; i--) {
       const t = tokens[i];
       const [cx, cy] = worldToScreen(t.x, t.y);
+      const r = tokenRadiusScreen(t);
       const dx = sx - cx;
       const dy = sy - cy;
       if (dx * dx + dy * dy <= r * r) return t;
     }
     return null;
   }
+
+  function selectToken(token) {
+    if (!token) {
+      selectedTokenId = null;
+      draw();
+      return;
+    }
+    selectedTokenId = token.id;
+    if (token.actor_id) {
+      selectedActorId = token.actor_id;
+      renderLibrarySelection();
+    }
+    const size = tokenSizeTiles(token);
+    setStatus(`Selected “${token.name || token.id}” · ${size} tile(s) across`);
+    const hint = document.getElementById("header-hint");
+    if (hint) {
+      hint.textContent = `Selected: ${token.name || token.id} · Double-click for sheet · Drag to move`;
+    }
+    draw();
+  }
+
+  function clearTokenSelection({ updateHint = true } = {}) {
+    if (!selectedTokenId) return;
+    selectedTokenId = null;
+    draw();
+    if (updateHint) {
+      const hint = document.getElementById("header-hint");
+      if (hint) {
+        hint.textContent =
+          "Click token to select · Double-click token for sheet · Drag actors onto map · Wheel zoom";
+      }
+    }
+  }
+
+  function applyAppearanceToTokens(actorId, appearance) {
+    if (!actorId) return;
+    let size = Number(appearance && appearance.size_tiles);
+    if (!(size > 0)) size = 1;
+    let changed = 0;
+    for (const t of tokens) {
+      if (t.actor_id === actorId) {
+        t.size_tiles = size;
+        changed++;
+      }
+    }
+    // Keep library cache in sync for future placements
+    if (library && Array.isArray(library.actors)) {
+      for (const a of library.actors) {
+        if (a.id === actorId) {
+          a.size_tiles = size;
+          a.appearance = { ...(a.appearance || {}), size_tiles: size };
+        }
+      }
+    }
+    if (changed) {
+      schedulePersist();
+      draw();
+      setStatus(
+        `Appearance: ${actorId} → ${size} tile(s) across · updated ${changed} token(s)`
+      );
+    } else {
+      setStatus(`Appearance saved for ${actorId} (no tokens on this scene)`);
+    }
+  }
+
+  window.__gmSessionApplyAppearance = function (actorId, appearance) {
+    applyAppearanceToTokens(actorId, appearance || {});
+  };
+
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      const appearanceCh = new BroadcastChannel("gm-session-appearance");
+      appearanceCh.onmessage = (ev) => {
+        const data = ev && ev.data;
+        if (!data || !data.actor_id) return;
+        applyAppearanceToTokens(data.actor_id, data.appearance || {});
+      };
+    }
+  } catch (_) {}
 
   function hitTestResizeHandle(sx, sy) {
     const layer = editingLayer();
@@ -2132,18 +2246,22 @@
 
     // 2) Tokens
     const hit = hitTestToken(sx, sy);
+    pointerDownX = e.clientX;
+    pointerDownY = e.clientY;
+    pointerMoved = false;
     if (hit) {
       dragMode = "token";
       draggingToken = hit;
       draggingLayer = null;
       dragging = false;
+      selectToken(hit);
       viewport.classList.remove("dragging");
       viewport.style.cursor = "grabbing";
       viewport.setPointerCapture(e.pointerId);
       return;
     }
 
-    // 3) Pan
+    // 3) Pan (empty space)
     dragMode = "pan";
     draggingToken = null;
     draggingLayer = null;
@@ -2170,6 +2288,9 @@
 
     if (dragMode === "token" && draggingToken) {
       // Free movement while dragging — snap only on pointerup
+      if (Math.abs(e.clientX - pointerDownX) > 4 || Math.abs(e.clientY - pointerDownY) > 4) {
+        pointerMoved = true;
+      }
       const [sx, sy] = canvasLocal(e);
       const [wx, wy] = screenToWorld(sx, sy);
       draggingToken.x = wx;
@@ -2198,6 +2319,9 @@
     }
 
     if (dragMode === "pan" && dragging) {
+      if (Math.abs(e.clientX - pointerDownX) > 4 || Math.abs(e.clientY - pointerDownY) > 4) {
+        pointerMoved = true;
+      }
       offsetX += e.clientX - lastX;
       offsetY += e.clientY - lastY;
       lastX = e.clientX;
@@ -2207,6 +2331,7 @@
   });
 
   function endDrag(e) {
+    const wasPan = dragMode === "pan";
     if (dragMode === "token" && draggingToken) {
       if (snapToGrid) {
         const [nx, ny] = snapWorld(draggingToken.x, draggingToken.y);
@@ -2225,12 +2350,17 @@
       persistSceneLayers();
       extent = computeExtent(scene);
     }
+    // Click empty map (little/no pan movement) clears token selection
+    if (wasPan && !pointerMoved) {
+      clearTokenSelection();
+    }
     dragMode = "none";
     draggingToken = null;
     draggingLayer = null;
     resizeHandle = null;
     layerDragOrigin = null;
     dragging = false;
+    pointerMoved = false;
     viewport.classList.remove("dragging");
     viewport.style.cursor = "grab";
     try {
@@ -2259,7 +2389,14 @@
     { passive: false }
   );
 
-  viewport.addEventListener("dblclick", () => {
+  viewport.addEventListener("dblclick", (e) => {
+    const [sx, sy] = canvasLocal(e);
+    const hit = hitTestToken(sx, sy);
+    if (hit && hit.actor_id) {
+      selectToken(hit);
+      openSheet(hit.actor_id);
+      return;
+    }
     fitToView();
     draw();
   });
@@ -2293,6 +2430,56 @@
   });
 
   window.addEventListener("resize", resize);
+
+  // --- Dice tools ---
+  function rollUniformInt(sides) {
+    const n = Math.max(1, Math.floor(Number(sides) || 1));
+    return 1 + Math.floor(Math.random() * n);
+  }
+
+  /** Box–Muller normal sample, rounded to nearest integer. */
+  function sampleBell(mean, stdev) {
+    const m = Number(mean);
+    const s = Number(stdev);
+    if (!(s > 0) || !Number.isFinite(m) || !Number.isFinite(s)) return null;
+    let u = 0;
+    let v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    const z = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    return Math.round(m + z * s);
+  }
+
+  const dieSidesEl = document.getElementById("die-sides");
+  const dieResultEl = document.getElementById("die-result");
+  const btnDieRoll = document.getElementById("btn-die-roll");
+  const bellMeanEl = document.getElementById("bell-mean");
+  const bellStdevEl = document.getElementById("bell-stdev");
+  const bellResultEl = document.getElementById("bell-result");
+  const btnBellSample = document.getElementById("btn-bell-sample");
+
+  if (btnDieRoll) {
+    btnDieRoll.addEventListener("click", () => {
+      const sides = Math.max(1, Math.floor(Number(dieSidesEl && dieSidesEl.value) || 1));
+      if (dieSidesEl) dieSidesEl.value = String(sides);
+      const result = rollUniformInt(sides);
+      if (dieResultEl) dieResultEl.textContent = String(result);
+      setStatus(`Roll 1–${sides}: ${result}`);
+    });
+  }
+  if (btnBellSample) {
+    btnBellSample.addEventListener("click", () => {
+      const mean = Number(bellMeanEl && bellMeanEl.value);
+      const stdev = Number(bellStdevEl && bellStdevEl.value);
+      const result = sampleBell(mean, stdev);
+      if (result == null) {
+        setStatus("Bell sample needs finite mean and σ > 0");
+        return;
+      }
+      if (bellResultEl) bellResultEl.textContent = String(result);
+      setStatus(`Bell N(${mean}, ${stdev}²) → ${result}`);
+    });
+  }
 
   async function boot() {
     layout.classList.add("no-sheet");

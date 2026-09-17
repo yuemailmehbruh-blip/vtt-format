@@ -99,7 +99,7 @@ def _actor_title(campaign_root: Path, actor_id: str) -> str:
 
 
 class DesktopApi:
-    """JS bridge: window.pywebview.api.open_sheet(actor_id)."""
+    """JS bridge: open_sheet, appearance_saved, check_update."""
 
     def __init__(self, base_url: str, campaign_root: Path) -> None:
         self.base_url = base_url.rstrip("/")
@@ -128,9 +128,10 @@ class DesktopApi:
         window = webview.create_window(
             title,
             url,
-            width=480,
-            height=640,
-            min_size=(320, 400),
+            js_api=self,
+            width=520,
+            height=700,
+            min_size=(360, 420),
         )
         self._sheets[actor_id] = window
 
@@ -144,6 +145,38 @@ class DesktopApi:
             pass
 
         return "opened"
+
+    def appearance_saved(self, actor_id: str, appearance=None) -> str:
+        """Notify the main map window that an actor's appearance changed.
+
+        Sheet window calls this after PUT /api/actor/<id>/appearance so tokens
+        update without reload. Also safe if called with appearance from JS.
+        """
+        actor_id = (actor_id or "").strip()
+        if not actor_id:
+            return "error: missing actor_id"
+        if appearance is None:
+            appearance = {}
+        if not isinstance(appearance, dict):
+            try:
+                appearance = dict(appearance)
+            except Exception:  # noqa: BLE001
+                appearance = {}
+        payload_actor = json.dumps(actor_id)
+        payload_app = json.dumps(appearance)
+        js = (
+            "window.__gmSessionApplyAppearance && "
+            f"window.__gmSessionApplyAppearance({payload_actor}, {payload_app})"
+        )
+        # Prefer the main window (first); also try all in case ordering differs.
+        notified = 0
+        for win in list(webview.windows):
+            try:
+                win.evaluate_js(js)
+                notified += 1
+            except Exception:  # noqa: BLE001
+                pass
+        return f"notified:{notified}"
 
     def _push_update_status(self, message: str, done: bool = False) -> None:
         payload = json.dumps(message)

@@ -221,6 +221,15 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             text = sheet_path.read_text(encoding="utf-8")
+            appearance = actor.get("appearance") if isinstance(actor.get("appearance"), dict) else {}
+            size_tiles = appearance.get("size_tiles", 1)
+            try:
+                size_tiles = float(size_tiles)
+            except (TypeError, ValueError):
+                size_tiles = 1.0
+            if size_tiles <= 0:
+                size_tiles = 1.0
+            appearance = {**appearance, "size_tiles": size_tiles}
             self._send_json(
                 200,
                 {
@@ -228,6 +237,7 @@ class Handler(BaseHTTPRequestHandler):
                     "name": actor.get("name") or actor_id,
                     "path": sheet_rel,
                     "text": text,
+                    "appearance": appearance,
                 },
             )
             return
@@ -369,6 +379,12 @@ class Handler(BaseHTTPRequestHandler):
             for t in tokens:
                 if not isinstance(t, dict):
                     continue
+                try:
+                    size_tiles = float(t.get("size_tiles", 1))
+                except (TypeError, ValueError):
+                    size_tiles = 1.0
+                if size_tiles <= 0:
+                    size_tiles = 1.0
                 cleaned.append(
                     {
                         "id": str(t.get("id") or uuid.uuid4()),
@@ -377,6 +393,7 @@ class Handler(BaseHTTPRequestHandler):
                         "label": t.get("label") or "",
                         "x": float(t.get("x", 0)),
                         "y": float(t.get("y", 0)),
+                        "size_tiles": size_tiles,
                     }
                 )
             out = {"scene": scene_id, "tokens": cleaned}
@@ -533,6 +550,72 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, **existing})
             return
 
+        if path.startswith("/api/actor/") and path.endswith("/appearance"):
+            # /api/actor/<id>/appearance
+            mid = path[len("/api/actor/") : -len("/appearance")].strip("/")
+            actor_id = mid
+            if not _safe_segment(actor_id):
+                self._send_json(400, {"error": "invalid actor id"})
+                return
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            if not isinstance(body, dict):
+                self._send_json(400, {"error": "body must be an object"})
+                return
+            appearance_in = body.get("appearance")
+            if appearance_in is None and "size_tiles" in body:
+                appearance_in = {"size_tiles": body.get("size_tiles")}
+            if not isinstance(appearance_in, dict):
+                self._send_json(
+                    400, {"error": 'body must be {"appearance": {"size_tiles": N}}'}
+                )
+                return
+            actor_path = self.campaign_root / "world" / "actors" / f"{actor_id}.yaml"
+            if not actor_path.is_file():
+                self._send_json(404, {"error": f"actor not found: {actor_id}"})
+                return
+            actor = yaml.safe_load(actor_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(actor, dict):
+                self._send_json(500, {"error": "actor YAML is not a mapping"})
+                return
+            existing = actor.get("appearance") if isinstance(actor.get("appearance"), dict) else {}
+            merged = {**existing}
+            if "size_tiles" in appearance_in:
+                try:
+                    size_tiles = float(appearance_in["size_tiles"])
+                except (TypeError, ValueError):
+                    self._send_json(400, {"error": "size_tiles must be a number"})
+                    return
+                if size_tiles <= 0:
+                    self._send_json(400, {"error": "size_tiles must be > 0"})
+                    return
+                merged["size_tiles"] = size_tiles
+            # Forward-compatible: merge other appearance keys except size_tiles handled above
+            for k, v in appearance_in.items():
+                if k == "size_tiles":
+                    continue
+                merged[k] = v
+            if "size_tiles" not in merged:
+                merged["size_tiles"] = 1.0
+            actor["appearance"] = merged
+            actor_path.write_text(
+                yaml.safe_dump(
+                    actor,
+                    sort_keys=False,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                ),
+                encoding="utf-8",
+            )
+            self._send_json(
+                200,
+                {"ok": True, "actor_id": actor_id, "appearance": merged},
+            )
+            return
+
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -623,6 +706,13 @@ class Handler(BaseHTTPRequestHandler):
                 sheet_rel = data.get("sheet_doc") or f"world/actors/{actor_id}.sheet.txt"
                 sheet_path = self._resolve_under_campaign(sheet_rel)
                 has_sheet = bool(sheet_path and sheet_path.is_file())
+                appearance = data.get("appearance") if isinstance(data.get("appearance"), dict) else {}
+                try:
+                    size_tiles = float(appearance.get("size_tiles", 1))
+                except (TypeError, ValueError):
+                    size_tiles = 1.0
+                if size_tiles <= 0:
+                    size_tiles = 1.0
                 actors.append(
                     {
                         "id": actor_id,
@@ -631,6 +721,8 @@ class Handler(BaseHTTPRequestHandler):
                         "sheet_doc": sheet_rel if has_sheet else None,
                         "has_sheet": has_sheet,
                         "token_capable": True,
+                        "appearance": {"size_tiles": size_tiles},
+                        "size_tiles": size_tiles,
                     }
                 )
 
