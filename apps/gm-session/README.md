@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.0**).
+Version is in `VERSION` (currently **0.6.1**).
 
 ## Run — desktop app (recommended)
 
@@ -216,3 +216,11 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 
 - **Sheet builder** — new pop-out window (`sheet-builder.html` / `open_sheet_builder`): display canvas (box/circle field widgets) + automation flowchart (closed ops only). Persist `editor-scratch/sheets/<id>.builder.json`; compile into `build/sheets/<id>.yaml` (optional `layout:` for future play renderer).
 - **Out of scope (this release)** — full play-time rendered sheet replacing `.sheet.txt`; text widgets / images / auras; undo stack beyond basic; multi-page sheets.
+
+## 0.6.1
+
+- **Live sheet layout** — character sheet window shows builder widgets (box/circle/button) with live values; closed formulas (`floor`, `+−*/`) evaluate client-side; editable numbers PUT `/api/actor/{id}/fields`.
+- **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
+- **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
+- **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+

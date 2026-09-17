@@ -422,16 +422,26 @@
       const sel = w.id === selectedWidgetId ? " widget-selected" : "";
       const cx = w.x + w.w / 2;
       const cy = w.y + w.h / 2;
-      const val = fieldDefault(w.field);
-      const label = w.field || "(no field)";
-      if (w.shape === "circle") {
+      if (w.shape === "button") {
+        const label = w.label || "Roll";
+        const sides = (w.action && w.action.sides) || 20;
+        html += `<g class="widget" data-id="${esc(w.id)}">`;
+        html += `<rect class="widget-button${sel}" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="10" data-id="${esc(w.id)}" />`;
+        html += `<text class="widget-value" x="${cx}" y="${cy - 2}">${esc(label)}</text>`;
+        html += `<text class="widget-label" x="${cx}" y="${cy + 14}">d${esc(String(sides))}</text>`;
+        html += `</g>`;
+      } else if (w.shape === "circle") {
         const r = Math.min(w.w, w.h) / 2;
+        const val = fieldDefault(w.field);
+        const label = w.field || "(field)";
         html += `<g class="widget" data-id="${esc(w.id)}" transform="translate(0,0)">`;
         html += `<circle class="widget-circle${sel}" cx="${cx}" cy="${cy}" r="${r}" data-id="${esc(w.id)}" />`;
         html += `<text class="widget-value" x="${cx}" y="${cy}">${esc(String(val))}</text>`;
         html += `<text class="widget-label" x="${cx}" y="${cy + r + 14}">${esc(label)}</text>`;
         html += `</g>`;
       } else {
+        const val = fieldDefault(w.field);
+        const label = w.field || "(field)";
         html += `<g class="widget" data-id="${esc(w.id)}">`;
         html += `<rect class="widget-box${sel}" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="6" data-id="${esc(w.id)}" />`;
         html += `<text class="widget-value" x="${cx}" y="${cy}">${esc(String(val))}</text>`;
@@ -477,45 +487,50 @@
       displayProps.innerHTML = `<span class="hint">Select a widget to bind a field · tool: ${displayTool}</span>`;
       return;
     }
-    const opts = fieldIds()
-      .map(
-        (f) =>
-          `<option value="${esc(f)}"${f === w.field ? " selected" : ""}>${esc(f)}</option>`
-      )
-      .join("");
+    if (w.shape === "button") {
+      const label = w.label != null ? w.label : "Roll";
+      const sides = (w.action && w.action.sides) || 20;
+      displayProps.innerHTML = `
+        <label>Label <input type="text" id="prop-label" value="${esc(label)}" style="width:8rem" /></label>
+        <label>Sides <input type="number" id="prop-sides" min="2" value="${esc(String(sides))}" style="width:4rem" /></label>
+        <span class="hint">button · roll dN @ (${Math.round(w.x)},${Math.round(w.y)})</span>
+      `;
+      const lab = document.getElementById("prop-label");
+      const sid = document.getElementById("prop-sides");
+      lab.addEventListener("change", () => {
+        w.label = lab.value.trim() || "Roll";
+        renderDisplay();
+      });
+      sid.addEventListener("change", () => {
+        const n = Math.max(2, Math.floor(Number(sid.value) || 20));
+        w.action = { type: "roll", sides: n };
+        sid.value = String(n);
+        renderDisplay();
+      });
+      return;
+    }
     const fdef = doc.fields[w.field] || {};
     const isFormula = !!fdef.formula;
+    const hasField = !!(w.field && String(w.field).trim());
     displayProps.innerHTML = `
-      <label>Field
-        <select id="prop-field">${opts}<option value="__new__">+ new field…</option></select>
-      </label>
-      <label>or id <input type="text" id="prop-field-new" placeholder="NEW_FIELD" style="width:7rem" /></label>
-      <label>Value <input type="number" id="prop-value" ${isFormula ? "disabled" : ""} value="${esc(String(fdef.default != null ? fdef.default : 0))}" style="width:5rem" title="${isFormula ? "Formula field (read-only)" : "Editable default"}" /></label>
+      <label>Field <input type="text" id="prop-field" value="${esc(w.field || "")}" placeholder="FIELD_ID" style="width:8rem" /></label>
+      <label>Value <input type="number" id="prop-value" ${!hasField || isFormula ? "disabled" : ""} value="${esc(String(hasField && fdef.default != null ? fdef.default : 0))}" style="width:5rem" title="${isFormula ? "Formula field (read-only)" : "Editable default"}" /></label>
       ${isFormula ? `<span class="formula-preview">${esc(fdef.formula)}</span>` : ""}
       <span class="hint">${w.shape} @ (${Math.round(w.x)},${Math.round(w.y)})</span>
     `;
-    const sel = document.getElementById("prop-field");
-    const neu = document.getElementById("prop-field-new");
+    const fieldInput = document.getElementById("prop-field");
     const val = document.getElementById("prop-value");
-    sel.addEventListener("change", () => {
-      if (sel.value === "__new__") {
-        neu.focus();
-        return;
-      }
-      w.field = sel.value;
-      renderDisplay();
-    });
-    neu.addEventListener("change", () => {
-      const id = neu.value.trim();
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
+    fieldInput.addEventListener("change", () => {
+      const id = fieldInput.value.trim();
+      if (id && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
         setStatus("Field id must be identifier-like", "err");
         return;
       }
-      ensureField(id);
       w.field = id;
+      if (id) ensureField(id);
       renderDisplay();
     });
-    if (val && !isFormula) {
+    if (val && hasField && !isFormula) {
       val.addEventListener("change", () => {
         ensureField(w.field);
         doc.fields[w.field].default = Number(val.value) || 0;
@@ -526,17 +541,30 @@
 
   displaySvg.addEventListener("pointerdown", (e) => {
     const p = svgPoint(displaySvg, e);
-    if (displayTool === "box" || displayTool === "circle") {
-      const w = {
-        id: uid("w"),
-        shape: displayTool === "circle" ? "circle" : "box",
-        field: fieldIds()[0] || "STR",
-        x: p.x - 36,
-        y: p.y - 28,
-        w: displayTool === "circle" ? 64 : 72,
-        h: displayTool === "circle" ? 64 : 56,
-      };
-      ensureField(w.field);
+    if (displayTool === "box" || displayTool === "circle" || displayTool === "button") {
+      let w;
+      if (displayTool === "button") {
+        w = {
+          id: uid("w"),
+          shape: "button",
+          label: "Roll",
+          action: { type: "roll", sides: 20 },
+          x: p.x - 44,
+          y: p.y - 22,
+          w: 88,
+          h: 44,
+        };
+      } else {
+        w = {
+          id: uid("w"),
+          shape: displayTool === "circle" ? "circle" : "box",
+          field: "",
+          x: p.x - 36,
+          y: p.y - 28,
+          w: displayTool === "circle" ? 64 : 72,
+          h: displayTool === "circle" ? 64 : 56,
+        };
+      }
       doc.layout.widgets.push(w);
       selectedWidgetId = w.id;
       displayTool = "select";
@@ -767,14 +795,7 @@
     }
     let body = "";
     if (n.kind === "field") {
-      const opts = fieldIds()
-        .map(
-          (f) =>
-            `<option value="${esc(f)}"${f === n.field ? " selected" : ""}>${esc(f)}</option>`
-        )
-        .join("");
-      body += `<label>Field <select id="g-field">${opts}</select></label>`;
-      body += `<label>or new <input type="text" id="g-field-new" style="width:7rem" placeholder="FIELD" /></label>`;
+      body += `<label>Field <input type="text" id="g-field" value="${esc(n.field || "")}" placeholder="FIELD_ID" style="width:8rem" /></label>`;
       body += `<label>Role <select id="g-role">
         <option value="source"${n.role !== "output" ? " selected" : ""}>source</option>
         <option value="output"${n.role === "output" ? " selected" : ""}>output (formula sink)</option>
@@ -792,25 +813,17 @@
     graphProps.innerHTML = body;
 
     const gf = document.getElementById("g-field");
-    const gn = document.getElementById("g-field-new");
     const gr = document.getElementById("g-role");
     const gc = document.getElementById("g-const");
     if (gf) {
       gf.addEventListener("change", () => {
-        n.field = gf.value;
-        ensureField(n.field);
-        renderGraph();
-      });
-    }
-    if (gn) {
-      gn.addEventListener("change", () => {
-        const id = gn.value.trim();
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
+        const id = gf.value.trim();
+        if (id && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
           setStatus("Invalid field id", "err");
           return;
         }
-        ensureField(id);
         n.field = id;
+        if (id) ensureField(id);
         renderGraph();
       });
     }
@@ -836,9 +849,8 @@
       y: y - NODE_H / 2,
     };
     if (kind === "field") {
-      n.field = fieldIds()[0] || "STR";
+      n.field = "";
       n.role = "source";
-      ensureField(n.field);
     } else if (kind === "const") {
       n.value = 0;
     } else if (kind === "op") {

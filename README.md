@@ -141,4 +141,9 @@ Scaffold for inspection and zipping; treat as yours.
 
 ## 0.6.0 — Sheet builder
 
-GM Session gains a **Sheet builder** window: declarative display widgets (boxes/circles bound to fields) plus a Simulink-style automation graph that compiles to closed formulas (`floor`, `+−*/`, field names). Editor WIP: `editor-scratch/sheets/<id>.builder.json`. Play still never calls AI and still uses `.sheet.txt` docs for now (rendered sheet UI is future work).
+GM Session gains a **Sheet builder** window: declarative display widgets (boxes/circles bound to fields) plus a Simulink-style automation graph that compiles to closed formulas (`floor`, `+−*/`, field names). Editor WIP: `editor-scratch/sheets/<id>.builder.json`. Play still never calls AI. Session sheets render builder layout widgets with live values; `.sheet.txt` notes remain available as a secondary panel.
+
+## 0.6.1 — Live sheet layout
+
+Session character sheets render the builder layout (boxes/circles/buttons) with live field values and closed formula evaluation. Roll buttons run `dN` on the sheet. Field widgets use a plain text id (no example dropdown). Notes text remains secondary.
+

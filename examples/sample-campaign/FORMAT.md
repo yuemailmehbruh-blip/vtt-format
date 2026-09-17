@@ -32,8 +32,10 @@ fields:
 layout:                              # optional; from sheet builder (future play renderer)
   widgets:
     - id: string
-      shape: box|circle
-      field: <field_name>
+      shape: box|circle|button
+      field: <field_name>           # box/circle
+      label: string                 # button
+      action: { type: roll, sides: N }  # button
       x: number
       y: number
       w: number
@@ -59,12 +61,12 @@ Shape (v1):
   "sheet_id": "player",
   "name": "Player Character",
   "fields": { "STR": {"type":"integer","default":10}, "STR_mod": {"type":"integer","formula":"floor((STR - 10) / 2)"} },
-  "layout": { "widgets": [ {"id":"…","shape":"box|circle","field":"STR","x":0,"y":0,"w":72,"h":56} ] },
+  "layout": { "widgets": [ {"id":"…","shape":"box|circle|button","field":"STR","label":"Roll","action":{"type":"roll","sides":20},"x":0,"y":0,"w":72,"h":56} ] },
   "graph": { "nodes": [], "edges": [] }
 }
 ```
 
-**Compile** writes/updates `build/sheets/<sheetId>.yaml` (fields + closed formulas; permissions stub preserved). An optional top-level `layout:` block may be written for a future play-time sheet renderer — play does **not** consume it yet.
+**Compile** writes/updates `build/sheets/<sheetId>.yaml` (fields + closed formulas; permissions stub preserved). An optional top-level `layout:` block is written for the session character sheet visual renderer (boxes/circles/buttons).
 
 Closed formula language (graph → string): field names, number literals, `+` `-` `*` `/`, parentheses, and `floor(…)`. No arbitrary code; cycles are rejected.
 

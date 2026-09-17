@@ -236,19 +236,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": f"actor not found: {actor_id}"})
                 return
             actor = yaml.safe_load(actor_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(actor, dict):
+                actor = {}
             sheet_rel = actor.get("sheet_doc") or f"world/actors/{actor_id}.sheet.txt"
             sheet_path = self._resolve_under_campaign(sheet_rel)
-            if sheet_path is None or not sheet_path.is_file():
-                self._send_json(
-                    404,
-                    {
-                        "error": f"sheet doc not found: {sheet_rel}",
-                        "actor_id": actor_id,
-                        "path": sheet_rel,
-                    },
-                )
-                return
-            text = sheet_path.read_text(encoding="utf-8")
+            sheet_text = ""
+            if sheet_path is not None and sheet_path.is_file():
+                sheet_text = sheet_path.read_text(encoding="utf-8")
             appearance = actor.get("appearance") if isinstance(actor.get("appearance"), dict) else {}
             size_tiles = appearance.get("size_tiles", 1)
             try:
@@ -258,14 +252,32 @@ class Handler(BaseHTTPRequestHandler):
             if size_tiles <= 0:
                 size_tiles = 1.0
             appearance = {**appearance, "size_tiles": size_tiles}
+            sheet_id = str(actor.get("sheet") or actor.get("sheet_id") or "").strip()
+            schema_fields: dict = {}
+            layout_widgets: list = []
+            schema_source = None
+            if sheet_id and _safe_segment(sheet_id):
+                schema_fields, layout_widgets, schema_source = self._load_sheet_schema(
+                    sheet_id
+                )
+            actor_fields = (
+                actor.get("fields") if isinstance(actor.get("fields"), dict) else {}
+            )
             self._send_json(
                 200,
                 {
                     "actor_id": actor_id,
                     "name": actor.get("name") or actor_id,
                     "path": sheet_rel,
-                    "text": text,
+                    "text": sheet_text,
                     "appearance": appearance,
+                    "sheet_id": sheet_id or None,
+                    "fields": actor_fields,
+                    "schema": {
+                        "fields": schema_fields,
+                        "source": schema_source,
+                    },
+                    "layout": {"widgets": layout_widgets},
                 },
             )
             return
@@ -595,6 +607,56 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, **existing})
             return
 
+        if path.startswith("/api/actor/") and path.endswith("/fields"):
+            # /api/actor/<id>/fields
+            mid = path[len("/api/actor/") : -len("/fields")].strip("/")
+            actor_id = mid
+            if not _safe_segment(actor_id):
+                self._send_json(400, {"error": "invalid actor id"})
+                return
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            if not isinstance(body, dict):
+                self._send_json(400, {"error": "body must be an object"})
+                return
+            fields_in = body.get("fields")
+            if not isinstance(fields_in, dict):
+                self._send_json(400, {"error": 'body must be {"fields": {...}}'})
+                return
+            actor_path = self.campaign_root / "world" / "actors" / f"{actor_id}.yaml"
+            if not actor_path.is_file():
+                self._send_json(404, {"error": f"actor not found: {actor_id}"})
+                return
+            actor = yaml.safe_load(actor_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(actor, dict):
+                self._send_json(500, {"error": "actor YAML is not a mapping"})
+                return
+            existing = actor.get("fields") if isinstance(actor.get("fields"), dict) else {}
+            merged = {**existing}
+            for k, v in fields_in.items():
+                key = str(k).strip()
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                    continue
+                merged[key] = v
+            actor["fields"] = merged
+            actor_path.write_text(
+                yaml.safe_dump(
+                    actor,
+                    sort_keys=False,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                ),
+                encoding="utf-8",
+            )
+            self._send_json(
+                200,
+                {"ok": True, "actor_id": actor_id, "fields": merged},
+            )
+            return
+
         if path.startswith("/api/actor/") and path.endswith("/appearance"):
             # /api/actor/<id>/appearance
             mid = path[len("/api/actor/") : -len("/appearance")].strip("/")
@@ -744,6 +806,39 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send_json(200, {"hash": digest, "name": name, "bytes": len(raw)})
 
+
+    def _load_sheet_schema(self, sheet_id: str) -> tuple[dict, list, str | None]:
+        """Return (schema_fields, layout_widgets, source) from build yaml or editor-scratch fallback."""
+        fields: dict = {}
+        widgets: list = []
+        source: str | None = None
+        ypath = self._sheet_yaml_path(sheet_id)
+        if ypath.is_file():
+            data = yaml.safe_load(ypath.read_text(encoding="utf-8")) or {}
+            if isinstance(data, dict):
+                if isinstance(data.get("fields"), dict):
+                    fields = dict(data["fields"])
+                layout = data.get("layout") if isinstance(data.get("layout"), dict) else {}
+                if isinstance(layout.get("widgets"), list):
+                    widgets = list(layout["widgets"])
+                source = "yaml"
+        scratch = self._builder_scratch_path(sheet_id)
+        if scratch.is_file() and (not fields or not widgets or source is None):
+            try:
+                data = json.loads(scratch.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                data = None
+            if isinstance(data, dict):
+                if not fields and isinstance(data.get("fields"), dict):
+                    fields = dict(data["fields"])
+                layout = (
+                    data.get("layout") if isinstance(data.get("layout"), dict) else {}
+                )
+                if not widgets and isinstance(layout.get("widgets"), list):
+                    widgets = list(layout["widgets"])
+                if source is None:
+                    source = "scratch"
+        return fields, widgets, source
 
     def _builder_scratch_path(self, sheet_id: str) -> Path:
         return (

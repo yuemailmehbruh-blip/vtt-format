@@ -108,3 +108,13 @@ layout:
       y: 140
       w: 72
       h: 56
+    - id: w_roll_d20
+      shape: button
+      label: Attack
+      action:
+        type: roll
+        sides: 20
+      x: 260
+      y: 40
+      w: 88
+      h: 44
