@@ -147,6 +147,10 @@ GM Session gains a **Sheet builder** window: declarative display widgets (boxes/
 
 Session character sheets render the builder layout (boxes/circles/buttons) with live field values and closed formula evaluation. Roll buttons run `dN` on the sheet. Field widgets use a plain text id (no example dropdown). Notes text remains secondary.
 
+## 0.6.10 — Toggle flips fields + active arithmetic chat
+
+Toggle layout buttons (and Mechanics-tab Toggle) flip an actor field named by `function_id` / mechanic name between 0 and 1; Trigger still runs named automations. Proficiency: `function_id: atk_prof` + formula `if(atk_prof, …)` — no entry→output required for the toggle. `include_arithmetic` chat detail shows only the **active** arithmetic path (`if` → taken branch; no full logic tree).
+
 ## 0.6.9 — Mechanics library + import
 
 Campaign shared Function library (`editor-scratch/mechanics/`). Sheet builder **Publish to library**; play sheet Mechanics tab **Import…** onto a sheet (id remap, duplicate name → 409, yaml graph updated without Compile).

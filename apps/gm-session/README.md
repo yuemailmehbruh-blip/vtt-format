@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.9**).
+Version is in `VERSION` (currently **0.6.10**).
 
 ## Run — desktop app (recommended)
 
@@ -229,6 +229,13 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
 
+## 0.6.10
+
+- **Toggle → field flip** — layout `mode: toggle` and Mechanics **Toggle** flip actor field named by `function_id` / row name between **0** and **1** (persist via `saveFields`, recompute formulas, refresh UI). Pressed state comes from the field value. Does **not** call `evaluateNamedFunction`.
+- **Trigger unchanged** — still runs the named automation.
+- **Docs** — proficiency = toggle `function_id: atk_prof` + `if(atk_prof, …)`; no entry→output for the toggle itself.
+- **Send arithmetic active path** — `include_arithmetic` detail formats only the taken arithmetic (`if` unwraps to the chosen branch; compare/and/or/not → bare 1/0), not the full logic tree.
+
 ## 0.6.9
 
 - **Mechanics library** — campaign `editor-scratch/mechanics/<name>.json`; Sheet builder **Publish to library** exports a named Function (runtime closure) via PUT `/api/mechanics/<name>`.
@@ -237,7 +244,7 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 
 ## 0.6.8
 
-- **Mechanics tab** — character sheet window: Sheet | Mechanics | Appearance. Lists this sheet’s named graph entry/function nodes; Trigger and Toggle (toggle state `mech:<name>`) call the shared `runNamedFunction` runner (same rolls/chat/writes as layout buttons).
+- **Mechanics tab** — character sheet window: Sheet | Mechanics | Appearance. Lists this sheet’s named graph entry/function nodes; Trigger calls `runNamedFunction`. (As of 0.6.10, Toggle flips field `name` 0/1 instead of running the function.)
 - **Compress / Expand** — Automations multi-select (Shift/Ctrl-click); **Compress** folds selection into a UI-only `graph.collapsed` block (flat nodes/edges unchanged for runtime); **Expand** / double-click restores; Delete on a block removes members + record. Persisted in builder JSON.
 
 ## 0.6.7
@@ -249,7 +256,7 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 ## 0.6.6
 
 - **Ancestor reachability** — `evaluateNamedFunction` expands the forward-reachable set by walking incoming edges until closed, so source fields/consts wired into ops (e.g. `entry→roll→+←STR`) evaluate before the op. Kahn topo runs on the expanded set.
-- **Send arithmetic to chat** — `send_to_chat` / `chat` prop `include_arithmetic` (UI: **Send arithmetic to chat**, default false). When true, message `detail` is an equation from the input DAG (`15 (d20) + 10 (STR) = 25`). When false, correct summed value still sends; detail stays roll-only as before.
+- **Send arithmetic to chat** — `send_to_chat` / `chat` prop `include_arithmetic` (UI: **Send arithmetic to chat**, default false). When true, message `detail` is an equation from the **active arithmetic path** of the input (`15 (d20) + 10 (STR) = 25`; `if` unwraps to the taken branch — see 0.6.10). When false, correct summed value still sends; detail stays roll-only as before.
 - **Self-check** — `tests/evaluate-reachability.mjs` asserts the STR+d20 repro.
 
 ## 0.6.5

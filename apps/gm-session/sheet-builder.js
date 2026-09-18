@@ -705,14 +705,19 @@
       const label = w.label != null ? w.label : "Button";
       const mode = w.mode === "toggle" ? "toggle" : "trigger";
       const fid = w.function_id != null ? w.function_id : "";
+      const fnHint =
+        mode === "toggle"
+          ? "function id = field name to flip 0/1"
+          : "function id = automation entry name";
+      const fnPlaceholder = mode === "toggle" ? "field_name" : "function_id";
       displayProps.innerHTML = `
         <label>Label <input type="text" id="prop-label" value="${esc(label)}" style="width:8rem" /></label>
         <label>Mode <select id="prop-mode">
           <option value="trigger"${mode === "trigger" ? " selected" : ""}>trigger</option>
           <option value="toggle"${mode === "toggle" ? " selected" : ""}>toggle</option>
         </select></label>
-        <label>Function <input type="text" id="prop-fn" value="${esc(fid)}" placeholder="function_id" style="width:8rem" /></label>
-        <span class="hint">button · ${esc(mode)}${fid ? " · " + esc(fid) : ""} @ (${Math.round(w.x)},${Math.round(w.y)})</span>
+        <label>Function <input type="text" id="prop-fn" value="${esc(fid)}" placeholder="${esc(fnPlaceholder)}" style="width:8rem" /></label>
+        <span class="hint">button · ${esc(mode)}${fid ? " · " + esc(fid) : ""} · ${esc(fnHint)} @ (${Math.round(w.x)},${Math.round(w.y)})</span>
       `;
       const lab = document.getElementById("prop-label");
       const modeEl = document.getElementById("prop-mode");

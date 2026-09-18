@@ -41,8 +41,6 @@
   let sheetId = null;
   /** @type {Record<string, number|string>} */
   let liveValues = {};
-  /** @type {Record<string, boolean>} */
-  let toggleState = Object.create(null);
 
   /** Session sheet view (after fit): pan/zoom in viewBox space */
   let sheetView = { scale: 1, x: 0, y: 0, base: null };
@@ -328,6 +326,52 @@
     return mode;
   }
 
+
+  /** Field value is "on" when nonzero finite (missing/nonfinite → off). */
+  function fieldToggleOn(name) {
+    const key = name != null ? String(name).trim() : "";
+    if (!key) return false;
+    const v = liveValues[key] != null ? liveValues[key] : actorFields[key];
+    const n = Number(v);
+    return Number.isFinite(n) && n !== 0;
+  }
+
+  /**
+   * Toggle mode: flip actor field named by function_id / mechanic name between 0 and 1.
+   * Does not invoke evaluateNamedFunction (unlike trigger).
+   * @param {string} fieldName
+   * @param {{ label?: string, statusFn?: (s:string)=>void }} [runOpts]
+   */
+  async function runToggleField(fieldName, runOpts) {
+    const optsIn = runOpts && typeof runOpts === "object" ? runOpts : {};
+    const statusFn = typeof optsIn.statusFn === "function" ? optsIn.statusFn : setStatus;
+    const label = optsIn.label || fieldName || "Toggle";
+    const name = fieldName != null ? String(fieldName).trim() : "";
+    if (!name) {
+      statusFn("Toggle needs a function id (used as field name)");
+      return;
+    }
+    recomputeLive();
+    const cur = liveValues[name] != null ? liveValues[name] : actorFields[name];
+    const curN = Number(cur);
+    const on = Number.isFinite(curN) && curN !== 0;
+    const next = on ? 0 : 1;
+    actorFields[name] = next;
+    liveValues[name] = next;
+    try {
+      await saveFields({ [name]: next });
+    } catch (err) {
+      statusFn(String(err));
+      return;
+    }
+    recomputeLive();
+    statusFn(`${label} [toggle] → ${name}=${next}`);
+    renderVisual(false);
+    if (panelMechanics && panelMechanics.classList.contains("active")) {
+      renderMechanics();
+    }
+  }
+
   /**
    * Shared runner for layout buttons and Mechanics tab.
    * @param {string} functionId
@@ -428,10 +472,6 @@
     }
     names.sort((a, b) => a.localeCompare(b));
     return names;
-  }
-
-  function mechToggleKey(name) {
-    return `mech:${name}`;
   }
 
   function closeMechImport() {
@@ -535,15 +575,18 @@
 
   function renderMechanics() {
     if (!mechanicsListEl) return;
+    recomputeLive();
     const names = namedFunctionsOnSheet();
     if (!names.length) {
       mechanicsListEl.innerHTML =
-        `<p class="mech-empty">No named functions on this sheet — add Function entries in Sheet builder, or Import… from the campaign library.</p>`;
+        `<p class="mech-empty">No named functions on this sheet — add Function entries in Sheet builder, or Import… from the campaign library.</p>` +
+        `<p class="mech-empty">Toggle uses the row name as a field id (flips 0/1); Trigger still runs the named automation.</p>`;
       return;
     }
-    let html = "";
+    let html =
+      `<p class="mech-empty" style="margin-bottom:0.5rem">Trigger runs the named function. Toggle flips field <em>name</em> between 0 and 1 (does not invoke the graph).</p>`;
     for (const name of names) {
-      const pressed = !!toggleState[mechToggleKey(name)];
+      const pressed = fieldToggleOn(name);
       html += `<div class="mech-row" data-fn="${esc(name)}">`;
       html += `<span class="mech-name">${esc(name)}</span>`;
       html += `<button type="button" class="mech-trigger" data-action="trigger">Trigger</button>`;
@@ -557,13 +600,8 @@
         btn.addEventListener("click", () => {
           const action = btn.getAttribute("data-action");
           if (action === "toggle") {
-            const key = mechToggleKey(name);
-            const next = !toggleState[key];
-            toggleState[key] = next;
-            runNamedFunction(name, {
-              mode: "toggle",
+            runToggleField(name, {
               label: name,
-              entryValue: next ? 1 : 0,
               statusFn: setMechanicsStatus,
             }).catch((err) => setMechanicsStatus(String(err)));
           } else {
@@ -597,7 +635,7 @@
       const cy = (w.y || 0) + (w.h || 0) / 2;
       if (w.shape === "button") {
         const { mode, functionId, label } = normalizeButton(w);
-        const pressed = mode === "toggle" && !!toggleState[w.id];
+        const pressed = mode === "toggle" && !!functionId && fieldToggleOn(functionId);
         const sub = buttonSubtitle(w);
         html += `<g class="sheet-btn${pressed ? " pressed" : ""}" data-id="${esc(w.id)}" data-mode="${esc(mode)}" data-function="${esc(functionId)}" style="cursor:pointer">`;
         html += `<rect class="widget-button${pressed ? " toggle-on" : ""}" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="10" />`;
@@ -650,14 +688,10 @@
         const id = g.getAttribute("data-id");
         const w = (widgets || []).find((x) => x.id === id);
         if (!w) return;
-        const { mode } = normalizeButton(w);
+        const { mode, functionId, label } = normalizeButton(w);
         if (mode === "toggle") {
-          const next = !toggleState[id];
-          toggleState[id] = next;
-          // Always run: on → entryValue 1, off → entryValue 0 (clears proficiency writes)
-          runButtonFunction(w, { entryValue: next ? 1 : 0 }).catch((err) =>
-            setStatus(String(err))
-          );
+          // Flip field named by function_id (0/1); do not run evaluateNamedFunction
+          runToggleField(functionId, { label }).catch((err) => setStatus(String(err)));
         } else {
           runButtonFunction(w).catch((err) => setStatus(String(err)));
         }

@@ -36,7 +36,7 @@ layout:                              # optional; from sheet builder (session vis
       field: <field_name>           # box/circle
       label: string                 # button caption
       mode: trigger|toggle          # button
-      function_id: string           # button → named graph entry
+      function_id: string           # trigger → named graph entry; toggle → field name to flip 0/1
       x: number
       y: number
       w: number
@@ -86,9 +86,9 @@ Shape (v1):
 
 Closed formula language (field-output graph → string): field names, number literals, `+` `-` `*` `/`, comparisons (`==` `!=` `<` `>` `<=` `>=`), parentheses, `floor(…)`, and call-forms `if(…)` / `and(…)` / `or(…)` / `not(…)`. Precedence: unary → `*` `/` → `+` `-` → comparisons; `and`/`or`/`not`/`if` are functions only. **Roll** / **entry** nodes are runtime-only (button functions) and must not feed formula field outputs. Cycles are rejected.
 
-**Toggle proficiency pattern:** wire entry → field output so the button persists 0/1. Toggle **on** runs the function with `entryValue: 1`; **off** still runs with `entryValue: 0` (clears the field). Skill checks use `if(ath_prof, PB, 0)` or `ath_prof * PB`; expertise: `if(expertise, PB*2, if(prof, PB, 0))`.
+**Toggle proficiency pattern:** layout button `mode: toggle` + `function_id: atk_prof` flips actor field `atk_prof` between 0 and 1 (no graph entry→output required for the toggle itself). Skill formulas use `if(atk_prof, PB, 0)` or `atk_prof * PB`; expertise: `if(expertise, PB*2, if(prof, PB, 0))`. Trigger buttons still run named automations via `evaluateNamedFunction`.
 
-**Session Mechanics tab:** the play sheet lists named `entry`/`function` nodes from that actor’s sheet graph (not campaign-wide). Trigger/Toggle run `evaluateNamedFunction` like layout buttons.
+**Session Mechanics tab:** the play sheet lists named `entry`/`function` nodes from that actor’s sheet graph (not campaign-wide). **Trigger** runs `evaluateNamedFunction`; **Toggle** flips field `name` 0/1 (does not invoke the graph even if an entry with that name exists).
 
 **Builder compress:** `graph.collapsed` is UI metadata only — Compile/runtime evaluate the flat `nodes`/`edges` and ignore `collapsed`.
 

@@ -350,7 +350,10 @@
       return hit ? hit.from : null;
     }
 
-    /** Describe a node’s value for chat arithmetic, e.g. `15 (d20) + 10 (STR)`. */
+    /**
+     * Active arithmetic path for chat detail (not the full logic tree).
+     * if → taken branch only; compare/and/or/not → bare 1/0; + - * / floor expand.
+     */
     function formatArithmetic(nodeId, parentOp) {
       if (!nodeId) return "0";
       const n = byId[nodeId];
@@ -375,23 +378,36 @@
         if (op === "floor") {
           return `floor(${formatArithmetic(inFrom(nodeId, 0), "floor")})`;
         }
-        if (op === "not") {
-          return `not(${formatArithmetic(inFrom(nodeId, 0), "not")})`;
+        // Logic/compare: never dump the condition tree into arithmetic detail
+        if (
+          op === "not" ||
+          op === "and" ||
+          op === "or" ||
+          op === "==" ||
+          op === "!=" ||
+          op === "<" ||
+          op === ">" ||
+          op === "<=" ||
+          op === ">="
+        ) {
+          return String(num);
         }
+        // if: unwrap to the branch that produced the value (cond / untaken omitted)
         if (op === "if") {
-          return `if(${formatArithmetic(inFrom(nodeId, 0), "if")}, ${formatArithmetic(inFrom(nodeId, 1), "if")}, ${formatArithmetic(inFrom(nodeId, 2), "if")})`;
+          const condId = inFrom(nodeId, 0);
+          const condV =
+            condId != null && Number.isFinite(values[condId]) ? values[condId] : 0;
+          const taken = isTruthyNum(condV)
+            ? inFrom(nodeId, 1)
+            : inFrom(nodeId, 2);
+          return formatArithmetic(taken, parentOp);
         }
-        if (op === "and" || op === "or") {
-          return `${op}(${formatArithmetic(inFrom(nodeId, 0), op)}, ${formatArithmetic(inFrom(nodeId, 1), op)})`;
-        }
-        const compares = { "==": 1, "!=": 1, "<": 1, ">": 1, "<=": 1, ">=": 1 };
-        if (op === "+" || op === "-" || op === "*" || op === "/" || compares[op]) {
+        if (op === "+" || op === "-" || op === "*" || op === "/") {
           const expr = `${formatArithmetic(inFrom(nodeId, 0), op)} ${op} ${formatArithmetic(inFrom(nodeId, 1), op)}`;
           const needParen =
             parentOp &&
             ((parentOp === "*" || parentOp === "/") && (op === "+" || op === "-"));
-          const wrapCompare = compares[op] && parentOp && parentOp !== "if" && parentOp !== "and" && parentOp !== "or" && parentOp !== "not" && parentOp !== "floor";
-          return needParen || wrapCompare ? `(${expr})` : expr;
+          return needParen ? `(${expr})` : expr;
         }
       }
       return String(num);
