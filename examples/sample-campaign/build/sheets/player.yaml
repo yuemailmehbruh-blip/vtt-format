@@ -147,6 +147,11 @@ graph:
     sides: 20
     x: 220
     y: 320
+  - id: n_attack_chat
+    kind: send_to_chat
+    label: ''
+    x: 400
+    y: 320
   edges:
   - id: e1
     from: n_str
@@ -175,4 +180,8 @@ graph:
   - id: e_attack
     from: n_attack_entry
     to: n_attack_roll
+    toPort: 0
+  - id: e_attack_chat
+    from: n_attack_roll
+    to: n_attack_chat
     toPort: 0

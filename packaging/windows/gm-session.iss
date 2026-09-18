@@ -5,7 +5,7 @@
 ; Build: run packaging\windows\build.ps1 (or ISCC gm-session.iss after pyinstaller)
 
 #define MyAppName "GM Session"
-#define MyAppVersion "0.6.3"
+#define MyAppVersion "0.6.4"
 #define MyAppPublisher "vtt-format"
 #define MyAppExeName "GM Session.exe"
 

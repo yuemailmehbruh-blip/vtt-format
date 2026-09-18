@@ -325,11 +325,22 @@
       setStatus(result.error || "Function failed");
       return;
     }
-    for (const r of result.rolls || []) {
-      const detail = `d${r.sides}`;
-      const rollLabel = `${label} / ${functionId}`;
-      showRollToast(`${rollLabel}: ${r.result} (${detail})`);
-      publishRoll(rollLabel, r.result, detail);
+    // Local toast for rolls (optional feedback); chat/history only via send_to_chat
+    const messages = result.messages || [];
+    if (!messages.length) {
+      for (const r of result.rolls || []) {
+        const detail = `d${r.sides}`;
+        const rollLabel = `${label} / ${functionId}`;
+        showRollToast(`${rollLabel}: ${r.result} (${detail})`);
+      }
+    }
+    for (const m of messages) {
+      const chatLabel = m.text
+        ? `${label} / ${functionId} · ${m.text}`
+        : `${label} / ${functionId}`;
+      const detail = m.detail || "";
+      showRollToast(`${chatLabel}: ${m.value}${detail ? ` (${detail})` : ""}`);
+      publishRoll(chatLabel, m.value, detail);
     }
     const writes = result.writes || {};
     const keys = Object.keys(writes);
@@ -345,9 +356,11 @@
         return;
       }
     }
-    const rollSummary =
-      (result.rolls || []).map((r) => `${r.result}(d${r.sides})`).join(", ") || "ok";
-    setStatus(`${label} [${mode}] → ${functionId}: ${rollSummary}`);
+    const msgSummary =
+      messages.map((m) => String(m.value)).join(", ") ||
+      (result.rolls || []).map((r) => `${r.result}(d${r.sides})`).join(", ") ||
+      "ok";
+    setStatus(`${label} [${mode}] → ${functionId}: ${msgSummary}`);
     renderVisual(false);
   }
 

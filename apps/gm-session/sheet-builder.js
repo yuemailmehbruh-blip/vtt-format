@@ -36,12 +36,17 @@
   /** Display canvas zoom/pan (session-only, not persisted) */
   let displayView = { scale: 1, x: 0, y: 0 };
   let displayPan = null; // { ox, oy, vx, vy } or null
+  /** Automations canvas zoom/pan (independent of displayView) */
+  let graphView = { scale: 1, x: 0, y: 0 };
+  let graphPan = null;
   let spaceDown = false;
   /** Mode for newly added buttons */
   let buttonAddMode = "trigger";
+  /** Graph tool: select (pan empty / move / wire) */
+  let graphTool = "select";
   /** Graph drag / wire state */
   let graphDrag = null;
-  let wireFrom = null; // { nodeId, x, y }
+  let wireFrom = null; // { nodeId, x, y } world coords
 
   let uidCounter = 1;
   function uid(prefix) {
@@ -145,12 +150,14 @@
     if (node.kind === "field" && node.role === "output") return 1;
     // Optional trigger wire so entry → roll is connectable; value ignored at runtime
     if (node.kind === "roll") return 1;
+    if (node.kind === "send_to_chat" || node.kind === "chat") return 1;
     return 0;
   }
 
   function hasOutputPort(node) {
     if (!node) return false;
     if (node.kind === "field" && node.role === "output") return false;
+    if (node.kind === "send_to_chat" || node.kind === "chat") return false;
     return true;
   }
 
@@ -244,9 +251,15 @@
         } else {
           throw new Error(`Unknown op: ${op}`);
         }
-      } else if (n.kind === "roll" || n.kind === "entry" || n.kind === "function") {
+      } else if (
+        n.kind === "roll" ||
+        n.kind === "entry" ||
+        n.kind === "function" ||
+        n.kind === "send_to_chat" ||
+        n.kind === "chat"
+      ) {
         throw new Error(
-          "Roll/entry nodes are runtime-only and cannot feed formula field outputs"
+          "Roll/entry/chat nodes are runtime-only and cannot feed formula field outputs"
         );
       } else {
         throw new Error(`Unknown node kind: ${n.kind}`);
@@ -765,12 +778,14 @@
     if (e.code === "Space" && !e.repeat) {
       spaceDown = true;
       displaySvg.style.cursor = "grab";
+      if (graphSvg) graphSvg.style.cursor = "grab";
     }
   });
   window.addEventListener("keyup", (e) => {
     if (e.code === "Space") {
       spaceDown = false;
       displaySvg.style.cursor = "";
+      if (graphSvg) graphSvg.style.cursor = "";
     }
   });
 
@@ -823,6 +838,47 @@
     });
   });
 
+  // --- Graph canvas zoom/pan (independent of displayView) ---
+  function graphWorldPoint(evt) {
+    const p = svgPoint(graphSvg, evt);
+    return {
+      x: (p.x - graphView.x) / graphView.scale,
+      y: (p.y - graphView.y) / graphView.scale,
+    };
+  }
+
+  function applyGraphTransform() {
+    const g = graphSvg.querySelector("#graph-root");
+    if (g) {
+      g.setAttribute(
+        "transform",
+        `translate(${graphView.x},${graphView.y}) scale(${graphView.scale})`
+      );
+    }
+  }
+
+  function setGraphView(next) {
+    graphView = {
+      scale: Math.min(8, Math.max(0.2, next.scale != null ? next.scale : graphView.scale)),
+      x: next.x != null ? next.x : graphView.x,
+      y: next.y != null ? next.y : graphView.y,
+    };
+    applyGraphTransform();
+  }
+
+  function zoomGraphAt(svgX, svgY, factor) {
+    const old = graphView.scale;
+    const scale = Math.min(8, Math.max(0.2, old * factor));
+    if (scale === old) return;
+    const wx = (svgX - graphView.x) / old;
+    const wy = (svgY - graphView.y) / old;
+    setGraphView({
+      scale,
+      x: svgX - wx * scale,
+      y: svgY - wy * scale,
+    });
+  }
+
   // --- Graph canvas ---
   const NODE_W = 120;
   const NODE_H = 52;
@@ -854,6 +910,9 @@
     if (n.kind === "op") return n.op === "floor" ? "floor" : n.op;
     if (n.kind === "roll") return `d${n.sides != null ? n.sides : 20}`;
     if (n.kind === "entry" || n.kind === "function") return n.name || "fn";
+    if (n.kind === "send_to_chat" || n.kind === "chat") {
+      return n.label ? String(n.label) : "chat";
+    }
     return n.kind;
   }
 
@@ -863,13 +922,15 @@
     if (n.kind === "op") return "op";
     if (n.kind === "roll") return "roll";
     if (n.kind === "entry" || n.kind === "function") return "entry";
+    if (n.kind === "send_to_chat" || n.kind === "chat") return "send to chat";
     return "";
   }
 
   function renderGraph() {
     const nodes = doc.graph.nodes || [];
     const edges = doc.graph.edges || [];
-    let html = `<g id="wires">`;
+    let html = `<g id="graph-root" transform="translate(${graphView.x},${graphView.y}) scale(${graphView.scale})">`;
+    html += `<g id="wires">`;
     for (const e of edges) {
       const a = nodeById(e.from);
       const b = nodeById(e.to);
@@ -908,7 +969,7 @@
       }
       html += `</g>`;
     }
-    html += `</g>`;
+    html += `</g></g>`;
     graphSvg.innerHTML = html;
     renderGraphProps();
   }
@@ -963,7 +1024,7 @@
     const compiled = compileGraph(doc.graph);
     const n = selectedNodeId ? nodeById(selectedNodeId) : null;
     if (!n) {
-      let msg = `<span class="hint">Drag palette onto canvas · click output port then input port to wire</span>`;
+      let msg = `<span class="hint">Drag palette onto canvas · wire ports · wheel zoom · mid/space/empty pan</span>`;
       if (compiled.error) {
         msg += ` <span class="formula-preview" style="color:var(--err)">${esc(compiled.error)}</span>`;
       } else if (Object.keys(compiled.formulas).length) {
@@ -993,6 +1054,9 @@
     } else if (n.kind === "entry" || n.kind === "function") {
       body += `<label>Name <input type="text" id="g-entry-name" value="${esc(n.name || "")}" placeholder="function_id" style="width:8rem" /></label>`;
       body += `<span class="hint">button function_id entry point</span>`;
+    } else if (n.kind === "send_to_chat" || n.kind === "chat") {
+      body += `<label>Label <input type="text" id="g-chat-label" value="${esc(n.label || "")}" placeholder="optional" style="width:8rem" /></label>`;
+      body += `<span class="hint">terminal · publishes input to session chat</span>`;
     }
     if (n.kind === "field" && n.role === "output" && !compiled.error && compiled.formulas[n.field]) {
       body += `<span class="formula-preview">${esc(n.field)} ← ${esc(compiled.formulas[n.field])}</span>`;
@@ -1006,6 +1070,7 @@
     const gc = document.getElementById("g-const");
     const gs = document.getElementById("g-sides");
     const ge = document.getElementById("g-entry-name");
+    const gchat = document.getElementById("g-chat-label");
     if (gf) {
       gf.addEventListener("change", () => {
         const id = gf.value.trim();
@@ -1043,6 +1108,12 @@
         renderGraph();
       });
     }
+    if (gchat) {
+      gchat.addEventListener("change", () => {
+        n.label = gchat.value.trim();
+        renderGraph();
+      });
+    }
   }
 
   function addGraphNode(kind, op, x, y) {
@@ -1064,6 +1135,9 @@
     } else if (kind === "entry" || kind === "function") {
       n.kind = "entry";
       n.name = "";
+    } else if (kind === "send_to_chat" || kind === "chat") {
+      n.kind = "send_to_chat";
+      n.label = "";
     }
     doc.graph.nodes.push(n);
     selectedNodeId = n.id;
@@ -1077,7 +1151,11 @@
       const op = btn.getAttribute("data-op");
       const wrap = document.getElementById("graph-wrap");
       const rect = wrap.getBoundingClientRect();
-      addGraphNode(kind, op, rect.width / 2, rect.height / 2);
+      const sx = rect.width / 2;
+      const sy = rect.height / 2;
+      const wx = (sx - graphView.x) / graphView.scale;
+      const wy = (sy - graphView.y) / graphView.scale;
+      addGraphNode(kind, op, wx, wy);
     });
   });
 
@@ -1099,8 +1177,31 @@
   });
 
   graphSvg.addEventListener("pointerdown", (e) => {
-    const p = svgPoint(graphSvg, e);
+    const p = graphWorldPoint(e);
     const port = hitPort(p.x, p.y);
+    const hit = !port ? hitNode(p.x, p.y) : null;
+    const edge = !port && !hit ? hitEdge(p.x, p.y) : null;
+
+    const wantPan =
+      e.button === 1 ||
+      (e.button === 0 && spaceDown) ||
+      (e.button === 0 && graphTool === "select" && !port && !hit && !edge && !wireFrom);
+
+    if (wantPan && !wireFrom) {
+      e.preventDefault();
+      graphPan = {
+        sx: e.clientX,
+        sy: e.clientY,
+        vx: graphView.x,
+        vy: graphView.y,
+      };
+      graphSvg.setPointerCapture(e.pointerId);
+      selectedNodeId = null;
+      selectedEdgeId = null;
+      renderGraph();
+      return;
+    }
+
     if (port && port.port === "out") {
       wireFrom = { nodeId: port.nodeId, x: p.x, y: p.y };
       selectedNodeId = port.nodeId;
@@ -1110,7 +1211,6 @@
       return;
     }
     if (port && port.port === "in" && wireFrom) {
-      // complete wire
       finishWire(port.nodeId, port.index);
       return;
     }
@@ -1118,18 +1218,24 @@
       finishWire(port.nodeId, port.index);
       return;
     }
-    const edge = hitEdge(p.x, p.y);
     if (edge && !port) {
       selectedEdgeId = edge.id;
       selectedNodeId = null;
       renderGraph();
       return;
     }
-    const hit = hitNode(p.x, p.y);
     selectedNodeId = hit ? hit.id : null;
     selectedEdgeId = null;
     if (hit) {
       graphDrag = { id: hit.id, ox: p.x - hit.x, oy: p.y - hit.y };
+      graphSvg.setPointerCapture(e.pointerId);
+    } else if (graphTool === "select" && !wireFrom) {
+      graphPan = {
+        sx: e.clientX,
+        sy: e.clientY,
+        vx: graphView.x,
+        vy: graphView.y,
+      };
       graphSvg.setPointerCapture(e.pointerId);
     }
     renderGraph();
@@ -1160,7 +1266,18 @@
   }
 
   graphSvg.addEventListener("pointermove", (e) => {
-    const p = svgPoint(graphSvg, e);
+    if (graphPan) {
+      const ctm = graphSvg.getScreenCTM();
+      const a = ctm && ctm.a ? ctm.a : 1;
+      const d = ctm && ctm.d ? ctm.d : 1;
+      setGraphView({
+        scale: graphView.scale,
+        x: graphPan.vx + (e.clientX - graphPan.sx) / a,
+        y: graphPan.vy + (e.clientY - graphPan.sy) / d,
+      });
+      return;
+    }
+    const p = graphWorldPoint(e);
     if (wireFrom) {
       wireFrom.x = p.x;
       wireFrom.y = p.y;
@@ -1177,17 +1294,66 @@
 
   graphSvg.addEventListener("pointerup", (e) => {
     if (wireFrom) {
-      const p = svgPoint(graphSvg, e);
+      const p = graphWorldPoint(e);
       const port = hitPort(p.x, p.y);
       if (port && port.port === "in") {
         finishWire(port.nodeId, port.index);
+        graphPan = null;
         return;
       }
       wireFrom = null;
       renderGraph();
     }
     graphDrag = null;
+    graphPan = null;
   });
+  graphSvg.addEventListener("pointercancel", () => {
+    graphDrag = null;
+    graphPan = null;
+    wireFrom = null;
+  });
+
+  graphSvg.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      const screen = svgPoint(graphSvg, e);
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      zoomGraphAt(screen.x, screen.y, factor);
+    },
+    { passive: false }
+  );
+
+  const btnGraphZoomIn = document.getElementById("btn-graph-zoom-in");
+  const btnGraphZoomOut = document.getElementById("btn-graph-zoom-out");
+  const btnGraphZoomReset = document.getElementById("btn-graph-zoom-reset");
+  if (btnGraphZoomIn) {
+    btnGraphZoomIn.addEventListener("click", () => {
+      const wrap = document.getElementById("graph-wrap");
+      const rect = wrap.getBoundingClientRect();
+      zoomGraphAt(rect.width / 2, rect.height / 2, 1.2);
+    });
+  }
+  if (btnGraphZoomOut) {
+    btnGraphZoomOut.addEventListener("click", () => {
+      const wrap = document.getElementById("graph-wrap");
+      const rect = wrap.getBoundingClientRect();
+      zoomGraphAt(rect.width / 2, rect.height / 2, 1 / 1.2);
+    });
+  }
+  if (btnGraphZoomReset) {
+    btnGraphZoomReset.addEventListener("click", () => {
+      setGraphView({ scale: 1, x: 0, y: 0 });
+    });
+  }
+
+  const btnGraphSelect = document.getElementById("btn-graph-select");
+  if (btnGraphSelect) {
+    btnGraphSelect.addEventListener("click", () => {
+      graphTool = "select";
+      btnGraphSelect.classList.add("active");
+    });
+  }
 
   // --- Render all / boot ---
   function renderAll() {

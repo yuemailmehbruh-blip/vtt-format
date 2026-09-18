@@ -1,6 +1,6 @@
 /**
  * Shared sheet automation runtime (session sheet + optional tooling).
- * Closed formulas + named-function DAG evaluation (entry / roll / field / op / const).
+ * Closed formulas + named-function DAG evaluation (entry / roll / send_to_chat / field / op / const).
  */
 (function (global) {
   "use strict";
@@ -124,6 +124,7 @@
     }
     if (node.kind === "field" && node.role === "output") return 1;
     if (node.kind === "roll") return 1;
+    if (node.kind === "send_to_chat" || node.kind === "chat") return 1;
     return 0;
   }
 
@@ -137,7 +138,8 @@
    *   error?: string,
    *   values: Record<string, number>,
    *   writes: Record<string, number>,
-   *   rolls: { sides: number, result: number, nodeId: string }[]
+   *   rolls: { sides: number, result: number, nodeId: string }[],
+   *   messages: { text: string, value: number, detail?: string, nodeId: string }[]
    * }}
    */
   function evaluateNamedFunction(graph, functionId, fieldEnv) {
@@ -145,7 +147,7 @@
     const nodes = (graph && graph.nodes) || [];
     const edges = (graph && graph.edges) || [];
     if (!name) {
-      return { ok: false, error: "Missing function id", values: {}, writes: {}, rolls: [] };
+      return { ok: false, error: "Missing function id", values: {}, writes: {}, rolls: [], messages: [] };
     }
 
     const byId = Object.create(null);
@@ -163,6 +165,7 @@
         values: {},
         writes: {},
         rolls: [],
+        messages: [],
       };
     }
 
@@ -222,6 +225,7 @@
         values: {},
         writes: {},
         rolls: [],
+        messages: [],
       };
     }
 
@@ -231,6 +235,8 @@
     const writes = Object.create(null);
     /** @type {{ sides: number, result: number, nodeId: string }[]} */
     const rolls = [];
+    /** @type {{ text: string, value: number, detail?: string, nodeId: string }[]} */
+    const messages = [];
     const env = fieldEnv && typeof fieldEnv === "object" ? fieldEnv : {};
 
     function inputVal(nodeId, port) {
@@ -280,6 +286,19 @@
           } else {
             throw new Error(`Unknown op: ${op}`);
           }
+        } else if (n.kind === "send_to_chat" || n.kind === "chat") {
+          out = inputVal(id, 0);
+          const text = n.label != null ? String(n.label).trim() : "";
+          let detail = "";
+          const ins = incoming[id] || [];
+          const hit = ins.find((x) => x.toPort === 0) || ins[0];
+          if (hit) {
+            const roll = rolls.find((r) => r.nodeId === hit.from);
+            if (roll) detail = `d${roll.sides}`;
+          }
+          const msg = { text, value: out, nodeId: id };
+          if (detail) msg.detail = detail;
+          messages.push(msg);
         } else {
           throw new Error(`Unknown node kind: ${n.kind}`);
         }
@@ -292,10 +311,11 @@
         values,
         writes,
         rolls,
+        messages,
       };
     }
 
-    return { ok: true, values, writes, rolls };
+    return { ok: true, values, writes, rolls, messages };
   }
 
   const api = {

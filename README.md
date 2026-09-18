@@ -147,6 +147,10 @@ GM Session gains a **Sheet builder** window: declarative display widgets (boxes/
 
 Session character sheets render the builder layout (boxes/circles/buttons) with live field values and closed formula evaluation. Roll buttons run `dN` on the sheet. Field widgets use a plain text id (no example dropdown). Notes text remains secondary.
 
+## 0.6.4 — Send to chat + automations zoom
+
+Session chat/history lines come from **Send to chat** graph nodes (not every roll). Automations pane has the same zoom/pan as Display. Sample Attack ends with `send_to_chat`.
+
 ## 0.6.3 — Sheet zoom, fit-to-view, button functions
 
 GM Session sheet builder: display zoom/pan. Session sheet: fit layout to panel. Buttons call named automations (`trigger`/`toggle` + `function_id`); Roll lives on the graph (`entry` + `roll` nodes) via shared `sheet-runtime.js`.
