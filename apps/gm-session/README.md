@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.6**).
+Version is in `VERSION` (currently **0.6.7**).
 
 ## Run — desktop app (recommended)
 
@@ -223,6 +223,12 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+
+## 0.6.7
+
+- **Logic ops** — graph/runtime ops `==` `!=` `<` `>` `<=` `>=` `and` `or` `not` `if` (results 1/0; truthiness = nonzero finite). Closed formulas gain the same call-forms and comparison operators (comparisons bind after `+−`).
+- **Toggle entryValue** — `evaluateNamedFunction(..., { entryValue })` (default 1). Toggle **off** still runs the function with `entryValue: 0` so entry→field-output clears proficiency. Wire entry → output field for 0/1 persistence; skill rolls use `if` / `*`.
+- **Tests** — `tests/evaluate-logic-ops.mjs` (compare/and/or/not/if, entryValue writes, closed formulas).
 
 ## 0.6.6
 

@@ -206,9 +206,12 @@
 
   // --- Formula compile (closed language) ---
   function arityOf(node) {
+    if (RT && typeof RT.arityOf === "function") return RT.arityOf(node);
     if (!node) return 0;
     if (node.kind === "op") {
-      if (node.op === "floor") return 1;
+      const op = node.op;
+      if (op === "floor" || op === "not") return 1;
+      if (op === "if") return 3;
       return 2;
     }
     if (node.kind === "field" && node.role === "output") return 1;
@@ -303,14 +306,39 @@
       } else if (n.kind === "op") {
         const op = n.op;
         const ins = incoming[nodeId] || [];
-        if (op === "floor") {
-          if (ins.length < 1) throw new Error("floor needs one input");
-          out = `floor(${exprOf(ins[0].from)})`;
-        } else if (op === "+" || op === "-" || op === "*" || op === "/") {
+        function portFrom(port, fallbackIdx) {
+          return ins.find((x) => x.toPort === port) || ins[fallbackIdx];
+        }
+        if (op === "floor" || op === "not") {
+          if (ins.length < 1) throw new Error(`${op} needs one input`);
+          const a = portFrom(0, 0);
+          out = `${op}(${exprOf(a.from)})`;
+        } else if (op === "if") {
+          if (ins.length < 3) throw new Error("if needs three inputs (cond, then, else)");
+          const c = portFrom(0, 0);
+          const t = portFrom(1, 1);
+          const e = portFrom(2, 2);
+          out = `if(${exprOf(c.from)}, ${exprOf(t.from)}, ${exprOf(e.from)})`;
+        } else if (op === "and" || op === "or") {
+          if (ins.length < 2) throw new Error(`${op} needs two inputs`);
+          const a = portFrom(0, 0);
+          const b = portFrom(1, 1);
+          out = `${op}(${exprOf(a.from)}, ${exprOf(b.from)})`;
+        } else if (
+          op === "+" ||
+          op === "-" ||
+          op === "*" ||
+          op === "/" ||
+          op === "==" ||
+          op === "!=" ||
+          op === "<" ||
+          op === ">" ||
+          op === "<=" ||
+          op === ">="
+        ) {
           if (ins.length < 2) throw new Error(`Operator ${op} needs two inputs`);
-          // Prefer ports 0 and 1
-          const a = ins.find((x) => x.toPort === 0) || ins[0];
-          const b = ins.find((x) => x.toPort === 1) || ins[1];
+          const a = portFrom(0, 0);
+          const b = portFrom(1, 1);
           out = `(${exprOf(a.from)} ${op} ${exprOf(b.from)})`;
         } else {
           throw new Error(`Unknown op: ${op}`);
@@ -971,7 +999,14 @@
       return n.role === "output" ? `⟹ ${n.field || "?"}` : n.field || "field";
     }
     if (n.kind === "const") return String(n.value);
-    if (n.kind === "op") return n.op === "floor" ? "floor" : n.op;
+    if (n.kind === "op") {
+      if (n.op === "floor") return "floor";
+      if (n.op === "if") return "if";
+      if (n.op === "and") return "and";
+      if (n.op === "or") return "or";
+      if (n.op === "not") return "not";
+      return n.op;
+    }
     if (n.kind === "roll") return `d${n.sides != null ? n.sides : 20}`;
     if (n.kind === "entry" || n.kind === "function") return n.name || "fn";
     if (n.kind === "send_to_chat" || n.kind === "chat") {
@@ -983,7 +1018,21 @@
   function nodeSub(n) {
     if (n.kind === "field") return n.role === "output" ? "output" : "field";
     if (n.kind === "const") return "const";
-    if (n.kind === "op") return "op";
+    if (n.kind === "op") {
+      const op = n.op;
+      if (op === "if") return "cond · then · else";
+      if (op === "and" || op === "or" || op === "not") return "logic";
+      if (
+        op === "==" ||
+        op === "!=" ||
+        op === "<" ||
+        op === ">" ||
+        op === "<=" ||
+        op === ">="
+      )
+        return "compare";
+      return "op";
+    }
     if (n.kind === "roll") return "roll";
     if (n.kind === "entry" || n.kind === "function") return "entry";
     if (n.kind === "send_to_chat" || n.kind === "chat") return "send to chat";
@@ -1111,7 +1160,26 @@
     } else if (n.kind === "const") {
       body += `<label>Value <input type="number" id="g-const" value="${esc(String(n.value))}" style="width:5rem" /></label>`;
     } else if (n.kind === "op") {
-      body += `<span class="hint">Op: ${esc(n.op)}</span>`;
+      const op = n.op;
+      let portHint = "";
+      if (op === "if") portHint = " · ports: cond, then, else";
+      else if (op === "not" || op === "floor") portHint = " · port: a";
+      else if (
+        op === "and" ||
+        op === "or" ||
+        op === "+" ||
+        op === "-" ||
+        op === "*" ||
+        op === "/" ||
+        op === "==" ||
+        op === "!=" ||
+        op === "<" ||
+        op === ">" ||
+        op === "<=" ||
+        op === ">="
+      )
+        portHint = " · ports: a, b";
+      body += `<span class="hint">Op: ${esc(op)}${portHint}</span>`;
     } else if (n.kind === "roll") {
       body += `<label>Sides <input type="number" id="g-sides" min="2" value="${esc(String(n.sides != null ? n.sides : 20))}" style="width:4rem" /></label>`;
       body += `<span class="hint">runtime roll 1..sides</span>`;

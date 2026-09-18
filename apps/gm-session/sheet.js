@@ -309,7 +309,7 @@
     return mode;
   }
 
-  async function runButtonFunction(w) {
+  async function runButtonFunction(w, runOpts) {
     const { mode, functionId, label } = normalizeButton(w);
     if (!functionId) {
       setStatus("Button has no function id");
@@ -320,7 +320,8 @@
       return;
     }
     recomputeLive();
-    const result = RT.evaluateNamedFunction(graph, functionId, liveValues);
+    const opts = runOpts && typeof runOpts === "object" ? runOpts : undefined;
+    const result = RT.evaluateNamedFunction(graph, functionId, liveValues, opts);
     if (!result.ok) {
       setStatus(result.error || "Function failed");
       return;
@@ -440,12 +441,10 @@
         if (mode === "toggle") {
           const next = !toggleState[id];
           toggleState[id] = next;
-          if (next) {
-            runButtonFunction(w).catch((err) => setStatus(String(err)));
-          } else {
-            renderVisual(false);
-            setStatus(`${normalizeButton(w).label} off`);
-          }
+          // Always run: on → entryValue 1, off → entryValue 0 (clears proficiency writes)
+          runButtonFunction(w, { entryValue: next ? 1 : 0 }).catch((err) =>
+            setStatus(String(err))
+          );
         } else {
           runButtonFunction(w).catch((err) => setStatus(String(err)));
         }

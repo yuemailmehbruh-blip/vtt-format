@@ -1,13 +1,17 @@
 /**
  * Shared sheet automation runtime (session sheet + optional tooling).
  * Closed formulas + named-function DAG evaluation (entry / roll / send_to_chat / field / op / const).
+ * Logic ops: == != < > <= >= and or not if; entryValue option for toggle 0/1.
  * Reachability: forward BFS from entry, then close under incoming ancestors before Kahn topo.
  */
 (function (global) {
   "use strict";
 
   /**
-   * Closed formula language: identifiers, numbers, + - * /, parentheses, floor(...).
+   * Closed formula language: identifiers, numbers, + - * /, comparisons,
+   * parentheses, floor(...), if(a,b,c), and(a,b), or(a,b), not(a).
+   * Precedence: primary/unary → * / → + − → comparisons (== != < > <= >=).
+   * and/or/not/if are call-forms only (not infix).
    * @param {string} expr
    * @param {Record<string, number>} env
    */
@@ -27,6 +31,19 @@
         return true;
       }
       return false;
+    }
+
+    function matchOp(op) {
+      peek();
+      if (src.slice(i, i + op.length) === op) {
+        i += op.length;
+        return true;
+      }
+      return false;
+    }
+
+    function truthy(v) {
+      return Number.isFinite(v) && v !== 0;
     }
 
     function parseIdent() {
@@ -51,6 +68,17 @@
       return Number.isFinite(n) ? n : null;
     }
 
+    function parseArgList(count) {
+      if (!match("(")) throw new Error("expected (");
+      const args = [];
+      for (let k = 0; k < count; k++) {
+        if (k > 0 && !match(",")) throw new Error("expected ,");
+        args.push(parseExpr());
+      }
+      if (!match(")")) throw new Error("expected )");
+      return args;
+    }
+
     function parsePrimary() {
       peek();
       if (match("(")) {
@@ -61,10 +89,24 @@
       const ident = parseIdent();
       if (ident) {
         if (ident === "floor") {
-          if (!match("(")) throw new Error("floor expects (");
-          const v = parseExpr();
-          if (!match(")")) throw new Error("expected )");
+          const [v] = parseArgList(1);
           return Math.floor(v);
+        }
+        if (ident === "if") {
+          const [c, t, e] = parseArgList(3);
+          return truthy(c) ? t : e;
+        }
+        if (ident === "and") {
+          const [a, b] = parseArgList(2);
+          return truthy(a) && truthy(b) ? 1 : 0;
+        }
+        if (ident === "or") {
+          const [a, b] = parseArgList(2);
+          return truthy(a) || truthy(b) ? 1 : 0;
+        }
+        if (ident === "not") {
+          const [a] = parseArgList(1);
+          return truthy(a) ? 0 : 1;
         }
         const raw = env[ident];
         const n = typeof raw === "number" ? raw : Number(raw);
@@ -95,7 +137,7 @@
       return v;
     }
 
-    function parseExpr() {
+    function parseAdd() {
       let v = parseTerm();
       for (;;) {
         peek();
@@ -104,6 +146,33 @@
         else break;
       }
       return v;
+    }
+
+    function parseCompare() {
+      let v = parseAdd();
+      for (;;) {
+        peek();
+        let op = null;
+        if (matchOp("==")) op = "==";
+        else if (matchOp("!=")) op = "!=";
+        else if (matchOp("<=")) op = "<=";
+        else if (matchOp(">=")) op = ">=";
+        else if (matchOp("<")) op = "<";
+        else if (matchOp(">")) op = ">";
+        else break;
+        const r = parseAdd();
+        if (op === "==") v = v === r ? 1 : 0;
+        else if (op === "!=") v = v !== r ? 1 : 0;
+        else if (op === "<") v = v < r ? 1 : 0;
+        else if (op === ">") v = v > r ? 1 : 0;
+        else if (op === "<=") v = v <= r ? 1 : 0;
+        else if (op === ">=") v = v >= r ? 1 : 0;
+      }
+      return v;
+    }
+
+    function parseExpr() {
+      return parseCompare();
     }
 
     const result = parseExpr();
@@ -120,7 +189,9 @@
   function arityOf(node) {
     if (!node) return 0;
     if (node.kind === "op") {
-      if (node.op === "floor") return 1;
+      const op = node.op;
+      if (op === "floor" || op === "not") return 1;
+      if (op === "if") return 3;
       return 2;
     }
     if (node.kind === "field" && node.role === "output") return 1;
@@ -129,11 +200,16 @@
     return 0;
   }
 
+  function isTruthyNum(v) {
+    return Number.isFinite(v) && v !== 0;
+  }
+
   /**
    * Evaluate a named automation starting at an entry (or function) node.
    * @param {{ nodes?: object[], edges?: object[] }} graph
    * @param {string} functionId
    * @param {Record<string, number|string>} fieldEnv
+   * @param {{ entryValue?: number }} [options] — entry/function nodes output this (default 1)
    * @returns {{
    *   ok: boolean,
    *   error?: string,
@@ -143,8 +219,13 @@
    *   messages: { text: string, value: number, detail?: string, nodeId: string }[]
    * }}
    */
-  function evaluateNamedFunction(graph, functionId, fieldEnv) {
+  function evaluateNamedFunction(graph, functionId, fieldEnv, options) {
     const name = String(functionId || "").trim();
+    const opts = options && typeof options === "object" ? options : {};
+    const entryValue =
+      typeof opts.entryValue === "number" && Number.isFinite(opts.entryValue)
+        ? opts.entryValue
+        : 1;
     const nodes = (graph && graph.nodes) || [];
     const edges = (graph && graph.edges) || [];
     if (!name) {
@@ -294,12 +375,23 @@
         if (op === "floor") {
           return `floor(${formatArithmetic(inFrom(nodeId, 0), "floor")})`;
         }
-        if (op === "+" || op === "-" || op === "*" || op === "/") {
+        if (op === "not") {
+          return `not(${formatArithmetic(inFrom(nodeId, 0), "not")})`;
+        }
+        if (op === "if") {
+          return `if(${formatArithmetic(inFrom(nodeId, 0), "if")}, ${formatArithmetic(inFrom(nodeId, 1), "if")}, ${formatArithmetic(inFrom(nodeId, 2), "if")})`;
+        }
+        if (op === "and" || op === "or") {
+          return `${op}(${formatArithmetic(inFrom(nodeId, 0), op)}, ${formatArithmetic(inFrom(nodeId, 1), op)})`;
+        }
+        const compares = { "==": 1, "!=": 1, "<": 1, ">": 1, "<=": 1, ">=": 1 };
+        if (op === "+" || op === "-" || op === "*" || op === "/" || compares[op]) {
           const expr = `${formatArithmetic(inFrom(nodeId, 0), op)} ${op} ${formatArithmetic(inFrom(nodeId, 1), op)}`;
           const needParen =
             parentOp &&
             ((parentOp === "*" || parentOp === "/") && (op === "+" || op === "-"));
-          return needParen ? `(${expr})` : expr;
+          const wrapCompare = compares[op] && parentOp && parentOp !== "if" && parentOp !== "and" && parentOp !== "or" && parentOp !== "not" && parentOp !== "floor";
+          return needParen || wrapCompare ? `(${expr})` : expr;
         }
       }
       return String(num);
@@ -311,7 +403,7 @@
         if (!n) continue;
         let out = 0;
         if (n.kind === "entry" || n.kind === "function") {
-          out = 1;
+          out = entryValue;
         } else if (n.kind === "const") {
           const v = Number(n.value);
           out = Number.isFinite(v) ? v : 0;
@@ -333,13 +425,43 @@
           const op = n.op;
           if (op === "floor") {
             out = Math.floor(inputVal(id, 0));
-          } else if (op === "+" || op === "-" || op === "*" || op === "/") {
+          } else if (op === "not") {
+            out = isTruthyNum(inputVal(id, 0)) ? 0 : 1;
+          } else if (op === "if") {
+            const cond = inputVal(id, 0);
+            out = isTruthyNum(cond) ? inputVal(id, 1) : inputVal(id, 2);
+          } else if (op === "and") {
+            const a = inputVal(id, 0);
+            const b = inputVal(id, 1);
+            out = isTruthyNum(a) && isTruthyNum(b) ? 1 : 0;
+          } else if (op === "or") {
+            const a = inputVal(id, 0);
+            const b = inputVal(id, 1);
+            out = isTruthyNum(a) || isTruthyNum(b) ? 1 : 0;
+          } else if (
+            op === "+" ||
+            op === "-" ||
+            op === "*" ||
+            op === "/" ||
+            op === "==" ||
+            op === "!=" ||
+            op === "<" ||
+            op === ">" ||
+            op === "<=" ||
+            op === ">="
+          ) {
             const a = inputVal(id, 0);
             const b = inputVal(id, 1);
             if (op === "+") out = a + b;
             else if (op === "-") out = a - b;
             else if (op === "*") out = a * b;
-            else out = b === 0 ? NaN : a / b;
+            else if (op === "/") out = b === 0 ? NaN : a / b;
+            else if (op === "==") out = a === b ? 1 : 0;
+            else if (op === "!=") out = a !== b ? 1 : 0;
+            else if (op === "<") out = a < b ? 1 : 0;
+            else if (op === ">") out = a > b ? 1 : 0;
+            else if (op === "<=") out = a <= b ? 1 : 0;
+            else if (op === ">=") out = a >= b ? 1 : 0;
             if (!Number.isFinite(out)) out = 0;
           } else {
             throw new Error(`Unknown op: ${op}`);
