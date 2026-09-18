@@ -79,10 +79,74 @@
     return Object.keys(doc.fields || {}).sort();
   }
 
+  const RT = window.SheetRuntime || null;
+
+  /**
+   * Preview field values from schema defaults + closed formulas (mirrors session recomputeLive).
+   * @returns {Record<string, number|string>}
+   */
+  function previewFieldValues() {
+    /** @type {Record<string, number|string>} */
+    const values = {};
+    /** @type {Record<string, string>} */
+    const formulas = {};
+
+    for (const [k, def] of Object.entries(doc.fields || {})) {
+      if (def && def.formula) {
+        formulas[k] = String(def.formula);
+      } else {
+        let v = def && def.default != null ? def.default : 0;
+        if (v === "") v = 0;
+        if (def && (def.type === "integer" || def.type === "number")) {
+          const n = Number(v);
+          values[k] = Number.isFinite(n) ? n : 0;
+        } else if (typeof v === "string" && v !== "" && !Number.isNaN(Number(v))) {
+          values[k] = Number(v);
+        } else {
+          values[k] = v;
+        }
+      }
+    }
+
+    const evalFn =
+      RT && typeof RT.evalClosedFormula === "function"
+        ? (expr, env) => RT.evalClosedFormula(expr, env)
+        : null;
+
+    for (let pass = 0; pass < 24; pass++) {
+      let changed = false;
+      for (const [k, f] of Object.entries(formulas)) {
+        try {
+          if (!evalFn) {
+            values[k] = 0;
+            continue;
+          }
+          const n = evalFn(f, /** @type {any} */ (values));
+          if (Number.isFinite(n) && values[k] !== n) {
+            values[k] = n;
+            changed = true;
+          } else if (!Number.isFinite(n)) {
+            values[k] = 0;
+          }
+        } catch (_) {
+          values[k] = 0;
+        }
+      }
+      if (!changed) break;
+    }
+    return values;
+  }
+
   function fieldDefault(fid) {
     const f = doc.fields[fid];
     if (!f) return 0;
-    if (f.formula) return "ƒ";
+    if (f.formula) {
+      const preview = previewFieldValues();
+      const v = preview[fid];
+      if (v === undefined || v === null || v === "") return 0;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    }
     const d = f.default;
     if (d === undefined || d === null || d === "") return 0;
     return d;
