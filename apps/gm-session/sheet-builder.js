@@ -1165,6 +1165,167 @@
     };
   }
 
+
+  function reachableClosureFromEntry(entryId) {
+    const nodes = doc.graph.nodes || [];
+    const edges = doc.graph.edges || [];
+    const outgoing = new Map();
+    const incoming = new Map();
+    for (const e of edges) {
+      if (!outgoing.has(e.from)) outgoing.set(e.from, []);
+      outgoing.get(e.from).push(e.to);
+      if (!incoming.has(e.to)) incoming.set(e.to, []);
+      incoming.get(e.to).push(e.from);
+    }
+    const reachable = new Set();
+    const stack = [entryId];
+    while (stack.length) {
+      const id = stack.pop();
+      if (reachable.has(id)) continue;
+      reachable.add(id);
+      for (const to of outgoing.get(id) || []) stack.push(to);
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const id of [...reachable]) {
+        for (const fr of incoming.get(id) || []) {
+          if (!reachable.has(fr)) {
+            reachable.add(fr);
+            changed = true;
+          }
+        }
+      }
+    }
+    return reachable;
+  }
+
+  function remapIdsForPublish(nodes, edges, collapsed) {
+    const idMap = new Map();
+    const newNodes = nodes.map((n) => {
+      const nn = { ...n };
+      const nid = uid("n");
+      idMap.set(n.id, nid);
+      nn.id = nid;
+      return nn;
+    });
+    const newEdges = edges
+      .filter((e) => idMap.has(e.from) && idMap.has(e.to))
+      .map((e) => ({
+        ...e,
+        id: uid("e"),
+        from: idMap.get(e.from),
+        to: idMap.get(e.to),
+      }));
+    const newCollapsed = (collapsed || []).map((c) => ({
+      ...c,
+      id: uid("c"),
+      nodeIds: (c.nodeIds || []).map((i) => idMap.get(i)).filter(Boolean),
+    }));
+    return { nodes: newNodes, edges: newEdges, collapsed: newCollapsed };
+  }
+
+  async function publishToLibrary() {
+    let name = null;
+    let entryId = null;
+    let memberIds = null;
+
+    if (selectedCollapsedId) {
+      const block = collapsedById(selectedCollapsedId);
+      if (!block) {
+        setStatus("No compressed block selected", "warn");
+        return;
+      }
+      name = block.name != null ? String(block.name).trim() : "";
+      if (!name) {
+        setStatus("Compressed block has no function name", "err");
+        return;
+      }
+      memberIds = new Set(block.nodeIds || []);
+      const entry =
+        (doc.graph.nodes || []).find(
+          (n) =>
+            memberIds.has(n.id) &&
+            (n.kind === "entry" || n.kind === "function") &&
+            n.name != null &&
+            String(n.name).trim() === name
+        ) ||
+        (doc.graph.nodes || []).find(
+          (n) =>
+            memberIds.has(n.id) &&
+            (n.kind === "entry" || n.kind === "function") &&
+            n.name != null &&
+            String(n.name).trim()
+        );
+      if (!entry) {
+        setStatus("Compressed block has no named Function entry", "err");
+        return;
+      }
+      entryId = entry.id;
+      name = String(entry.name).trim();
+    } else {
+      const ids = [...selectedNodeIds];
+      if (!ids.length) {
+        setStatus("Select a named Function (or compressed block) to publish", "warn");
+        return;
+      }
+      const found = findEntryNameForSelection(ids);
+      if (!found.ok) {
+        setStatus(found.error, "err");
+        return;
+      }
+      name = found.name;
+      entryId = found.entryId;
+    }
+
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      setStatus('Mechanic name must match A-Za-z0-9_- (got "' + name + '")', "err");
+      return;
+    }
+
+    const closure = reachableClosureFromEntry(entryId);
+    if (memberIds) {
+      // Optional: compressed selection — still use runtime closure so ancestors included
+      for (const id of memberIds) closure.add(id);
+    }
+    const nodes = (doc.graph.nodes || []).filter((n) => closure.has(n.id));
+    const edges = (doc.graph.edges || []).filter(
+      (e) => closure.has(e.from) && closure.has(e.to)
+    );
+    const collapsed = ensureCollapsedArray()
+      .filter((c) => (c.nodeIds || []).some((nid) => closure.has(nid)))
+      .map((c) => ({
+        ...c,
+        nodeIds: (c.nodeIds || []).filter((nid) => closure.has(nid)),
+      }));
+
+    const remapped = remapIdsForPublish(nodes, edges, collapsed);
+    const body = {
+      name,
+      nodes: remapped.nodes,
+      edges: remapped.edges,
+    };
+    if (remapped.collapsed.length) body.collapsed = remapped.collapsed;
+
+    setStatus(`Publishing mechanic "${name}"…`);
+    try {
+      const res = await fetch(`/api/mechanics/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStatus(data.error || `Publish failed (${res.status})`, "err");
+        return;
+      }
+      setStatus(`Published mechanic "${name}"`, "ok");
+    } catch (err) {
+      setStatus(String(err), "err");
+    }
+  }
+
+
   function compressSelection() {
     const ids = [...selectedNodeIds];
     if (!ids.length) {
@@ -1608,6 +1769,12 @@
   const btnGraphExpand = document.getElementById("btn-graph-expand");
   if (btnGraphExpand) {
     btnGraphExpand.addEventListener("click", () => expandCollapsed());
+  }
+  const btnGraphPublish = document.getElementById("btn-graph-publish");
+  if (btnGraphPublish) {
+    btnGraphPublish.addEventListener("click", () => {
+      publishToLibrary().catch((err) => setStatus(String(err), "err"));
+    });
   }
 
   graphSvg.addEventListener("pointerdown", (e) => {

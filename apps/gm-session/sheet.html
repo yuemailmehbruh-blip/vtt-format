@@ -185,6 +185,41 @@
       font-size: 0.85rem;
       line-height: 1.45;
     }
+    .mech-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.35rem;
+    }
+    .mech-import-panel {
+      display: none;
+      flex-direction: column;
+      gap: 0.45rem;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid var(--border, #2a3142);
+      border-radius: 8px;
+      background: rgba(0,0,0,0.2);
+      margin-bottom: 0.35rem;
+    }
+    .mech-import-panel.open { display: flex; }
+    .mech-import-panel label {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .mech-import-panel select {
+      max-width: 100%;
+      padding: 0.35rem 0.45rem;
+      border-radius: 6px;
+      border: 1px solid var(--border, #2a3142);
+      background: var(--bg, #12151c);
+      color: var(--text);
+    }
+    .mech-import-actions {
+      display: flex;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+    }
     .mech-row {
       display: flex;
       align-items: center;
@@ -303,7 +338,21 @@
 
 
   <div class="panel" id="panel-mechanics" role="tabpanel">
-    <div class="mechanics-body" id="mechanics-list"></div>
+    <div class="mechanics-body">
+      <div class="mech-toolbar">
+        <button type="button" id="btn-mech-import">Import…</button>
+      </div>
+      <div class="mech-import-panel" id="mech-import-panel" hidden>
+        <label for="mech-import-select">Campaign mechanics library</label>
+        <select id="mech-import-select" size="6"></select>
+        <div class="mech-import-actions">
+          <button type="button" class="primary" id="btn-mech-import-confirm">Import</button>
+          <button type="button" id="btn-mech-import-cancel">Cancel</button>
+        </div>
+        <p class="mech-empty" id="mech-import-hint" hidden></p>
+      </div>
+      <div id="mechanics-list"></div>
+    </div>
     <div class="actions">
       <span id="mechanics-status"></span>
     </div>

@@ -87,6 +87,82 @@ def _safe_segment(value: str) -> bool:
     return bool(value) and "/" not in value and ".." not in value and "\\" not in value
 
 
+SAFE_MECHANIC_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def safe_mechanic_name(value: str) -> bool:
+    """Filename-safe mechanic id (same rules as sheet ids: A-Za-z0-9_-)."""
+    return bool(value) and bool(SAFE_MECHANIC_NAME.fullmatch(value))
+
+
+def fresh_uid(prefix: str = "n") -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def deep_copy_json(obj):
+    return json.loads(json.dumps(obj))
+
+
+def remap_mechanic_subgraph(nodes, edges, collapsed=None):
+    """
+    Deep-copy nodes/edges/(optional collapsed) with fresh ids.
+    Entry node ``name`` is preserved. Returns (nodes, edges, collapsed, id_map).
+    """
+    nodes = deep_copy_json(nodes or [])
+    edges = deep_copy_json(edges or [])
+    collapsed = deep_copy_json(collapsed or []) if collapsed is not None else []
+    id_map: dict[str, str] = {}
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        old = str(n.get("id") or "")
+        if not old:
+            old = fresh_uid("n")
+        new = fresh_uid("n")
+        id_map[old] = new
+        n["id"] = new
+    new_nodes = [n for n in nodes if isinstance(n, dict)]
+    new_edges = []
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        fr = str(e.get("from") or "")
+        to = str(e.get("to") or "")
+        if fr not in id_map or to not in id_map:
+            continue
+        ne = dict(e)
+        ne["id"] = fresh_uid("e")
+        ne["from"] = id_map[fr]
+        ne["to"] = id_map[to]
+        new_edges.append(ne)
+    new_collapsed = []
+    for c in collapsed:
+        if not isinstance(c, dict):
+            continue
+        nc = dict(c)
+        nc["id"] = fresh_uid("c")
+        raw_ids = nc.get("nodeIds") if isinstance(nc.get("nodeIds"), list) else []
+        nc["nodeIds"] = [id_map[str(i)] for i in raw_ids if str(i) in id_map]
+        new_collapsed.append(nc)
+    return new_nodes, new_edges, new_collapsed, id_map
+
+
+def entry_names_in_nodes(nodes) -> set[str]:
+    names: set[str] = set()
+    for n in nodes or []:
+        if not isinstance(n, dict):
+            continue
+        if n.get("kind") not in ("entry", "function"):
+            continue
+        name = n.get("name")
+        if name is None:
+            continue
+        s = str(name).strip()
+        if s:
+            names.add(s)
+    return names
+
+
 class Handler(BaseHTTPRequestHandler):
     campaign_root: Path = Path(".")
     app_dir: Path = Path(".")
@@ -153,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers", "Content-Type, X-Asset-Name"
         )
@@ -197,6 +273,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/library":
             self._api_library()
+            return
+
+        if path == "/api/mechanics" or path == "/api/mechanics/":
+            self._api_mechanics_list()
+            return
+
+        if path.startswith("/api/mechanics/"):
+            name = path[len("/api/mechanics/") :].strip("/")
+            if "/" in name or not safe_mechanic_name(name):
+                self._send_json(400, {"error": "invalid mechanic name"})
+                return
+            self._api_mechanics_get(name)
             return
 
         if path == "/api/sheet-builder" or path == "/api/sheet-builder/":
@@ -362,6 +450,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
+
+        if path.startswith("/api/mechanics/"):
+            name = path[len("/api/mechanics/") :].strip("/")
+            if "/" in name or not safe_mechanic_name(name):
+                self._send_json(400, {"error": "invalid mechanic name"})
+                return
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            self._api_mechanics_put(name, body)
+            return
 
         if path.startswith("/api/sheet-builder/"):
             rest = path[len("/api/sheet-builder/") :].strip("/")
@@ -733,6 +834,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
+
+        if path.startswith("/api/sheet-builder/") and path.endswith("/import-mechanic"):
+            mid = path[len("/api/sheet-builder/") : -len("/import-mechanic")].strip("/")
+            sheet_id = mid
+            if not _safe_segment(sheet_id):
+                self._send_json(400, {"error": "invalid sheet id"})
+                return
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+            self._api_sheet_import_mechanic(sheet_id, body)
+            return
 
         if path.startswith("/api/sheet-builder/") and path.endswith("/compile"):
             mid = path[len("/api/sheet-builder/") : -len("/compile")].strip("/")
@@ -1140,6 +1255,269 @@ class Handler(BaseHTTPRequestHandler):
                 "scenes": scenes,
             },
         )
+
+
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+
+        if path.startswith("/api/mechanics/"):
+            name = path[len("/api/mechanics/") :].strip("/")
+            if "/" in name or not safe_mechanic_name(name):
+                self._send_json(400, {"error": "invalid mechanic name"})
+                return
+            self._api_mechanics_delete(name)
+            return
+
+        self._send_json(404, {"error": "not found"})
+
+    def _mechanics_dir(self) -> Path:
+        return self.campaign_root / "editor-scratch" / "mechanics"
+
+    def _mechanic_path(self, name: str) -> Path:
+        return self._mechanics_dir() / f"{name}.json"
+
+    def _api_mechanics_list(self) -> None:
+        mdir = self._mechanics_dir()
+        out = []
+        if mdir.is_dir():
+            for p in sorted(mdir.glob("*.json")):
+                name = p.stem
+                if not safe_mechanic_name(name):
+                    continue
+                out.append(
+                    {
+                        "name": name,
+                        "path": f"editor-scratch/mechanics/{name}.json",
+                    }
+                )
+        self._send_json(200, {"mechanics": out})
+
+    def _api_mechanics_get(self, name: str) -> None:
+        path = self._mechanic_path(name)
+        if not path.is_file():
+            self._send_json(404, {"error": f"mechanic not found: {name}"})
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            self._send_json(500, {"error": "invalid mechanic JSON"})
+            return
+        if not isinstance(data, dict):
+            self._send_json(500, {"error": "mechanic JSON must be an object"})
+            return
+        self._send_json(200, data)
+
+    def _api_mechanics_put(self, name: str, body) -> None:
+        if not isinstance(body, dict):
+            self._send_json(400, {"error": "body must be an object"})
+            return
+        body_name = str(body.get("name") or "").strip()
+        if body_name != name:
+            self._send_json(
+                400,
+                {
+                    "error": (
+                        f'body.name must match path name "{name}" '
+                        f'(got "{body_name}")'
+                    )
+                },
+            )
+            return
+        if not safe_mechanic_name(name):
+            self._send_json(400, {"error": "invalid mechanic name"})
+            return
+        nodes = body.get("nodes") if isinstance(body.get("nodes"), list) else []
+        edges = body.get("edges") if isinstance(body.get("edges"), list) else []
+        collapsed = (
+            body.get("collapsed") if isinstance(body.get("collapsed"), list) else []
+        )
+        doc = {"name": name, "nodes": nodes, "edges": edges}
+        if collapsed:
+            doc["collapsed"] = collapsed
+        mdir = self._mechanics_dir()
+        mdir.mkdir(parents=True, exist_ok=True)
+        path = self._mechanic_path(name)
+        path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "name": name,
+                "path": f"editor-scratch/mechanics/{name}.json",
+                "node_count": len(nodes),
+            },
+        )
+
+    def _api_mechanics_delete(self, name: str) -> None:
+        path = self._mechanic_path(name)
+        if not path.is_file():
+            self._send_json(404, {"error": f"mechanic not found: {name}"})
+            return
+        path.unlink()
+        self._send_json(200, {"ok": True, "name": name})
+
+    def _merge_graph_into_yaml(self, sheet_id: str, graph: dict) -> bool:
+        """Update build yaml graph nodes/edges in place; preserve fields/layout."""
+        ypath = self._sheet_yaml_path(sheet_id)
+        if not ypath.is_file():
+            return False
+        loaded = yaml.safe_load(ypath.read_text(encoding="utf-8")) or {}
+        if not isinstance(loaded, dict):
+            return False
+        sheet_name = str(loaded.get("name") or sheet_id)
+        nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+        edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+        loaded["graph"] = {"nodes": list(nodes), "edges": list(edges)}
+        dumped = yaml.safe_dump(
+            loaded,
+            sort_keys=False,
+            default_flow_style=False,
+            allow_unicode=True,
+        )
+        header = (
+            f"# {sheet_name} sheet — declarative fields + closed formulas.\n"
+            f"# Compiled from editor-scratch/sheets/{sheet_id}.builder.json "
+            f"(sheet builder).\n"
+        )
+        ypath.write_text(header + dumped, encoding="utf-8")
+        return True
+
+    def _api_sheet_import_mechanic(self, sheet_id: str, body) -> None:
+        if not isinstance(body, dict):
+            self._send_json(400, {"error": "body must be an object"})
+            return
+        name = str(body.get("name") or "").strip()
+        if not safe_mechanic_name(name):
+            self._send_json(400, {"error": "invalid or missing mechanic name"})
+            return
+        mpath = self._mechanic_path(name)
+        if not mpath.is_file():
+            self._send_json(404, {"error": f"mechanic not found: {name}"})
+            return
+        try:
+            mech = json.loads(mpath.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            self._send_json(500, {"error": "invalid mechanic JSON"})
+            return
+        if not isinstance(mech, dict):
+            self._send_json(500, {"error": "mechanic JSON must be an object"})
+            return
+        mech_nodes = mech.get("nodes") if isinstance(mech.get("nodes"), list) else []
+        mech_edges = mech.get("edges") if isinstance(mech.get("edges"), list) else []
+        mech_collapsed = (
+            mech.get("collapsed") if isinstance(mech.get("collapsed"), list) else []
+        )
+
+        scratch = self._builder_scratch_path(sheet_id)
+        doc = None
+        if scratch.is_file():
+            try:
+                doc = json.loads(scratch.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                self._send_json(500, {"error": "invalid builder JSON"})
+                return
+        if not isinstance(doc, dict):
+            seeded = self._seed_builder_from_yaml(sheet_id)
+            doc = (
+                seeded
+                if isinstance(seeded, dict)
+                else {
+                    "sheet_id": sheet_id,
+                    "name": sheet_id,
+                    "fields": {},
+                    "layout": {"widgets": []},
+                    "graph": {"nodes": [], "edges": [], "collapsed": []},
+                }
+            )
+
+        g = doc.get("graph") if isinstance(doc.get("graph"), dict) else {}
+        existing_nodes = list(
+            g.get("nodes") if isinstance(g.get("nodes"), list) else []
+        )
+        existing_edges = list(
+            g.get("edges") if isinstance(g.get("edges"), list) else []
+        )
+        existing_collapsed = list(
+            g.get("collapsed") if isinstance(g.get("collapsed"), list) else []
+        )
+
+        if name in entry_names_in_nodes(existing_nodes):
+            self._send_json(
+                409,
+                {
+                    "error": (
+                        f'Sheet already has an entry function named "{name}". '
+                        "Rename or remove it before importing."
+                    )
+                },
+            )
+            return
+
+        new_nodes, new_edges, new_collapsed, _id_map = remap_mechanic_subgraph(
+            mech_nodes, mech_edges, mech_collapsed
+        )
+
+        max_x = 0.0
+        for n in existing_nodes:
+            if isinstance(n, dict):
+                try:
+                    max_x = max(max_x, float(n.get("x") or 0) + 140)
+                except (TypeError, ValueError):
+                    pass
+        ox = max(40.0, max_x + 40.0) if existing_nodes else 40.0
+        oy = 40.0
+        min_x = min(
+            (float(n.get("x") or 0) for n in new_nodes if isinstance(n, dict)),
+            default=0.0,
+        )
+        min_y = min(
+            (float(n.get("y") or 0) for n in new_nodes if isinstance(n, dict)),
+            default=0.0,
+        )
+        dx = ox - min_x
+        dy = oy - min_y
+        for n in new_nodes:
+            if isinstance(n, dict):
+                try:
+                    n["x"] = float(n.get("x") or 0) + dx
+                    n["y"] = float(n.get("y") or 0) + dy
+                except (TypeError, ValueError):
+                    n["x"] = ox
+                    n["y"] = oy
+        for c in new_collapsed:
+            if isinstance(c, dict):
+                try:
+                    c["x"] = float(c.get("x") or 0) + dx
+                    c["y"] = float(c.get("y") or 0) + dy
+                except (TypeError, ValueError):
+                    c["x"] = ox
+                    c["y"] = oy
+        merged_nodes = existing_nodes + new_nodes
+        merged_edges = existing_edges + new_edges
+        merged_collapsed = existing_collapsed + new_collapsed
+        doc["graph"] = {
+            "nodes": merged_nodes,
+            "edges": merged_edges,
+            "collapsed": merged_collapsed,
+        }
+        doc.setdefault("sheet_id", sheet_id)
+        self._write_builder_scratch(sheet_id, doc)
+        self._merge_graph_into_yaml(
+            sheet_id, {"nodes": merged_nodes, "edges": merged_edges}
+        )
+
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "sheet_id": sheet_id,
+                "name": name,
+                "graph_node_count": len(merged_nodes),
+            },
+        )
+
 
 
 def create_server(

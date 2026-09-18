@@ -147,6 +147,10 @@ GM Session gains a **Sheet builder** window: declarative display widgets (boxes/
 
 Session character sheets render the builder layout (boxes/circles/buttons) with live field values and closed formula evaluation. Roll buttons run `dN` on the sheet. Field widgets use a plain text id (no example dropdown). Notes text remains secondary.
 
+## 0.6.9 — Mechanics library + import
+
+Campaign shared Function library (`editor-scratch/mechanics/`). Sheet builder **Publish to library**; play sheet Mechanics tab **Import…** onto a sheet (id remap, duplicate name → 409, yaml graph updated without Compile).
+
 ## 0.6.8 — Mechanics tab + compress automations
 
 Character sheets gain a **Mechanics** tab listing that sheet’s named Function entries (Trigger / Toggle). Sheet builder Automations support multi-select and **Compress** into UI-only `graph.collapsed` blocks (runtime still evaluates the flat graph).

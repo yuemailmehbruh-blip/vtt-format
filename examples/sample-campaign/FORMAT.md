@@ -92,7 +92,32 @@ Closed formula language (field-output graph → string): field names, number lit
 
 **Builder compress:** `graph.collapsed` is UI metadata only — Compile/runtime evaluate the flat `nodes`/`edges` and ignore `collapsed`.
 
+## Mechanics library (campaign)
 
+Shared named functions live under:
+
+```
+editor-scratch/mechanics/<safe_name>.json
+```
+
+`safe_name` matches sheet id rules: `A-Za-z0-9_-` only.
+
+Shape:
+
+```json
+{
+  "name": "attack",
+  "nodes": [ /* deep-copied subgraph; entry keeps name */ ],
+  "edges": [ /* remapped ids */ ],
+  "collapsed": []  // optional UI collapse for the block
+}
+```
+
+**Publish** (Sheet builder → Automations → **Publish to library**): selection must resolve to exactly one named Function entry (same rules as Compress). Exports forward-reachable nodes from the entry plus incoming ancestors (same closure as runtime), remaps ids, and PUTs the document.
+
+**Import** (play sheet Mechanics tab → **Import…**): POST `/api/sheet-builder/<sheet_id>/import-mechanic` with `{ "name": "attack" }`. Remaps ids into the sheet builder scratch (and updates `build/sheets/<id>.yaml` graph in place when present) so Mechanics lists the entry without a manual Compile. Duplicate entry name → HTTP 409.
+
+APIs: `GET/PUT/DELETE /api/mechanics[/<name>]`, `POST /api/sheet-builder/<sheet_id>/import-mechanic`.
 
 ## Scene schema
 

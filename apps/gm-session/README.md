@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.8**).
+Version is in `VERSION` (currently **0.6.9**).
 
 ## Run — desktop app (recommended)
 
@@ -139,6 +139,11 @@ Tokens reload from `state/tokens/` on refresh. Scene YAML may still declare `tok
 | GET | `/api/sheet-builder/<id>` | Load builder JSON (scratch or seed from YAML) |
 | PUT | `/api/sheet-builder/<id>` | Save builder JSON → `editor-scratch/sheets/` |
 | POST | `/api/sheet-builder/<id>/compile` | Compile → `build/sheets/<id>.yaml` |
+| GET | `/api/mechanics` | List campaign mechanics library (`editor-scratch/mechanics/*.json`) |
+| GET | `/api/mechanics/<name>` | Load one mechanic JSON |
+| PUT | `/api/mechanics/<name>` | Save/overwrite mechanic (body.name must match) |
+| DELETE | `/api/mechanics/<name>` | Remove mechanic from library |
+| POST | `/api/sheet-builder/<id>/import-mechanic` | Import library mechanic onto sheet (remap ids; 409 if name exists) |
 | GET | `/api/library` | Actors + scenes for the sidebar |
 | GET | `/api/scene/<id>` | Scene YAML as JSON |
 | PUT | `/api/scene/<id>/layers` | Body `{"layers":[…]}` → rewrite only the `layers` key |
@@ -223,6 +228,12 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+
+## 0.6.9
+
+- **Mechanics library** — campaign `editor-scratch/mechanics/<name>.json`; Sheet builder **Publish to library** exports a named Function (runtime closure) via PUT `/api/mechanics/<name>`.
+- **Import on sheet** — Mechanics tab **Import…** lists library names not already on the sheet; POST `/api/sheet-builder/<sheet_id>/import-mechanic` remaps ids into builder scratch and updates `build/sheets/<id>.yaml` graph in place (no manual Compile). Duplicate entry name → 409.
+- **Tests** — `tests/mechanics-remap.py`, `tests/mechanics-import-api.py`.
 
 ## 0.6.8
 

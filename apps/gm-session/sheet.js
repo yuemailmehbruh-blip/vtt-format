@@ -14,6 +14,12 @@
   const panelAppearance = document.getElementById("panel-appearance");
   const mechanicsListEl = document.getElementById("mechanics-list");
   const mechanicsStatusEl = document.getElementById("mechanics-status");
+  const btnMechImport = document.getElementById("btn-mech-import");
+  const mechImportPanel = document.getElementById("mech-import-panel");
+  const mechImportSelect = document.getElementById("mech-import-select");
+  const btnMechImportConfirm = document.getElementById("btn-mech-import-confirm");
+  const btnMechImportCancel = document.getElementById("btn-mech-import-cancel");
+  const mechImportHint = document.getElementById("mech-import-hint");
   const svgEl = document.getElementById("sheet-svg");
   const rollToastEl = document.getElementById("roll-toast");
   const notesBlock = document.getElementById("notes-block");
@@ -31,6 +37,8 @@
   let widgets = [];
   /** @type {{ nodes: object[], edges: object[] }} */
   let graph = { nodes: [], edges: [] };
+  /** @type {string|null} schema id from GET /api/sheet */
+  let sheetId = null;
   /** @type {Record<string, number|string>} */
   let liveValues = {};
   /** @type {Record<string, boolean>} */
@@ -426,12 +434,111 @@
     return `mech:${name}`;
   }
 
+  function closeMechImport() {
+    if (!mechImportPanel) return;
+    mechImportPanel.hidden = true;
+    mechImportPanel.classList.remove("open");
+  }
+
+  function openMechImport() {
+    if (!mechImportPanel) return;
+    mechImportPanel.hidden = false;
+    mechImportPanel.classList.add("open");
+  }
+
+  async function showMechImportChooser() {
+    if (!sheetId) {
+      setMechanicsStatus("No sheet_id on this actor — cannot import");
+      return;
+    }
+    openMechImport();
+    setMechanicsStatus("Loading mechanics library…");
+    try {
+      const res = await fetch("/api/mechanics");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMechanicsStatus(data.error || `Library load failed (${res.status})`);
+        return;
+      }
+      const present = new Set(namedFunctionsOnSheet());
+      const all = Array.isArray(data.mechanics) ? data.mechanics : [];
+      const available = all.filter((m) => m && m.name && !present.has(String(m.name)));
+      if (!mechImportSelect) return;
+      mechImportSelect.innerHTML = "";
+      if (mechImportHint) {
+        if (!all.length) {
+          mechImportHint.hidden = false;
+          mechImportHint.textContent =
+            "Library empty — publish a Function from Sheet builder (Publish to library).";
+        } else if (!available.length) {
+          mechImportHint.hidden = false;
+          mechImportHint.textContent =
+            "All library mechanics are already on this sheet.";
+        } else {
+          mechImportHint.hidden = true;
+          mechImportHint.textContent = "";
+        }
+      }
+      for (const m of available) {
+        const opt = document.createElement("option");
+        opt.value = String(m.name);
+        opt.textContent = String(m.name);
+        mechImportSelect.appendChild(opt);
+      }
+      if (btnMechImportConfirm) btnMechImportConfirm.disabled = !available.length;
+      setMechanicsStatus(
+        available.length
+          ? `Choose a mechanic (${available.length} available)`
+          : all.length
+            ? "Nothing new to import"
+            : "Library empty"
+      );
+    } catch (err) {
+      setMechanicsStatus(String(err));
+    }
+  }
+
+  async function confirmMechImport() {
+    if (!sheetId) {
+      setMechanicsStatus("Missing sheet_id");
+      return;
+    }
+    const name = mechImportSelect && mechImportSelect.value;
+    if (!name) {
+      setMechanicsStatus("Select a mechanic first");
+      return;
+    }
+    setMechanicsStatus(`Importing "${name}"…`);
+    try {
+      const res = await fetch(
+        `/api/sheet-builder/${encodeURIComponent(sheetId)}/import-mechanic`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMechanicsStatus(data.error || `Import failed (${res.status})`);
+        return;
+      }
+      closeMechImport();
+      await load();
+      setMechanicsStatus(
+        `Imported mechanic "${name}" (${data.graph_node_count ?? "?"} graph nodes)`
+      );
+    } catch (err) {
+      setMechanicsStatus(String(err));
+    }
+  }
+
   function renderMechanics() {
     if (!mechanicsListEl) return;
     const names = namedFunctionsOnSheet();
     if (!names.length) {
       mechanicsListEl.innerHTML =
-        `<p class="mech-empty">No named functions on this sheet — add Function entries in Sheet builder.</p>`;
+        `<p class="mech-empty">No named functions on this sheet — add Function entries in Sheet builder, or Import… from the campaign library.</p>`;
       return;
     }
     let html = "";
@@ -617,8 +724,12 @@
     const data = await res.json();
     document.title = `${data.name || actorId} · Sheet`;
     titleEl.textContent = data.name || actorId;
+    sheetId =
+      data.sheet_id != null && String(data.sheet_id).trim()
+        ? String(data.sheet_id).trim()
+        : null;
     pathEl.textContent =
-      (data.sheet_id ? `sheet: ${data.sheet_id} · ` : "") + (data.path || "");
+      (sheetId ? `sheet: ${sheetId} · ` : "") + (data.path || "");
     textEl.value = data.text || "";
     appearance =
       data.appearance && typeof data.appearance === "object"
@@ -788,6 +899,20 @@
   document.getElementById("save-appearance").addEventListener("click", () => {
     saveAppearance().catch((err) => setAppearanceStatus(String(err)));
   });
+
+  if (btnMechImport) {
+    btnMechImport.addEventListener("click", () => {
+      showMechImportChooser().catch((err) => setMechanicsStatus(String(err)));
+    });
+  }
+  if (btnMechImportCancel) {
+    btnMechImportCancel.addEventListener("click", () => closeMechImport());
+  }
+  if (btnMechImportConfirm) {
+    btnMechImportConfirm.addEventListener("click", () => {
+      confirmMechImport().catch((err) => setMechanicsStatus(String(err)));
+    });
+  }
 
   load().catch((err) => setStatus(String(err)));
 })();
