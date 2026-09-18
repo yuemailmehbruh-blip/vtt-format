@@ -185,6 +185,20 @@
     .node-selected .node-rect { stroke: var(--accent); stroke-width: 2.5; }
     .node-title { fill: var(--text); font-size: 11px; font-weight: 600; pointer-events: none; }
     .node-sub { fill: var(--muted); font-size: 10px; pointer-events: none; }
+    .collapsed-block .collapsed-rect {
+      fill: #2a3550;
+      stroke: #c9a0ff;
+      stroke-width: 2.5;
+      stroke-dasharray: 6 4;
+      rx: 10;
+    }
+    .collapsed-block.collapsed-selected .collapsed-rect {
+      stroke: #e8c07d;
+      stroke-width: 3;
+      stroke-dasharray: none;
+    }
+    .collapsed-title { fill: var(--text); font-size: 13px; font-weight: 700; pointer-events: none; }
+    .collapsed-sub { fill: var(--muted); font-size: 10px; pointer-events: none; }
     .port { fill: #3d6cb0; stroke: #8eb6ff; stroke-width: 1; cursor: crosshair; }
     .port-in { fill: #3a6b4a; stroke: #7ddea5; }
     .wire { fill: none; stroke: var(--wire); stroke-width: 2; pointer-events: stroke; }
@@ -268,6 +282,8 @@
           <button type="button" id="btn-graph-zoom-out" title="Zoom out">Zoom −</button>
           <button type="button" id="btn-graph-zoom-reset" title="Reset zoom/pan">Reset</button>
           <button type="button" id="btn-graph-select" class="active" title="Select / move / wire / pan empty">Select</button>
+          <button type="button" id="btn-graph-compress" title="Compress selected into named function block">Compress</button>
+          <button type="button" id="btn-graph-expand" title="Expand selected compressed block" disabled>Expand</button>
           <button type="button" id="btn-graph-delete" class="danger" title="Delete selected node/wire">Delete</button>
         </div>
       </div>

@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.7**).
+Version is in `VERSION` (currently **0.6.8**).
 
 ## Run — desktop app (recommended)
 
@@ -223,6 +223,11 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+
+## 0.6.8
+
+- **Mechanics tab** — character sheet window: Sheet | Mechanics | Appearance. Lists this sheet’s named graph entry/function nodes; Trigger and Toggle (toggle state `mech:<name>`) call the shared `runNamedFunction` runner (same rolls/chat/writes as layout buttons).
+- **Compress / Expand** — Automations multi-select (Shift/Ctrl-click); **Compress** folds selection into a UI-only `graph.collapsed` block (flat nodes/edges unchanged for runtime); **Expand** / double-click restores; Delete on a block removes members + record. Persisted in builder JSON.
 
 ## 0.6.7
 

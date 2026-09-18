@@ -29,6 +29,10 @@
   let displayTool = "select";
   let selectedWidgetId = null;
   let selectedNodeId = null;
+  /** @type {Set<string>} */
+  let selectedNodeIds = new Set();
+  /** Selected compressed block id */
+  let selectedCollapsedId = null;
   let selectedEdgeId = null;
 
   /** Display drag state */
@@ -60,7 +64,7 @@
       fields: {},
       permissions: null,
       layout: { widgets: [] },
-      graph: { nodes: [], edges: [] },
+      graph: { nodes: [], edges: [], collapsed: [] },
     };
   }
 
@@ -405,6 +409,8 @@
     }
     selectedWidgetId = null;
     selectedNodeId = null;
+    selectedNodeIds = new Set();
+    selectedCollapsedId = null;
     selectedEdgeId = null;
     sheetNameEl.value = doc.name || doc.sheet_id;
     renderAll();
@@ -443,8 +449,35 @@
       edges: Array.isArray(raw.graph && raw.graph.edges)
         ? raw.graph.edges.map((e) => ({ ...e, id: e.id || uid("e") }))
         : [],
+      collapsed: normalizeCollapsed(
+        raw.graph && Array.isArray(raw.graph.collapsed) ? raw.graph.collapsed : []
+      ),
     };
     return d;
+  }
+
+  function normalizeCollapsed(list) {
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (const c of list) {
+      if (!c || typeof c !== "object") continue;
+      const id = c.id != null ? String(c.id) : uid("c");
+      const name = c.name != null ? String(c.name) : "";
+      const nodeIds = Array.isArray(c.nodeIds)
+        ? c.nodeIds.map((x) => String(x)).filter(Boolean)
+        : [];
+      if (!nodeIds.length) continue;
+      out.push({
+        id,
+        name,
+        nodeIds,
+        x: Number(c.x) || 0,
+        y: Number(c.y) || 0,
+        w: c.w != null ? Number(c.w) : undefined,
+        h: c.h != null ? Number(c.h) : undefined,
+      });
+    }
+    return out;
   }
 
   function payload() {
@@ -1039,12 +1072,232 @@
     return "";
   }
 
+
+  function ensureCollapsedArray() {
+    if (!doc.graph.collapsed || !Array.isArray(doc.graph.collapsed)) {
+      doc.graph.collapsed = [];
+    }
+    return doc.graph.collapsed;
+  }
+
+  function collapsedById(id) {
+    return ensureCollapsedArray().find((c) => c.id === id) || null;
+  }
+
+  function memberIdSet() {
+    const hidden = new Set();
+    for (const c of ensureCollapsedArray()) {
+      for (const nid of c.nodeIds || []) hidden.add(nid);
+    }
+    return hidden;
+  }
+
+  function collapsedBox(c) {
+    const w = c.w != null && c.w > 0 ? c.w : 168;
+    const h = c.h != null && c.h > 0 ? c.h : 72;
+    return { x: c.x || 0, y: c.y || 0, w, h };
+  }
+
+  function setNodeSelection(ids, primaryId) {
+    selectedNodeIds = new Set(ids || []);
+    selectedNodeId = primaryId || (selectedNodeIds.size ? [...selectedNodeIds][0] : null);
+    selectedCollapsedId = null;
+    selectedEdgeId = null;
+  }
+
+  function clearGraphSelection() {
+    selectedNodeIds = new Set();
+    selectedNodeId = null;
+    selectedCollapsedId = null;
+    selectedEdgeId = null;
+  }
+
+  function updateExpandButton() {
+    const btn = document.getElementById("btn-graph-expand");
+    if (btn) btn.disabled = !selectedCollapsedId;
+  }
+
+  function findEntryNameForSelection(ids) {
+    const idSet = new Set(ids);
+    const entries = (doc.graph.nodes || []).filter(
+      (n) =>
+        idSet.has(n.id) &&
+        (n.kind === "entry" || n.kind === "function") &&
+        n.name != null &&
+        String(n.name).trim()
+    );
+    if (entries.length === 1) {
+      return { ok: true, name: String(entries[0].name).trim(), entryId: entries[0].id };
+    }
+    if (entries.length > 1) {
+      return { ok: false, error: "Multiple named Function entries in selection." };
+    }
+    // Ancestors of selection (incoming closure)
+    const edges = doc.graph.edges || [];
+    const incoming = new Map();
+    for (const e of edges) {
+      if (!incoming.has(e.to)) incoming.set(e.to, []);
+      incoming.get(e.to).push(e.from);
+    }
+    const ancestors = new Set();
+    const stack = [...idSet];
+    while (stack.length) {
+      const cur = stack.pop();
+      for (const fr of incoming.get(cur) || []) {
+        if (ancestors.has(fr) || idSet.has(fr)) continue;
+        ancestors.add(fr);
+        stack.push(fr);
+      }
+    }
+    const ancEntries = (doc.graph.nodes || []).filter(
+      (n) =>
+        ancestors.has(n.id) &&
+        (n.kind === "entry" || n.kind === "function") &&
+        n.name != null &&
+        String(n.name).trim()
+    );
+    if (ancEntries.length === 1) {
+      return { ok: true, name: String(ancEntries[0].name).trim(), entryId: ancEntries[0].id };
+    }
+    return {
+      ok: false,
+      error: "Select nodes that include one named Function entry.",
+    };
+  }
+
+  function compressSelection() {
+    const ids = [...selectedNodeIds];
+    if (!ids.length) {
+      setStatus("Select nodes to compress", "warn");
+      return;
+    }
+    const found = findEntryNameForSelection(ids);
+    if (!found.ok) {
+      setStatus(found.error, "err");
+      return;
+    }
+    const nodeIdSet = new Set(ids);
+    if (found.entryId) nodeIdSet.add(found.entryId);
+    const memberNodes = (doc.graph.nodes || []).filter((n) => nodeIdSet.has(n.id));
+    if (!memberNodes.length) {
+      setStatus("Nothing to compress", "warn");
+      return;
+    }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of memberNodes) {
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + NODE_W);
+      maxY = Math.max(maxY, n.y + NODE_H);
+    }
+    const pad = 16;
+    const w = Math.max(168, maxX - minX + pad * 2);
+    const h = Math.max(72, maxY - minY + pad * 2);
+    const cx = minX + (maxX - minX) / 2;
+    const cy = minY + (maxY - minY) / 2;
+    const block = {
+      id: uid("c"),
+      name: found.name,
+      nodeIds: [...nodeIdSet],
+      x: cx - w / 2,
+      y: cy - h / 2,
+      w,
+      h,
+    };
+    doc.graph.collapsed = ensureCollapsedArray().filter(
+      (c) => !(c.nodeIds || []).some((nid) => nodeIdSet.has(nid))
+    );
+    doc.graph.collapsed.push(block);
+    selectedCollapsedId = block.id;
+    selectedNodeIds = new Set();
+    selectedNodeId = null;
+    selectedEdgeId = null;
+    renderGraph();
+    setStatus(`Compressed “${found.name}” (${block.nodeIds.length} nodes)`, "ok");
+  }
+
+  function expandCollapsed(cid) {
+    const id = cid || selectedCollapsedId;
+    const block = collapsedById(id);
+    if (!block) {
+      setStatus("No compressed block selected", "warn");
+      return;
+    }
+    const entry =
+      (doc.graph.nodes || []).find(
+        (n) =>
+          (block.nodeIds || []).includes(n.id) &&
+          (n.kind === "entry" || n.kind === "function") &&
+          n.name != null &&
+          String(n.name).trim() === String(block.name || "").trim()
+      ) ||
+      (doc.graph.nodes || []).find(
+        (n) =>
+          (block.nodeIds || []).includes(n.id) &&
+          (n.kind === "entry" || n.kind === "function")
+      );
+    doc.graph.collapsed = ensureCollapsedArray().filter((c) => c.id !== block.id);
+    if (entry) setNodeSelection([entry.id], entry.id);
+    else if (block.nodeIds && block.nodeIds.length) setNodeSelection(block.nodeIds, block.nodeIds[0]);
+    else clearGraphSelection();
+    renderGraph();
+    setStatus(`Expanded “${block.name || "block"}”`, "ok");
+  }
+
+  function deleteSelectedGraph() {
+    if (selectedEdgeId) {
+      doc.graph.edges = doc.graph.edges.filter((e) => e.id !== selectedEdgeId);
+      selectedEdgeId = null;
+      renderGraph();
+      return;
+    }
+    if (selectedCollapsedId) {
+      const block = collapsedById(selectedCollapsedId);
+      if (block) {
+        const kill = new Set(block.nodeIds || []);
+        doc.graph.edges = doc.graph.edges.filter(
+          (e) => !kill.has(e.from) && !kill.has(e.to)
+        );
+        doc.graph.nodes = doc.graph.nodes.filter((n) => !kill.has(n.id));
+        doc.graph.collapsed = ensureCollapsedArray().filter((c) => c.id !== block.id);
+        setStatus(
+          `Deleted compressed “${block.name || "block"}” (${kill.size} nodes)`,
+          "warn"
+        );
+      }
+      clearGraphSelection();
+      renderGraph();
+      return;
+    }
+    const ids = selectedNodeIds.size
+      ? [...selectedNodeIds]
+      : selectedNodeId
+        ? [selectedNodeId]
+        : [];
+    if (!ids.length) return;
+    const kill = new Set(ids);
+    doc.graph.edges = doc.graph.edges.filter(
+      (e) => !kill.has(e.from) && !kill.has(e.to)
+    );
+    doc.graph.nodes = doc.graph.nodes.filter((n) => !kill.has(n.id));
+    doc.graph.collapsed = ensureCollapsedArray()
+      .map((c) => ({
+        ...c,
+        nodeIds: (c.nodeIds || []).filter((nid) => !kill.has(nid)),
+      }))
+      .filter((c) => c.nodeIds.length > 0);
+    clearGraphSelection();
+    renderGraph();
+  }
+
   function renderGraph() {
     const nodes = doc.graph.nodes || [];
     const edges = doc.graph.edges || [];
+    const hidden = memberIdSet();
     let html = `<g id="graph-root" transform="translate(${graphView.x},${graphView.y}) scale(${graphView.scale})">`;
     html += `<g id="wires">`;
     for (const e of edges) {
+      if (hidden.has(e.from) || hidden.has(e.to)) continue;
       const a = nodeById(e.from);
       const b = nodeById(e.to);
       if (!a || !b) continue;
@@ -1056,7 +1309,7 @@
     }
     if (wireFrom) {
       const a = nodeById(wireFrom.nodeId);
-      if (a) {
+      if (a && !hidden.has(a.id)) {
         const p0 = portPos(a, "out");
         const p1 = { x: wireFrom.x, y: wireFrom.y };
         const mid = (p0.x + p1.x) / 2;
@@ -1065,7 +1318,8 @@
     }
     html += `</g><g id="nodes">`;
     for (const n of nodes) {
-      const sel = n.id === selectedNodeId ? " node-selected" : "";
+      if (hidden.has(n.id)) continue;
+      const sel = selectedNodeIds.has(n.id) || n.id === selectedNodeId ? " node-selected" : "";
       html += `<g class="node${sel}" data-id="${esc(n.id)}" transform="translate(${n.x},${n.y})">`;
       html += `<rect class="node-rect" width="${NODE_W}" height="${NODE_H}" />`;
       html += `<text class="node-title" x="12" y="22">${esc(nodeLabel(n))}</text>`;
@@ -1073,33 +1327,56 @@
       if (hasOutputPort(n)) {
         html += `<circle class="port" data-port="out" data-id="${esc(n.id)}" cx="${NODE_W}" cy="${NODE_H / 2}" r="6" />`;
       }
-      // input ports
       const ar = arityOf(n);
       for (let i = 0; i < ar; i++) {
         const pp = portPos({ x: 0, y: 0, kind: n.kind, op: n.op, role: n.role }, "in", i);
-        // portPos with x,y 0 gives local coords
         html += `<circle class="port port-in" data-port="in" data-port-index="${i}" data-id="${esc(n.id)}" cx="0" cy="${pp.y}" r="6" />`;
       }
+      html += `</g>`;
+    }
+    html += `</g><g id="collapsed">`;
+    for (const c of ensureCollapsedArray()) {
+      const box = collapsedBox(c);
+      const sel = c.id === selectedCollapsedId ? " collapsed-selected" : "";
+      html += `<g class="collapsed-block${sel}" data-cid="${esc(c.id)}" transform="translate(${box.x},${box.y})">`;
+      html += `<rect class="collapsed-rect" width="${box.w}" height="${box.h}" />`;
+      html += `<text class="collapsed-title" x="14" y="28">${esc(c.name || "(unnamed)")}</text>`;
+      html += `<text class="collapsed-sub" x="14" y="46">function · compressed · ${(c.nodeIds || []).length} nodes</text>`;
       html += `</g>`;
     }
     html += `</g></g>`;
     graphSvg.innerHTML = html;
     renderGraphProps();
+    updateExpandButton();
   }
 
   function hitNode(x, y) {
     const nodes = doc.graph.nodes || [];
+    const hidden = memberIdSet();
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
+      if (hidden.has(n.id)) continue;
       if (x >= n.x && x <= n.x + NODE_W && y >= n.y && y <= n.y + NODE_H) return n;
+    }
+    return null;
+  }
+
+  function hitCollapsed(x, y) {
+    const list = ensureCollapsedArray();
+    for (let i = list.length - 1; i >= 0; i--) {
+      const c = list[i];
+      const box = collapsedBox(c);
+      if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) return c;
     }
     return null;
   }
 
   function hitPort(x, y) {
     const nodes = doc.graph.nodes || [];
+    const hidden = memberIdSet();
     const R = 10;
     for (const n of nodes) {
+      if (hidden.has(n.id)) continue;
       if (hasOutputPort(n)) {
         const p = portPos(n, "out");
         if ((x - p.x) * (x - p.x) + (y - p.y) * (y - p.y) <= R * R) {
@@ -1118,9 +1395,10 @@
   }
 
   function hitEdge(x, y) {
-    // Rough: sample path proximity via bounding — skip fancy; click near midpoint of wire
     const edges = doc.graph.edges || [];
+    const hidden = memberIdSet();
     for (const e of edges) {
+      if (hidden.has(e.from) || hidden.has(e.to)) continue;
       const a = nodeById(e.from);
       const b = nodeById(e.to);
       if (!a || !b) continue;
@@ -1135,9 +1413,28 @@
 
   function renderGraphProps() {
     const compiled = compileGraph(doc.graph);
+    if (selectedCollapsedId) {
+      const c = collapsedById(selectedCollapsedId);
+      let msg = c
+        ? `<span class="hint">Compressed “${esc(c.name || "")}” · ${(c.nodeIds || []).length} nodes · double-click or Expand</span>`
+        : `<span class="hint">Compressed block</span>`;
+      if (compiled.error) {
+        msg += ` <span class="formula-preview" style="color:var(--err)">${esc(compiled.error)}</span>`;
+      }
+      graphProps.innerHTML = msg;
+      return;
+    }
+    if (selectedNodeIds.size > 1) {
+      let msg = `<span class="hint">${selectedNodeIds.size} nodes selected · Compress to group · Shift/Ctrl-click to toggle</span>`;
+      if (compiled.error) {
+        msg += ` <span class="formula-preview" style="color:var(--err)">${esc(compiled.error)}</span>`;
+      }
+      graphProps.innerHTML = msg;
+      return;
+    }
     const n = selectedNodeId ? nodeById(selectedNodeId) : null;
     if (!n) {
-      let msg = `<span class="hint">Drag palette onto canvas · wire ports · wheel zoom · mid/space/empty pan</span>`;
+      let msg = `<span class="hint">Drag palette onto canvas · wire ports · wheel zoom · mid/space/empty pan · Shift-click multi-select</span>`;
       if (compiled.error) {
         msg += ` <span class="formula-preview" style="color:var(--err)">${esc(compiled.error)}</span>`;
       } else if (Object.keys(compiled.formulas).length) {
@@ -1282,8 +1579,7 @@
       n.include_arithmetic = false;
     }
     doc.graph.nodes.push(n);
-    selectedNodeId = n.id;
-    selectedEdgeId = null;
+    setNodeSelection([n.id], n.id);
     renderGraph();
   }
 
@@ -1302,32 +1598,36 @@
   });
 
   document.getElementById("btn-graph-delete").addEventListener("click", () => {
-    if (selectedEdgeId) {
-      doc.graph.edges = doc.graph.edges.filter((e) => e.id !== selectedEdgeId);
-      selectedEdgeId = null;
-      renderGraph();
-      return;
-    }
-    if (selectedNodeId) {
-      doc.graph.edges = doc.graph.edges.filter(
-        (e) => e.from !== selectedNodeId && e.to !== selectedNodeId
-      );
-      doc.graph.nodes = doc.graph.nodes.filter((n) => n.id !== selectedNodeId);
-      selectedNodeId = null;
-      renderGraph();
-    }
+    deleteSelectedGraph();
   });
+
+  const btnGraphCompress = document.getElementById("btn-graph-compress");
+  if (btnGraphCompress) {
+    btnGraphCompress.addEventListener("click", () => compressSelection());
+  }
+  const btnGraphExpand = document.getElementById("btn-graph-expand");
+  if (btnGraphExpand) {
+    btnGraphExpand.addEventListener("click", () => expandCollapsed());
+  }
 
   graphSvg.addEventListener("pointerdown", (e) => {
     const p = graphWorldPoint(e);
     const port = hitPort(p.x, p.y);
-    const hit = !port ? hitNode(p.x, p.y) : null;
-    const edge = !port && !hit ? hitEdge(p.x, p.y) : null;
+    const hitCollapsedBlock = !port ? hitCollapsed(p.x, p.y) : null;
+    const hit = !port && !hitCollapsedBlock ? hitNode(p.x, p.y) : null;
+    const edge = !port && !hit && !hitCollapsedBlock ? hitEdge(p.x, p.y) : null;
+    const multi = e.shiftKey || e.ctrlKey || e.metaKey;
 
     const wantPan =
       e.button === 1 ||
       (e.button === 0 && spaceDown) ||
-      (e.button === 0 && graphTool === "select" && !port && !hit && !edge && !wireFrom);
+      (e.button === 0 &&
+        graphTool === "select" &&
+        !port &&
+        !hit &&
+        !hitCollapsedBlock &&
+        !edge &&
+        !wireFrom);
 
     if (wantPan && !wireFrom) {
       e.preventDefault();
@@ -1338,16 +1638,14 @@
         vy: graphView.y,
       };
       graphSvg.setPointerCapture(e.pointerId);
-      selectedNodeId = null;
-      selectedEdgeId = null;
+      clearGraphSelection();
       renderGraph();
       return;
     }
 
     if (port && port.port === "out") {
       wireFrom = { nodeId: port.nodeId, x: p.x, y: p.y };
-      selectedNodeId = port.nodeId;
-      selectedEdgeId = null;
+      setNodeSelection([port.nodeId], port.nodeId);
       graphSvg.setPointerCapture(e.pointerId);
       renderGraph();
       return;
@@ -1362,16 +1660,76 @@
     }
     if (edge && !port) {
       selectedEdgeId = edge.id;
+      selectedNodeIds = new Set();
       selectedNodeId = null;
+      selectedCollapsedId = null;
       renderGraph();
       return;
     }
-    selectedNodeId = hit ? hit.id : null;
-    selectedEdgeId = null;
-    if (hit) {
-      graphDrag = { id: hit.id, ox: p.x - hit.x, oy: p.y - hit.y };
+    if (hitCollapsedBlock) {
+      selectedCollapsedId = hitCollapsedBlock.id;
+      selectedNodeIds = new Set();
+      selectedNodeId = null;
+      selectedEdgeId = null;
+      const box = collapsedBox(hitCollapsedBlock);
+      graphDrag = {
+        kind: "collapsed",
+        id: hitCollapsedBlock.id,
+        ox: p.x - box.x,
+        oy: p.y - box.y,
+        origins: Object.fromEntries(
+          (hitCollapsedBlock.nodeIds || []).map((nid) => {
+            const n = nodeById(nid);
+            return [nid, n ? { x: n.x, y: n.y } : { x: 0, y: 0 }];
+          })
+        ),
+        startX: box.x,
+        startY: box.y,
+      };
       graphSvg.setPointerCapture(e.pointerId);
-    } else if (graphTool === "select" && !wireFrom) {
+      renderGraph();
+      return;
+    }
+    if (hit) {
+      if (multi) {
+        if (selectedNodeIds.has(hit.id)) selectedNodeIds.delete(hit.id);
+        else selectedNodeIds.add(hit.id);
+        selectedNodeId = selectedNodeIds.has(hit.id)
+          ? hit.id
+          : selectedNodeIds.size
+            ? [...selectedNodeIds][0]
+            : null;
+        selectedCollapsedId = null;
+        selectedEdgeId = null;
+      } else {
+        if (!selectedNodeIds.has(hit.id) || selectedNodeIds.size <= 1) {
+          setNodeSelection([hit.id], hit.id);
+        } else {
+          // keep multi-selection; make hit primary
+          selectedNodeId = hit.id;
+          selectedCollapsedId = null;
+          selectedEdgeId = null;
+        }
+      }
+      const dragIds = selectedNodeIds.size ? [...selectedNodeIds] : [hit.id];
+      graphDrag = {
+        kind: "nodes",
+        ids: dragIds,
+        origins: Object.fromEntries(
+          dragIds.map((nid) => {
+            const n = nodeById(nid);
+            return [nid, n ? { x: n.x, y: n.y } : { x: 0, y: 0 }];
+          })
+        ),
+        anchorX: p.x,
+        anchorY: p.y,
+      };
+      graphSvg.setPointerCapture(e.pointerId);
+      renderGraph();
+      return;
+    }
+    clearGraphSelection();
+    if (graphTool === "select" && !wireFrom) {
       graphPan = {
         sx: e.clientX,
         sy: e.clientY,
@@ -1427,6 +1785,41 @@
       return;
     }
     if (!graphDrag) return;
+    if (graphDrag.kind === "collapsed") {
+      const block = collapsedById(graphDrag.id);
+      if (!block) return;
+      const nx = p.x - graphDrag.ox;
+      const ny = p.y - graphDrag.oy;
+      const dx = nx - graphDrag.startX;
+      const dy = ny - graphDrag.startY;
+      block.x = nx;
+      block.y = ny;
+      for (const nid of block.nodeIds || []) {
+        const n = nodeById(nid);
+        const o = graphDrag.origins[nid];
+        if (n && o) {
+          n.x = o.x + dx;
+          n.y = o.y + dy;
+        }
+      }
+      renderGraph();
+      return;
+    }
+    if (graphDrag.kind === "nodes") {
+      const dx = p.x - graphDrag.anchorX;
+      const dy = p.y - graphDrag.anchorY;
+      for (const nid of graphDrag.ids || []) {
+        const n = nodeById(nid);
+        const o = graphDrag.origins[nid];
+        if (n && o) {
+          n.x = o.x + dx;
+          n.y = o.y + dy;
+        }
+      }
+      renderGraph();
+      return;
+    }
+    // legacy single-node drag
     const n = nodeById(graphDrag.id);
     if (!n) return;
     n.x = p.x - graphDrag.ox;
@@ -1453,6 +1846,15 @@
     graphDrag = null;
     graphPan = null;
     wireFrom = null;
+  });
+
+  graphSvg.addEventListener("dblclick", (e) => {
+    const p = graphWorldPoint(e);
+    const c = hitCollapsed(p.x, p.y);
+    if (c) {
+      e.preventDefault();
+      expandCollapsed(c.id);
+    }
   });
 
   graphSvg.addEventListener(

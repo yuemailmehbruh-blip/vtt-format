@@ -169,6 +169,65 @@
       min-height: 4rem;
     }
 
+
+    .mechanics-body {
+      flex: 1;
+      overflow: auto;
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+      min-height: 0;
+    }
+    .mech-empty {
+      margin: 0.5rem 0;
+      color: var(--muted);
+      font-size: 0.85rem;
+      line-height: 1.45;
+    }
+    .mech-row {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.55rem 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .mech-row .mech-name {
+      flex: 1;
+      font-weight: 600;
+      font-size: 0.9rem;
+      word-break: break-word;
+    }
+    .mech-row button {
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      padding: 0.35rem 0.7rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    .mech-row button:hover { border-color: var(--accent); color: var(--accent); }
+    .mech-row button.mech-trigger {
+      background: #3a2f55;
+      border-color: var(--btn);
+      color: var(--text);
+    }
+    .mech-row button.mech-trigger:hover { filter: brightness(1.1); color: var(--text); }
+    .mech-row button.mech-toggle {
+      background: #243049;
+      border-color: var(--accent);
+      min-width: 4.5rem;
+    }
+    .mech-row button.mech-toggle.toggle-on {
+      background: #5a3d8a;
+      border-color: #e8c07d;
+      color: var(--text);
+    }
+    #mechanics-status { color: var(--muted); font-size: 0.8rem; }
+
     .appearance-body {
       flex: 1;
       overflow: auto;
@@ -215,13 +274,14 @@
       font: inherit;
     }
     button.primary:hover { filter: brightness(1.08); }
-    #status, #appearance-status { color: var(--muted); font-size: 0.8rem; }
+    #status, #appearance-status, #mechanics-status { color: var(--muted); font-size: 0.8rem; }
   </style>
 </head>
 <body>
   <div class="head"><strong id="title">Sheet</strong></div>
   <div class="tabs" role="tablist">
     <button type="button" class="active" data-tab="sheet" role="tab" aria-selected="true">Sheet</button>
+    <button type="button" data-tab="mechanics" role="tab" aria-selected="false">Mechanics</button>
     <button type="button" data-tab="appearance" role="tab" aria-selected="false">Appearance</button>
   </div>
   <div class="path" id="path"></div>
@@ -238,6 +298,14 @@
     <div class="actions">
       <button type="button" class="primary" id="save">Save notes</button>
       <span id="status"></span>
+    </div>
+  </div>
+
+
+  <div class="panel" id="panel-mechanics" role="tabpanel">
+    <div class="mechanics-body" id="mechanics-list"></div>
+    <div class="actions">
+      <span id="mechanics-status"></span>
     </div>
   </div>
 

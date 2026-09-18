@@ -54,6 +54,8 @@ graph:                               # optional; automation + named functions
       y: number
   edges:
     - { id, from, to, toPort }
+  collapsed:                         # optional; builder UI-only compress groups
+    - { id, name, nodeIds: [string], x, y, w?, h? }
 ```
 
 **Closed formulas:** only named fields and a fixed operator set (e.g. `floor`, `+`, `-`, `*`, `/`, comparisons `== != < > <= >=`, call-forms `if(a,b,c)` / `and` / `or` / `not`, parentheses). No function imports, no I/O. Truthiness: nonzero finite → true; 0/NaN/nonfinite → false.
@@ -76,7 +78,7 @@ Shape (v1):
   "name": "Player Character",
   "fields": { "STR": {"type":"integer","default":10}, "STR_mod": {"type":"integer","formula":"floor((STR - 10) / 2)"} },
   "layout": { "widgets": [ {"id":"…","shape":"button","label":"Attack","mode":"trigger","function_id":"attack","x":0,"y":0,"w":88,"h":44} ] },
-  "graph": { "nodes": [ {"id":"…","kind":"entry","name":"attack"}, {"id":"…","kind":"roll","sides":20} ], "edges": [] }
+  "graph": { "nodes": [ {"id":"…","kind":"entry","name":"attack"}, {"id":"…","kind":"roll","sides":20} ], "edges": [], "collapsed": [] }
 }
 ```
 
@@ -85,6 +87,11 @@ Shape (v1):
 Closed formula language (field-output graph → string): field names, number literals, `+` `-` `*` `/`, comparisons (`==` `!=` `<` `>` `<=` `>=`), parentheses, `floor(…)`, and call-forms `if(…)` / `and(…)` / `or(…)` / `not(…)`. Precedence: unary → `*` `/` → `+` `-` → comparisons; `and`/`or`/`not`/`if` are functions only. **Roll** / **entry** nodes are runtime-only (button functions) and must not feed formula field outputs. Cycles are rejected.
 
 **Toggle proficiency pattern:** wire entry → field output so the button persists 0/1. Toggle **on** runs the function with `entryValue: 1`; **off** still runs with `entryValue: 0` (clears the field). Skill checks use `if(ath_prof, PB, 0)` or `ath_prof * PB`; expertise: `if(expertise, PB*2, if(prof, PB, 0))`.
+
+**Session Mechanics tab:** the play sheet lists named `entry`/`function` nodes from that actor’s sheet graph (not campaign-wide). Trigger/Toggle run `evaluateNamedFunction` like layout buttons.
+
+**Builder compress:** `graph.collapsed` is UI metadata only — Compile/runtime evaluate the flat `nodes`/`edges` and ignore `collapsed`.
+
 
 
 ## Scene schema

@@ -147,6 +147,10 @@ GM Session gains a **Sheet builder** window: declarative display widgets (boxes/
 
 Session character sheets render the builder layout (boxes/circles/buttons) with live field values and closed formula evaluation. Roll buttons run `dN` on the sheet. Field widgets use a plain text id (no example dropdown). Notes text remains secondary.
 
+## 0.6.8 — Mechanics tab + compress automations
+
+Character sheets gain a **Mechanics** tab listing that sheet’s named Function entries (Trigger / Toggle). Sheet builder Automations support multi-select and **Compress** into UI-only `graph.collapsed` blocks (runtime still evaluates the flat graph).
+
 ## 0.6.7 — Logic ops + toggle proficiency
 
 Automation graphs gain compare/logic/`if` ops and closed-formula equivalents. Toggle buttons always run their function: on with `entryValue: 1`, off with `0`, so entry→field-output can persist proficiency flags for `if(prof, PB, 0)` skill checks.

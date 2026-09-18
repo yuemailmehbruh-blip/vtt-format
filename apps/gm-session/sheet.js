@@ -10,7 +10,10 @@
   const appearanceStatusEl = document.getElementById("appearance-status");
   const sizeTilesEl = document.getElementById("size-tiles");
   const panelSheet = document.getElementById("panel-sheet");
+  const panelMechanics = document.getElementById("panel-mechanics");
   const panelAppearance = document.getElementById("panel-appearance");
+  const mechanicsListEl = document.getElementById("mechanics-list");
+  const mechanicsStatusEl = document.getElementById("mechanics-status");
   const svgEl = document.getElementById("sheet-svg");
   const rollToastEl = document.getElementById("roll-toast");
   const notesBlock = document.getElementById("notes-block");
@@ -50,17 +53,25 @@
     appearanceStatusEl.textContent = msg || "";
   }
 
+  function setMechanicsStatus(msg) {
+    if (mechanicsStatusEl) mechanicsStatusEl.textContent = msg || "";
+  }
+
   function switchTab(name) {
-    const isSheet = name === "sheet";
-    panelSheet.classList.toggle("active", isSheet);
-    panelAppearance.classList.toggle("active", !isSheet);
+    const tab = name === "mechanics" || name === "appearance" ? name : "sheet";
+    panelSheet.classList.toggle("active", tab === "sheet");
+    if (panelMechanics) panelMechanics.classList.toggle("active", tab === "mechanics");
+    panelAppearance.classList.toggle("active", tab === "appearance");
     for (const btn of document.querySelectorAll(".tabs button")) {
-      const on = btn.dataset.tab === name;
+      const on = btn.dataset.tab === tab;
       btn.classList.toggle("active", on);
       btn.setAttribute("aria-selected", on ? "true" : "false");
     }
-    if (isSheet) {
+    if (tab === "sheet") {
       requestAnimationFrame(() => fitToView());
+    }
+    if (tab === "mechanics") {
+      renderMechanics();
     }
   }
 
@@ -309,21 +320,36 @@
     return mode;
   }
 
-  async function runButtonFunction(w, runOpts) {
-    const { mode, functionId, label } = normalizeButton(w);
-    if (!functionId) {
-      setStatus("Button has no function id");
+  /**
+   * Shared runner for layout buttons and Mechanics tab.
+   * @param {string} functionId
+   * @param {{ mode?: string, label?: string, entryValue?: number, statusFn?: (s:string)=>void }} [runOpts]
+   */
+  async function runNamedFunction(functionId, runOpts) {
+    const optsIn = runOpts && typeof runOpts === "object" ? runOpts : {};
+    const mode = optsIn.mode === "toggle" ? "toggle" : "trigger";
+    const label = optsIn.label || functionId || "Function";
+    const statusFn = typeof optsIn.statusFn === "function" ? optsIn.statusFn : setStatus;
+    const fid = functionId != null ? String(functionId) : "";
+    if (!fid) {
+      statusFn("No function id");
       return;
     }
     if (!RT || typeof RT.evaluateNamedFunction !== "function") {
-      setStatus("SheetRuntime missing");
+      statusFn("SheetRuntime missing");
       return;
     }
     recomputeLive();
-    const opts = runOpts && typeof runOpts === "object" ? runOpts : undefined;
-    const result = RT.evaluateNamedFunction(graph, functionId, liveValues, opts);
+    const evalOpts = {};
+    if (optsIn.entryValue !== undefined) evalOpts.entryValue = optsIn.entryValue;
+    const result = RT.evaluateNamedFunction(
+      graph,
+      fid,
+      liveValues,
+      Object.keys(evalOpts).length ? evalOpts : undefined
+    );
     if (!result.ok) {
-      setStatus(result.error || "Function failed");
+      statusFn(result.error || "Function failed");
       return;
     }
     // Local toast for rolls (optional feedback); chat/history only via send_to_chat
@@ -331,14 +357,14 @@
     if (!messages.length) {
       for (const r of result.rolls || []) {
         const detail = `d${r.sides}`;
-        const rollLabel = `${label} / ${functionId}`;
+        const rollLabel = `${label} / ${fid}`;
         showRollToast(`${rollLabel}: ${r.result} (${detail})`);
       }
     }
     for (const m of messages) {
       const chatLabel = m.text
-        ? `${label} / ${functionId} · ${m.text}`
-        : `${label} / ${functionId}`;
+        ? `${label} / ${fid} · ${m.text}`
+        : `${label} / ${fid}`;
       const detail = m.detail || "";
       showRollToast(`${chatLabel}: ${m.value}${detail ? ` (${detail})` : ""}`);
       publishRoll(chatLabel, m.value, detail);
@@ -353,7 +379,7 @@
       try {
         await saveFields(writes);
       } catch (err) {
-        setStatus(String(err));
+        statusFn(String(err));
         return;
       }
     }
@@ -361,8 +387,88 @@
       messages.map((m) => String(m.value)).join(", ") ||
       (result.rolls || []).map((r) => `${r.result}(d${r.sides})`).join(", ") ||
       "ok";
-    setStatus(`${label} [${mode}] → ${functionId}: ${msgSummary}`);
+    statusFn(`${label} [${mode}] → ${fid}: ${msgSummary}`);
     renderVisual(false);
+    if (panelMechanics && panelMechanics.classList.contains("active")) {
+      renderMechanics();
+    }
+  }
+
+  async function runButtonFunction(w, runOpts) {
+    const { mode, functionId, label } = normalizeButton(w);
+    if (!functionId) {
+      setStatus("Button has no function id");
+      return;
+    }
+    const opts = runOpts && typeof runOpts === "object" ? { ...runOpts } : {};
+    opts.mode = mode;
+    opts.label = label;
+    await runNamedFunction(functionId, opts);
+  }
+
+  function namedFunctionsOnSheet() {
+    const nodes = (graph && graph.nodes) || [];
+    const names = [];
+    const seen = new Set();
+    for (const n of nodes) {
+      if (!n) continue;
+      if (n.kind !== "entry" && n.kind !== "function") continue;
+      const name = n.name != null ? String(n.name).trim() : "";
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      names.push(name);
+    }
+    names.sort((a, b) => a.localeCompare(b));
+    return names;
+  }
+
+  function mechToggleKey(name) {
+    return `mech:${name}`;
+  }
+
+  function renderMechanics() {
+    if (!mechanicsListEl) return;
+    const names = namedFunctionsOnSheet();
+    if (!names.length) {
+      mechanicsListEl.innerHTML =
+        `<p class="mech-empty">No named functions on this sheet — add Function entries in Sheet builder.</p>`;
+      return;
+    }
+    let html = "";
+    for (const name of names) {
+      const pressed = !!toggleState[mechToggleKey(name)];
+      html += `<div class="mech-row" data-fn="${esc(name)}">`;
+      html += `<span class="mech-name">${esc(name)}</span>`;
+      html += `<button type="button" class="mech-trigger" data-action="trigger">Trigger</button>`;
+      html += `<button type="button" class="mech-toggle${pressed ? " toggle-on" : ""}" data-action="toggle" aria-pressed="${pressed ? "true" : "false"}">${pressed ? "On" : "Off"}</button>`;
+      html += `</div>`;
+    }
+    mechanicsListEl.innerHTML = html;
+    mechanicsListEl.querySelectorAll(".mech-row").forEach((row) => {
+      const name = row.getAttribute("data-fn") || "";
+      row.querySelectorAll("button").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const action = btn.getAttribute("data-action");
+          if (action === "toggle") {
+            const key = mechToggleKey(name);
+            const next = !toggleState[key];
+            toggleState[key] = next;
+            runNamedFunction(name, {
+              mode: "toggle",
+              label: name,
+              entryValue: next ? 1 : 0,
+              statusFn: setMechanicsStatus,
+            }).catch((err) => setMechanicsStatus(String(err)));
+          } else {
+            runNamedFunction(name, {
+              mode: "trigger",
+              label: name,
+              statusFn: setMechanicsStatus,
+            }).catch((err) => setMechanicsStatus(String(err)));
+          }
+        });
+      });
+    });
   }
 
   function renderVisual(doFit) {
@@ -539,11 +645,13 @@
         : { nodes: [], edges: [] };
 
     renderVisual(true);
+    renderMechanics();
     if (!widgets.length && (data.text || "").trim()) {
       notesBlock.open = true;
     }
     setStatus("Ready");
     setAppearanceStatus("");
+    setMechanicsStatus("");
   }
 
   async function save() {
