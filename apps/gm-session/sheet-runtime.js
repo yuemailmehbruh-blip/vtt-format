@@ -5,6 +5,8 @@
  * Reachability: forward BFS from entry, then close under incoming ancestors before Kahn topo.
  * Templates: entry names with [x] match function_id prefix+ID+suffix or prefix+[ID]+suffix;
  * reachable subgraph is deep-cloned and [x] substituted before eval.
+ * compileGraph: closed formulas from output fields; formula macros = collapsed
+ * groups with no entry expand [x] templates against existing field ids.
  */
 (function (global) {
   "use strict";
@@ -666,6 +668,297 @@
     return { ok: true, values, writes, rolls, messages };
   }
 
+  function isValidCompileName(id) {
+    const s = String(id || "").trim();
+    if (!s) return false;
+    const collapsed = s.split("[x]").join("x");
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(collapsed);
+  }
+
+  /**
+   * Bind concrete field F to template containing [x] (same ID in every slot).
+   * @returns {string|null} ID or null
+   */
+  function bindMacroId(template, fieldId) {
+    const tmpl = String(template || "").trim();
+    const F = String(fieldId || "").trim();
+    if (!tmpl || !F || !tmpl.includes("[x]")) return null;
+    const parts = tmpl.split("[x]");
+    if (parts.length < 2) return null;
+    if (parts.length === 2) {
+      const pre = parts[0];
+      const suf = parts[1];
+      if (!F.startsWith(pre)) return null;
+      if (suf) {
+        if (!F.endsWith(suf)) return null;
+      } else if (pre && F === pre) {
+        return null;
+      }
+      const id = F.slice(pre.length, F.length - suf.length);
+      if (!TEMPLATE_ID_RE.test(id)) return null;
+      if (tmpl.split("[x]").join(id) !== F) return null;
+      return id;
+    }
+    // Multiple [x]: derive from first gap between fixed parts, verify full expand.
+    const pre = parts[0];
+    if (!F.startsWith(pre)) return null;
+    let rest = F.slice(pre.length);
+    // Greedy: take identifier prefix as ID, then verify
+    const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+    if (!m) return null;
+    // Try longest-then-shorter valid IDs that fully reconstruct
+    for (let len = m[1].length; len >= 1; len--) {
+      const id = m[1].slice(0, len);
+      if (!TEMPLATE_ID_RE.test(id)) continue;
+      if (tmpl.split("[x]").join(id) === F) return id;
+    }
+    return null;
+  }
+
+  function collectFieldKeys(graph, fieldsOrKeys) {
+    const keys = new Set();
+    if (Array.isArray(fieldsOrKeys)) {
+      for (const k of fieldsOrKeys) if (k != null && String(k).trim()) keys.add(String(k).trim());
+    } else if (fieldsOrKeys && typeof fieldsOrKeys === "object") {
+      for (const k of Object.keys(fieldsOrKeys)) keys.add(k);
+    }
+    for (const n of (graph && graph.nodes) || []) {
+      if (n && n.kind === "field" && n.field != null) {
+        const f = String(n.field).trim();
+        if (f && !f.includes("[x]")) keys.add(f);
+      }
+    }
+    return [...keys];
+  }
+
+  /**
+   * Compile automation graph into closed formulas for output field nodes.
+   * Formula macros: collapsed groups with no entry/function expand [x] templates
+   * against existing field ids (e.g. [x]_mod + STR_mod → ID=STR).
+   * @param {{ nodes?: object[], edges?: object[], collapsed?: object[] }} graph
+   * @param {Record<string, unknown>|string[]} [fieldsOrKeys]
+   * @returns {{ formulas: Record<string,string>, error?: string }}
+   */
+  function compileGraph(graph, fieldsOrKeys) {
+    const nodes = (graph && graph.nodes) || [];
+    const edges = (graph && graph.edges) || [];
+    const byId = Object.create(null);
+    for (const n of nodes) byId[n.id] = n;
+
+    /** @type {Record<string, {from:string, toPort:number}[]>} */
+    const incoming = Object.create(null);
+    /** @type {Record<string, string[]>} */
+    const outgoing = Object.create(null);
+    for (const n of nodes) {
+      incoming[n.id] = [];
+      outgoing[n.id] = [];
+    }
+    for (const e of edges) {
+      if (!byId[e.from] || !byId[e.to]) continue;
+      incoming[e.to].push({ from: e.from, toPort: e.toPort == null ? 0 : e.toPort });
+      outgoing[e.from].push(e.to);
+    }
+    for (const id of Object.keys(incoming)) {
+      incoming[id].sort((a, b) => a.toPort - b.toPort);
+    }
+
+    const WHITE = 0, GRAY = 1, BLACK = 2;
+    const color = Object.create(null);
+    for (const n of nodes) color[n.id] = WHITE;
+    function hasCycleFrom(id) {
+      color[id] = GRAY;
+      for (const to of outgoing[id] || []) {
+        if (color[to] === GRAY) return true;
+        if (color[to] === WHITE && hasCycleFrom(to)) return true;
+      }
+      color[id] = BLACK;
+      return false;
+    }
+    for (const n of nodes) {
+      if (color[n.id] === WHITE && hasCycleFrom(n.id)) {
+        return { formulas: {}, error: "Cycle detected in automation graph" };
+      }
+    }
+
+    function exprOfOn(byIdLocal, incomingLocal, nodeId, memo, visiting) {
+      if (memo[nodeId] != null) return memo[nodeId];
+      if (visiting[nodeId]) throw new Error("Cycle while compiling");
+      visiting[nodeId] = true;
+      const n = byIdLocal[nodeId];
+      if (!n) throw new Error(`Missing node ${nodeId}`);
+      let out;
+      if (n.kind === "field") {
+        const fname = String(n.field || "").trim();
+        if (!isValidCompileName(fname)) {
+          throw new Error(`Invalid field name on node ${nodeId}`);
+        }
+        if (n.role === "output") {
+          const ins = incomingLocal[nodeId] || [];
+          if (ins.length !== 1) {
+            throw new Error(`Output field "${fname}" needs exactly one input wire`);
+          }
+          out = exprOfOn(byIdLocal, incomingLocal, ins[0].from, memo, visiting);
+        } else {
+          out = fname;
+        }
+      } else if (n.kind === "const") {
+        const v = Number(n.value);
+        if (!Number.isFinite(v)) throw new Error(`Bad constant on ${nodeId}`);
+        out = String(v);
+      } else if (n.kind === "op") {
+        const op = n.op;
+        const ins = incomingLocal[nodeId] || [];
+        function portFrom(port, fallbackIdx) {
+          return ins.find((x) => x.toPort === port) || ins[fallbackIdx];
+        }
+        if (op === "floor" || op === "not") {
+          if (ins.length < 1) throw new Error(`${op} needs one input`);
+          const a = portFrom(0, 0);
+          out = `${op}(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)})`;
+        } else if (op === "if") {
+          if (ins.length < 3) throw new Error("if needs three inputs (cond, then, else)");
+          const c = portFrom(0, 0);
+          const t = portFrom(1, 1);
+          const e = portFrom(2, 2);
+          out = `if(${exprOfOn(byIdLocal, incomingLocal, c.from, memo, visiting)}, ${exprOfOn(byIdLocal, incomingLocal, t.from, memo, visiting)}, ${exprOfOn(byIdLocal, incomingLocal, e.from, memo, visiting)})`;
+        } else if (op === "and" || op === "or") {
+          if (ins.length < 2) throw new Error(`${op} needs two inputs`);
+          const a = portFrom(0, 0);
+          const b = portFrom(1, 1);
+          out = `${op}(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)}, ${exprOfOn(byIdLocal, incomingLocal, b.from, memo, visiting)})`;
+        } else if (
+          op === "+" ||
+          op === "-" ||
+          op === "*" ||
+          op === "/" ||
+          op === "==" ||
+          op === "!=" ||
+          op === "<" ||
+          op === ">" ||
+          op === "<=" ||
+          op === ">="
+        ) {
+          if (ins.length < 2) throw new Error(`Operator ${op} needs two inputs`);
+          const a = portFrom(0, 0);
+          const b = portFrom(1, 1);
+          out = `(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)} ${op} ${exprOfOn(byIdLocal, incomingLocal, b.from, memo, visiting)})`;
+        } else {
+          throw new Error(`Unknown op: ${op}`);
+        }
+      } else if (
+        n.kind === "roll" ||
+        n.kind === "entry" ||
+        n.kind === "function" ||
+        n.kind === "send_to_chat" ||
+        n.kind === "chat"
+      ) {
+        throw new Error(
+          "Roll/entry/chat nodes are runtime-only and cannot feed formula field outputs"
+        );
+      } else {
+        throw new Error(`Unknown node kind: ${n.kind}`);
+      }
+      visiting[nodeId] = false;
+      memo[nodeId] = out;
+      return out;
+    }
+
+    const formulas = {};
+    const memo = Object.create(null);
+    const visiting = Object.create(null);
+    try {
+      for (const n of nodes) {
+        if (n.kind === "field" && n.role === "output") {
+          const fname = String(n.field || "").trim();
+          if (fname.includes("[x]")) continue; // template / macro placeholders
+          formulas[fname] = exprOfOn(byId, incoming, n.id, memo, visiting);
+        }
+      }
+    } catch (err) {
+      return { formulas: {}, error: err.message || String(err) };
+    }
+
+    // Formula macros: collapsed groups with no entry/function
+    const fieldKeys = collectFieldKeys(graph, fieldsOrKeys);
+    /** @type {Record<string, string>} */
+    const claimedBy = Object.create(null);
+
+    for (const block of (graph && graph.collapsed) || []) {
+      if (!block || !Array.isArray(block.nodeIds) || !block.nodeIds.length) continue;
+      const memberSet = new Set(block.nodeIds.map(String));
+      const members = nodes.filter((n) => memberSet.has(n.id));
+      const hasEntry = members.some(
+        (n) => n.kind === "entry" || n.kind === "function"
+      );
+      if (hasEntry) continue;
+
+      const blockLabel = block.name != null && String(block.name).trim()
+        ? String(block.name).trim()
+        : String(block.id || "macro");
+
+      const outNodes = members.filter(
+        (n) => n.kind === "field" && n.role === "output"
+      );
+      if (!outNodes.length) continue;
+
+      for (const outNode of outNodes) {
+        const tmpl = String(outNode.field || "").trim();
+        if (!tmpl.includes("[x]")) continue;
+
+        for (const F of fieldKeys) {
+          const id = bindMacroId(tmpl, F);
+          if (!id) continue;
+          if (!TEMPLATE_ID_RE.test(id)) continue;
+
+          if (claimedBy[F] && claimedBy[F] !== blockLabel) {
+            return {
+              formulas: {},
+              error: `Formula macros "${claimedBy[F]}" and "${blockLabel}" both claim field ${F}`,
+            };
+          }
+          claimedBy[F] = blockLabel;
+
+          const subNodes = members.map((n) => substituteXInNode(n, id));
+          const subById = Object.create(null);
+          for (const n of subNodes) subById[n.id] = n;
+          const subIncoming = Object.create(null);
+          for (const n of subNodes) subIncoming[n.id] = [];
+          for (const e of edges) {
+            if (!memberSet.has(e.from) || !memberSet.has(e.to)) continue;
+            if (!subById[e.from] || !subById[e.to]) continue;
+            subIncoming[e.to].push({
+              from: e.from,
+              toPort: e.toPort == null ? 0 : e.toPort,
+            });
+          }
+          for (const sid of Object.keys(subIncoming)) {
+            subIncoming[sid].sort((a, b) => a.toPort - b.toPort);
+          }
+
+          try {
+            const formula = exprOfOn(
+              subById,
+              subIncoming,
+              outNode.id,
+              Object.create(null),
+              Object.create(null)
+            );
+            formulas[F] = formula;
+          } catch (err) {
+            return {
+              formulas: {},
+              error:
+                `Formula macro "${blockLabel}" failed for ${F} (ID=${id}): ` +
+                (err.message || String(err)),
+            };
+          }
+        }
+      }
+    }
+
+    return { formulas };
+  }
+
   const api = {
     evalClosedFormula,
     rollDie,
@@ -673,6 +966,8 @@
     evaluateNamedFunction,
     resolveNamedEntry,
     extractTemplateId,
+    compileGraph,
+    bindMacroId,
   };
 
   global.SheetRuntime = api;

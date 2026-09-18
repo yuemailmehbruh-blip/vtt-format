@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.11**).
+Version is in `VERSION` (currently **0.6.12**).
 
 ## Run — desktop app (recommended)
 
@@ -229,6 +229,12 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
 
+## 0.6.12
+
+- **Compress naming** — Automations **Compress** accepts any selection of ≥1 nodes (no required Function entry). Props panel shows a name textbox (prefill = exactly one named entry in selection/ancestors, else empty); confirm with non-empty name → `graph.collapsed[].name` on the purple block. Expand/Delete unchanged.
+- **Formula macros** — a collapsed group with **no** `entry`/`function` member is a formula macro. On `compileGraph`, output fields whose names contain `[x]` bind against existing `doc.fields` keys (`[x]_mod` + `STR_mod` → ID=`STR`), substitute `[x]`→ID in the member subgraph, and write closed formulas (non-editable). Display name need not include `[x]`. Two macros claiming the same field → clear error. Runtime `[x]` **function** templates (entry names) unchanged.
+- **Tests** — `tests/compile-formula-macros.mjs`.
+
 ## 0.6.11
 
 - **Delete / Backspace** — in Automations (not while typing in an input/textarea/select), deletes the current graph selection the same way as the Delete toolbar button (selected nodes, selected compressed block, or selected edge).
@@ -252,7 +258,7 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 ## 0.6.8
 
 - **Mechanics tab** — character sheet window: Sheet | Mechanics | Appearance. Lists this sheet’s named graph entry/function nodes; Trigger calls `runNamedFunction`. (As of 0.6.10, Toggle flips field `name` 0/1 instead of running the function.)
-- **Compress / Expand** — Automations multi-select (Shift/Ctrl-click); **Compress** folds selection into a UI-only `graph.collapsed` block (flat nodes/edges unchanged for runtime); **Expand** / double-click restores; Delete on a block removes members + record. Persisted in builder JSON.
+- **Compress / Expand** — Automations multi-select (Shift/Ctrl-click); **Compress** folds any ≥1-node selection into a UI-only `graph.collapsed` block after you name it in the props panel (flat nodes/edges unchanged for runtime); **Expand** / double-click restores; Delete on a block removes members + record. Persisted in builder JSON. No-entry collapses are **formula macros** (see 0.6.12).
 
 ## 0.6.7
 

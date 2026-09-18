@@ -34,6 +34,8 @@
   /** Selected compressed block id */
   let selectedCollapsedId = null;
   let selectedEdgeId = null;
+  /** Pending compress rename panel: { ids: string[], prefill: string } | null */
+  let compressPending = null;
 
   /** Display drag state */
   let dispDrag = null;
@@ -246,150 +248,16 @@
   }
 
   /**
-   * Compile graph into formulas for each output field node.
+   * Compile graph into formulas for each output field node (delegates to SheetRuntime).
+   * Passes doc.fields so formula macros can bind [x] templates.
    * @returns {{ formulas: Record<string,string>, error?: string }}
    */
-  function compileGraph(graph) {
-    const nodes = (graph && graph.nodes) || [];
-    const edges = (graph && graph.edges) || [];
-    const byId = Object.create(null);
-    for (const n of nodes) byId[n.id] = n;
-
-    /** @type {Record<string, {from:string, toPort:number}[]>} */
-    const incoming = Object.create(null);
-    /** @type {Record<string, string[]>} */
-    const outgoing = Object.create(null);
-    for (const n of nodes) {
-      incoming[n.id] = [];
-      outgoing[n.id] = [];
+  function compileGraph(graph, fieldsOrKeys) {
+    const fields = fieldsOrKeys != null ? fieldsOrKeys : (doc && doc.fields) || {};
+    if (RT && typeof RT.compileGraph === "function") {
+      return RT.compileGraph(graph, fields);
     }
-    for (const e of edges) {
-      if (!byId[e.from] || !byId[e.to]) continue;
-      incoming[e.to].push({ from: e.from, toPort: e.toPort == null ? 0 : e.toPort });
-      outgoing[e.from].push(e.to);
-    }
-    for (const id of Object.keys(incoming)) {
-      incoming[id].sort((a, b) => a.toPort - b.toPort);
-    }
-
-    // Cycle detect via DFS
-    const WHITE = 0, GRAY = 1, BLACK = 2;
-    const color = Object.create(null);
-    for (const n of nodes) color[n.id] = WHITE;
-    function hasCycleFrom(id) {
-      color[id] = GRAY;
-      for (const to of outgoing[id] || []) {
-        if (color[to] === GRAY) return true;
-        if (color[to] === WHITE && hasCycleFrom(to)) return true;
-      }
-      color[id] = BLACK;
-      return false;
-    }
-    for (const n of nodes) {
-      if (color[n.id] === WHITE && hasCycleFrom(n.id)) {
-        return { formulas: {}, error: "Cycle detected in automation graph" };
-      }
-    }
-
-    const memo = Object.create(null);
-    const visiting = Object.create(null);
-
-    function exprOf(nodeId) {
-      if (memo[nodeId] != null) return memo[nodeId];
-      if (visiting[nodeId]) throw new Error("Cycle while compiling");
-      visiting[nodeId] = true;
-      const n = byId[nodeId];
-      if (!n) throw new Error(`Missing node ${nodeId}`);
-      let out;
-      if (n.kind === "field") {
-        const fname = String(n.field || "").trim();
-        if (!isValidName(fname)) {
-          throw new Error(`Invalid field name on node ${nodeId}`);
-        }
-        // Source fields are just the name; output sinks compile from their input
-        if (n.role === "output") {
-          const ins = incoming[nodeId] || [];
-          if (ins.length !== 1) {
-            throw new Error(`Output field "${fname}" needs exactly one input wire`);
-          }
-          out = exprOf(ins[0].from);
-        } else {
-          out = fname;
-        }
-      } else if (n.kind === "const") {
-        const v = Number(n.value);
-        if (!Number.isFinite(v)) throw new Error(`Bad constant on ${nodeId}`);
-        out = String(v);
-      } else if (n.kind === "op") {
-        const op = n.op;
-        const ins = incoming[nodeId] || [];
-        function portFrom(port, fallbackIdx) {
-          return ins.find((x) => x.toPort === port) || ins[fallbackIdx];
-        }
-        if (op === "floor" || op === "not") {
-          if (ins.length < 1) throw new Error(`${op} needs one input`);
-          const a = portFrom(0, 0);
-          out = `${op}(${exprOf(a.from)})`;
-        } else if (op === "if") {
-          if (ins.length < 3) throw new Error("if needs three inputs (cond, then, else)");
-          const c = portFrom(0, 0);
-          const t = portFrom(1, 1);
-          const e = portFrom(2, 2);
-          out = `if(${exprOf(c.from)}, ${exprOf(t.from)}, ${exprOf(e.from)})`;
-        } else if (op === "and" || op === "or") {
-          if (ins.length < 2) throw new Error(`${op} needs two inputs`);
-          const a = portFrom(0, 0);
-          const b = portFrom(1, 1);
-          out = `${op}(${exprOf(a.from)}, ${exprOf(b.from)})`;
-        } else if (
-          op === "+" ||
-          op === "-" ||
-          op === "*" ||
-          op === "/" ||
-          op === "==" ||
-          op === "!=" ||
-          op === "<" ||
-          op === ">" ||
-          op === "<=" ||
-          op === ">="
-        ) {
-          if (ins.length < 2) throw new Error(`Operator ${op} needs two inputs`);
-          const a = portFrom(0, 0);
-          const b = portFrom(1, 1);
-          out = `(${exprOf(a.from)} ${op} ${exprOf(b.from)})`;
-        } else {
-          throw new Error(`Unknown op: ${op}`);
-        }
-      } else if (
-        n.kind === "roll" ||
-        n.kind === "entry" ||
-        n.kind === "function" ||
-        n.kind === "send_to_chat" ||
-        n.kind === "chat"
-      ) {
-        throw new Error(
-          "Roll/entry/chat nodes are runtime-only and cannot feed formula field outputs"
-        );
-      } else {
-        throw new Error(`Unknown node kind: ${n.kind}`);
-      }
-      visiting[nodeId] = false;
-      memo[nodeId] = out;
-      return out;
-    }
-
-    const formulas = {};
-    try {
-      for (const n of nodes) {
-        if (n.kind === "field" && n.role === "output") {
-          const fname = String(n.field || "").trim();
-          formulas[fname] = exprOf(n.id);
-        }
-      }
-    } catch (err) {
-      return { formulas: {}, error: err.message || String(err) };
-    }
-    return { formulas };
+    return { formulas: {}, error: "SheetRuntime.compileGraph unavailable" };
   }
 
   function applyFormulasToFields(formulas) {
@@ -1164,22 +1032,19 @@
     if (btn) btn.disabled = !selectedCollapsedId;
   }
 
-  function findEntryNameForSelection(ids) {
-    const idSet = new Set(ids);
-    const entries = (doc.graph.nodes || []).filter(
+  /** Named Function entries in ids (exact members only). */
+  function namedEntriesInIds(idSet) {
+    return (doc.graph.nodes || []).filter(
       (n) =>
         idSet.has(n.id) &&
         (n.kind === "entry" || n.kind === "function") &&
         n.name != null &&
         String(n.name).trim()
     );
-    if (entries.length === 1) {
-      return { ok: true, name: String(entries[0].name).trim(), entryId: entries[0].id };
-    }
-    if (entries.length > 1) {
-      return { ok: false, error: "Multiple named Function entries in selection." };
-    }
-    // Ancestors of selection (incoming closure)
+  }
+
+  /** Incoming-ancestor node ids of selection (excluding selection itself). */
+  function ancestorIdsOf(idSet) {
     const edges = doc.graph.edges || [];
     const incoming = new Map();
     for (const e of edges) {
@@ -1196,13 +1061,36 @@
         stack.push(fr);
       }
     }
-    const ancEntries = (doc.graph.nodes || []).filter(
-      (n) =>
-        ancestors.has(n.id) &&
-        (n.kind === "entry" || n.kind === "function") &&
-        n.name != null &&
-        String(n.name).trim()
-    );
+    return ancestors;
+  }
+
+  /**
+   * Prefill name for compress: exactly one named Function entry in selection
+   * or among ancestors; otherwise empty.
+   */
+  function suggestCompressName(ids) {
+    const idSet = new Set(ids);
+    const entries = namedEntriesInIds(idSet);
+    if (entries.length === 1) return String(entries[0].name).trim();
+    if (entries.length > 1) return "";
+    const ancestors = ancestorIdsOf(idSet);
+    const ancEntries = namedEntriesInIds(ancestors);
+    if (ancEntries.length === 1) return String(ancEntries[0].name).trim();
+    return "";
+  }
+
+  /** Publish still requires exactly one named Function entry (selection or ancestors). */
+  function findEntryNameForSelection(ids) {
+    const idSet = new Set(ids);
+    const entries = namedEntriesInIds(idSet);
+    if (entries.length === 1) {
+      return { ok: true, name: String(entries[0].name).trim(), entryId: entries[0].id };
+    }
+    if (entries.length > 1) {
+      return { ok: false, error: "Multiple named Function entries in selection." };
+    }
+    const ancestors = ancestorIdsOf(idSet);
+    const ancEntries = namedEntriesInIds(ancestors);
     if (ancEntries.length === 1) {
       return { ok: true, name: String(ancEntries[0].name).trim(), entryId: ancEntries[0].id };
     }
@@ -1210,6 +1098,12 @@
       ok: false,
       error: "Select nodes that include one named Function entry.",
     };
+  }
+
+  function collapsedHasEntry(block) {
+    if (!block) return false;
+    const idSet = new Set(block.nodeIds || []);
+    return namedEntriesInIds(idSet).length > 0;
   }
 
 
@@ -1376,19 +1270,45 @@
   function compressSelection() {
     const ids = [...selectedNodeIds];
     if (!ids.length) {
-      setStatus("Select nodes to compress", "warn");
+      setStatus("Select nodes to compress", "err");
       return;
     }
-    const found = findEntryNameForSelection(ids);
-    if (!found.ok) {
-      setStatus(found.error, "err");
+    const prefill = suggestCompressName(ids);
+    compressPending = { ids: ids.slice(), prefill };
+    selectedCollapsedId = null;
+    selectedEdgeId = null;
+    renderGraphProps();
+    setStatus("Name the compressed block, then confirm", "warn");
+    const inp = document.getElementById("g-compress-name");
+    if (inp) {
+      inp.focus();
+      inp.select();
+    }
+  }
+
+  function cancelCompressPending() {
+    compressPending = null;
+    renderGraphProps();
+    setStatus("");
+  }
+
+  function confirmCompressPending() {
+    if (!compressPending) return;
+    const inp = document.getElementById("g-compress-name");
+    const name = inp ? inp.value.trim() : String(compressPending.prefill || "").trim();
+    if (!name) {
+      setStatus("Compressed block needs a non-empty name", "err");
+      if (inp) inp.focus();
       return;
     }
+    const ids = compressPending.ids || [];
     const nodeIdSet = new Set(ids);
-    if (found.entryId) nodeIdSet.add(found.entryId);
+    // Compress exactly the selection (name textbox is authoritative; do not auto-add ancestors)
     const memberNodes = (doc.graph.nodes || []).filter((n) => nodeIdSet.has(n.id));
     if (!memberNodes.length) {
+      compressPending = null;
       setStatus("Nothing to compress", "warn");
+      renderGraphProps();
       return;
     }
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -1405,7 +1325,7 @@
     const cy = minY + (maxY - minY) / 2;
     const block = {
       id: uid("c"),
-      name: found.name,
+      name,
       nodeIds: [...nodeIdSet],
       x: cx - w / 2,
       y: cy - h / 2,
@@ -1416,12 +1336,13 @@
       (c) => !(c.nodeIds || []).some((nid) => nodeIdSet.has(nid))
     );
     doc.graph.collapsed.push(block);
+    compressPending = null;
     selectedCollapsedId = block.id;
     selectedNodeIds = new Set();
     selectedNodeId = null;
     selectedEdgeId = null;
     renderGraph();
-    setStatus(`Compressed “${found.name}” (${block.nodeIds.length} nodes)`, "ok");
+    setStatus(`Compressed “${name}” (${block.nodeIds.length} nodes)`, "ok");
   }
 
   function expandCollapsed(cid) {
@@ -1549,7 +1470,8 @@
       html += `<g class="collapsed-block${sel}" data-cid="${esc(c.id)}" transform="translate(${box.x},${box.y})">`;
       html += `<rect class="collapsed-rect" width="${box.w}" height="${box.h}" />`;
       html += `<text class="collapsed-title" x="14" y="28">${esc(c.name || "(unnamed)")}</text>`;
-      html += `<text class="collapsed-sub" x="14" y="46">function · compressed · ${(c.nodeIds || []).length} nodes</text>`;
+      const kindLabel = collapsedHasEntry(c) ? "function" : "macro";
+      html += `<text class="collapsed-sub" x="14" y="46">${kindLabel} · compressed · ${(c.nodeIds || []).length} nodes</text>`;
       html += `</g>`;
     }
     html += `</g></g>`;
@@ -1620,6 +1542,31 @@
   }
 
   function renderGraphProps() {
+    if (compressPending) {
+      const pre = esc(compressPending.prefill || "");
+      graphProps.innerHTML =
+        `<label>Compress name <input type="text" id="g-compress-name" value="${pre}" placeholder="block name" style="width:10rem" /></label>` +
+        `<button type="button" class="primary" id="g-compress-ok">Compress</button>` +
+        `<button type="button" id="g-compress-cancel">Cancel</button>` +
+        `<span class="hint">Name is stored on the purple block (formula macros need not include [x])</span>`;
+      const ok = document.getElementById("g-compress-ok");
+      const cancel = document.getElementById("g-compress-cancel");
+      const inp = document.getElementById("g-compress-name");
+      if (ok) ok.addEventListener("click", () => confirmCompressPending());
+      if (cancel) cancel.addEventListener("click", () => cancelCompressPending());
+      if (inp) {
+        inp.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            confirmCompressPending();
+          } else if (ev.key === "Escape") {
+            ev.preventDefault();
+            cancelCompressPending();
+          }
+        });
+      }
+      return;
+    }
     const compiled = compileGraph(doc.graph);
     if (selectedCollapsedId) {
       const c = collapsedById(selectedCollapsedId);

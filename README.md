@@ -147,6 +147,10 @@ GM Session gains a **Sheet builder** window: declarative display widgets (boxes/
 
 Session character sheets render the builder layout (boxes/circles/buttons) with live field values and closed formula evaluation. Roll buttons run `dN` on the sheet. Field widgets use a plain text id (no example dropdown). Notes text remains secondary.
 
+## 0.6.12 — Compress naming + formula macros
+
+Automations **Compress** names blocks via an in-UI textbox (any ≥1-node selection; prefills a sole named Function entry). Collapsed groups **without** an entry are formula macros: `compileGraph` binds `[x]` output templates to existing fields (e.g. `[x]_mod`→`STR_mod`/`DEX_mod`) and writes closed formulas.
+
 ## 0.6.11 — Delete key + `[x]` template functions
 
 Automations **Delete** / **Backspace** remove the graph selection (nodes / compressed block / edge) when not typing in an input. Named entries may use a single `[x]` token (`check_[x]`, fields like `[x]_PROF`); buttons call `check_ATK` or `check_[ATK]` to instantiate — runtime clones the reachable subgraph and substitutes `[x]` before eval.
