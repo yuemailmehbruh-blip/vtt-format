@@ -147,6 +147,10 @@ GM Session gains a **Sheet builder** window: declarative display widgets (boxes/
 
 Session character sheets render the builder layout (boxes/circles/buttons) with live field values and closed formula evaluation. Roll buttons run `dN` on the sheet. Field widgets use a plain text id (no example dropdown). Notes text remains secondary.
 
+## 0.6.6 — Ancestor reachability + chat arithmetic
+
+Named-function evaluation closes the reachable set under **incoming** edges (source fields/consts feeding ops), then Kahn-topo. `send_to_chat` / `chat` gain `include_arithmetic` (builder checkbox **Send arithmetic to chat**, default off); when on, `detail` shows e.g. `15 (d20) + 10 (STR) = 25`.
+
 ## 0.6.5 — Builder formula preview
 
 Sheet builder display widgets show numeric formula previews from field defaults (via `sheet-runtime.js`), not `ƒ`. Props still show formula text.

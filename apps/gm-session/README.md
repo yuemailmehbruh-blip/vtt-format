@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.5**).
+Version is in `VERSION` (currently **0.6.6**).
 
 ## Run — desktop app (recommended)
 
@@ -223,6 +223,12 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+
+## 0.6.6
+
+- **Ancestor reachability** — `evaluateNamedFunction` expands the forward-reachable set by walking incoming edges until closed, so source fields/consts wired into ops (e.g. `entry→roll→+←STR`) evaluate before the op. Kahn topo runs on the expanded set.
+- **Send arithmetic to chat** — `send_to_chat` / `chat` prop `include_arithmetic` (UI: **Send arithmetic to chat**, default false). When true, message `detail` is an equation from the input DAG (`15 (d20) + 10 (STR) = 25`). When false, correct summed value still sends; detail stays roll-only as before.
+- **Self-check** — `tests/evaluate-reachability.mjs` asserts the STR+d20 repro.
 
 ## 0.6.5
 

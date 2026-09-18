@@ -1120,6 +1120,8 @@
       body += `<span class="hint">button function_id entry point</span>`;
     } else if (n.kind === "send_to_chat" || n.kind === "chat") {
       body += `<label>Label <input type="text" id="g-chat-label" value="${esc(n.label || "")}" placeholder="optional" style="width:8rem" /></label>`;
+      const arithOn = n.include_arithmetic === true;
+      body += `<label><input type="checkbox" id="g-chat-arith"${arithOn ? " checked" : ""} /> Send arithmetic to chat</label>`;
       body += `<span class="hint">terminal · publishes input to session chat</span>`;
     }
     if (n.kind === "field" && n.role === "output" && !compiled.error && compiled.formulas[n.field]) {
@@ -1135,6 +1137,7 @@
     const gs = document.getElementById("g-sides");
     const ge = document.getElementById("g-entry-name");
     const gchat = document.getElementById("g-chat-label");
+    const garith = document.getElementById("g-chat-arith");
     if (gf) {
       gf.addEventListener("change", () => {
         const id = gf.value.trim();
@@ -1178,6 +1181,12 @@
         renderGraph();
       });
     }
+    if (garith) {
+      garith.addEventListener("change", () => {
+        n.include_arithmetic = !!garith.checked;
+        renderGraph();
+      });
+    }
   }
 
   function addGraphNode(kind, op, x, y) {
@@ -1202,6 +1211,7 @@
     } else if (kind === "send_to_chat" || kind === "chat") {
       n.kind = "send_to_chat";
       n.label = "";
+      n.include_arithmetic = false;
     }
     doc.graph.nodes.push(n);
     selectedNodeId = n.id;

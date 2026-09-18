@@ -1,6 +1,7 @@
 /**
  * Shared sheet automation runtime (session sheet + optional tooling).
  * Closed formulas + named-function DAG evaluation (entry / roll / send_to_chat / field / op / const).
+ * Reachability: forward BFS from entry, then close under incoming ancestors before Kahn topo.
  */
 (function (global) {
   "use strict";
@@ -186,7 +187,9 @@
       incoming[id].sort((a, b) => a.toPort - b.toPort);
     }
 
-    // Reachable from entry
+    // Forward-reachable from entry, then close under ancestors (incoming).
+    // Source fields/consts that only feed ops via side wires must run too.
+    // Self-check: entry→roll→+←STR, +→send_to_chat must include STR in reachable.
     const reachable = new Set();
     const stack = [entry.id];
     while (stack.length) {
@@ -195,8 +198,21 @@
       reachable.add(id);
       for (const to of outgoing[id] || []) stack.push(to);
     }
+    // Expand: walk incoming edges until closed (ancestors of forward set).
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const id of [...reachable]) {
+        for (const inc of incoming[id] || []) {
+          if (!reachable.has(inc.from)) {
+            reachable.add(inc.from);
+            grew = true;
+          }
+        }
+      }
+    }
 
-    // Kahn topo on reachable subgraph
+    // Kahn topo on expanded reachable subgraph
     const indeg = Object.create(null);
     for (const id of reachable) indeg[id] = 0;
     for (const id of reachable) {
@@ -247,6 +263,48 @@
       return Number.isFinite(v) ? v : 0;
     }
 
+    function inFrom(nodeId, port) {
+      const ins = incoming[nodeId] || [];
+      const hit = ins.find((x) => x.toPort === port) || ins[port];
+      return hit ? hit.from : null;
+    }
+
+    /** Describe a node’s value for chat arithmetic, e.g. `15 (d20) + 10 (STR)`. */
+    function formatArithmetic(nodeId, parentOp) {
+      if (!nodeId) return "0";
+      const n = byId[nodeId];
+      if (!n) return "0";
+      const v = values[nodeId];
+      const num = Number.isFinite(v) ? v : 0;
+      if (n.kind === "roll") {
+        const sides = Math.max(2, Math.floor(Number(n.sides) || 20));
+        return `${num} (d${sides})`;
+      }
+      if (n.kind === "field") {
+        const fname = String(n.field || "").trim() || "field";
+        if (n.role === "output") {
+          const src = inFrom(nodeId, 0);
+          return src ? formatArithmetic(src, parentOp) : `${num} (${fname})`;
+        }
+        return `${num} (${fname})`;
+      }
+      if (n.kind === "const") return String(num);
+      if (n.kind === "op") {
+        const op = n.op;
+        if (op === "floor") {
+          return `floor(${formatArithmetic(inFrom(nodeId, 0), "floor")})`;
+        }
+        if (op === "+" || op === "-" || op === "*" || op === "/") {
+          const expr = `${formatArithmetic(inFrom(nodeId, 0), op)} ${op} ${formatArithmetic(inFrom(nodeId, 1), op)}`;
+          const needParen =
+            parentOp &&
+            ((parentOp === "*" || parentOp === "/") && (op === "+" || op === "-"));
+          return needParen ? `(${expr})` : expr;
+        }
+      }
+      return String(num);
+    }
+
     try {
       for (const id of order) {
         const n = byId[id];
@@ -292,7 +350,10 @@
           let detail = "";
           const ins = incoming[id] || [];
           const hit = ins.find((x) => x.toPort === 0) || ins[0];
-          if (hit) {
+          const wantArith = n.include_arithmetic === true;
+          if (wantArith && hit) {
+            detail = formatArithmetic(hit.from) + " = " + out;
+          } else if (hit) {
             const roll = rolls.find((r) => r.nodeId === hit.from);
             if (roll) detail = `d${roll.sides}`;
           }
