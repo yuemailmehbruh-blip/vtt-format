@@ -1,120 +1,178 @@
-# Player character sheet — declarative fields + closed formulas.
-# Permissions: players see/edit own sheet fields marked player_visible / player_editable.
-# GM sees all. Formulas are closed (no arbitrary code); only named ops over sheet fields.
-# Optional layout: from sheet builder (future play renderer; not used by play yet).
+# Player Character sheet — declarative fields + closed formulas.
+# Compiled from editor-scratch/sheets/player.builder.json (sheet builder).
 id: player
 name: Player Character
 permissions:
-  notes: |
-    - player_visible: shown to owning player
-    - player_editable: owning player may change
-    - gm_only: GM/runtime only
-    - formula fields are read-only for everyone except recomputation
-
+  notes: player_visible / player_editable / gm_only; formula fields are read-only except recomputation
 fields:
   name:
     type: string
     visibility: player_visible
     editable: player_editable
-    default: ""
-
+    default: ''
   hp_current:
     type: integer
     visibility: player_visible
     editable: player_editable
     default: 10
-
   hp_max:
     type: integer
     visibility: player_visible
     editable: player_editable
     default: 10
-
   STR:
     type: integer
     visibility: player_visible
     editable: player_editable
     default: 10
-
   DEX:
     type: integer
     visibility: player_visible
     editable: player_editable
     default: 10
-
   CON:
     type: integer
     visibility: player_visible
     editable: player_editable
     default: 10
-
   INT:
     type: integer
     visibility: player_visible
     editable: player_editable
     default: 10
-
   WIS:
     type: integer
     visibility: player_visible
     editable: player_editable
     default: 10
-
   CHA:
     type: integer
     visibility: player_visible
     editable: player_editable
     default: 10
-
   STR_mod:
     type: integer
     visibility: player_visible
     editable: false
-    formula: "floor((STR - 10) / 2)"
+    formula: floor((STR - 10) / 2)
     notes: Closed formula over STR; recomputed when STR changes.
-
   AC:
     type: integer
     visibility: player_visible
     editable: player_editable
     default: 10
-
   notes:
     type: text
     visibility: player_visible
     editable: player_editable
-    default: ""
-
+    default: ''
 layout:
   widgets:
-    - id: w_str
-      shape: box
-      field: STR
-      x: 40
-      y: 40
-      w: 72
-      h: 56
-    - id: w_str_mod
-      shape: circle
-      field: STR_mod
-      x: 160
-      y: 36
-      w: 64
-      h: 64
-    - id: w_hp
-      shape: box
-      field: hp_current
-      x: 40
-      y: 140
-      w: 72
-      h: 56
-    - id: w_roll_d20
-      shape: button
-      label: Attack
-      action:
-        type: roll
-        sides: 20
-      x: 260
-      y: 40
-      w: 88
-      h: 44
+  - id: w_str
+    shape: box
+    field: STR
+    x: 40
+    y: 40
+    w: 72
+    h: 56
+  - id: w_str_mod
+    shape: circle
+    field: STR_mod
+    x: 160
+    y: 36
+    w: 64
+    h: 64
+  - id: w_hp
+    shape: box
+    field: hp_current
+    x: 40
+    y: 140
+    w: 72
+    h: 56
+  - id: w_attack
+    shape: button
+    label: Attack
+    mode: trigger
+    function_id: attack
+    x: 260
+    y: 40
+    w: 88
+    h: 44
+graph:
+  nodes:
+  - id: n_str
+    kind: field
+    field: STR
+    role: source
+    x: 40
+    y: 60
+  - id: n_10
+    kind: const
+    value: 10
+    x: 40
+    y: 160
+  - id: n_sub
+    kind: op
+    op: '-'
+    x: 200
+    y: 100
+  - id: n_2
+    kind: const
+    value: 2
+    x: 200
+    y: 220
+  - id: n_div
+    kind: op
+    op: /
+    x: 360
+    y: 140
+  - id: n_floor
+    kind: op
+    op: floor
+    x: 520
+    y: 140
+  - id: n_out
+    kind: field
+    field: STR_mod
+    role: output
+    x: 680
+    y: 140
+  - id: n_attack_entry
+    kind: entry
+    name: attack
+    x: 40
+    y: 320
+  - id: n_attack_roll
+    kind: roll
+    sides: 20
+    x: 220
+    y: 320
+  edges:
+  - id: e1
+    from: n_str
+    to: n_sub
+    toPort: 0
+  - id: e2
+    from: n_10
+    to: n_sub
+    toPort: 1
+  - id: e3
+    from: n_sub
+    to: n_div
+    toPort: 0
+  - id: e4
+    from: n_2
+    to: n_div
+    toPort: 1
+  - id: e5
+    from: n_div
+    to: n_floor
+    toPort: 0
+  - id: e6
+    from: n_floor
+    to: n_out
+    toPort: 0
+  - id: e_attack
+    from: n_attack_entry
+    to: n_attack_roll
+    toPort: 0

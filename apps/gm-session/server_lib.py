@@ -188,6 +188,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/sheet-builder.js":
             self._send_file(app / "sheet-builder.js")
             return
+        if path == "/sheet-runtime.js":
+            self._send_file(app / "sheet-runtime.js")
+            return
         if path == "/favicon.ico":
             self._send(204, b"", "image/x-icon")
             return
@@ -255,10 +258,11 @@ class Handler(BaseHTTPRequestHandler):
             sheet_id = str(actor.get("sheet") or actor.get("sheet_id") or "").strip()
             schema_fields: dict = {}
             layout_widgets: list = []
+            schema_graph: dict = {"nodes": [], "edges": []}
             schema_source = None
             if sheet_id and _safe_segment(sheet_id):
-                schema_fields, layout_widgets, schema_source = self._load_sheet_schema(
-                    sheet_id
+                schema_fields, layout_widgets, schema_graph, schema_source = (
+                    self._load_sheet_schema(sheet_id)
                 )
             actor_fields = (
                 actor.get("fields") if isinstance(actor.get("fields"), dict) else {}
@@ -278,6 +282,7 @@ class Handler(BaseHTTPRequestHandler):
                         "source": schema_source,
                     },
                     "layout": {"widgets": layout_widgets},
+                    "graph": schema_graph,
                 },
             )
             return
@@ -807,10 +812,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"hash": digest, "name": name, "bytes": len(raw)})
 
 
-    def _load_sheet_schema(self, sheet_id: str) -> tuple[dict, list, str | None]:
-        """Return (schema_fields, layout_widgets, source) from build yaml or editor-scratch fallback."""
+    def _load_sheet_schema(self, sheet_id: str):
+        """Return (schema_fields, layout_widgets, graph, source) from build yaml or editor-scratch."""
         fields: dict = {}
         widgets: list = []
+        graph: dict = {"nodes": [], "edges": []}
         source: str | None = None
         ypath = self._sheet_yaml_path(sheet_id)
         if ypath.is_file():
@@ -821,9 +827,14 @@ class Handler(BaseHTTPRequestHandler):
                 layout = data.get("layout") if isinstance(data.get("layout"), dict) else {}
                 if isinstance(layout.get("widgets"), list):
                     widgets = list(layout["widgets"])
+                g = data.get("graph") if isinstance(data.get("graph"), dict) else {}
+                nodes = g.get("nodes") if isinstance(g.get("nodes"), list) else []
+                edges = g.get("edges") if isinstance(g.get("edges"), list) else []
+                graph = {"nodes": list(nodes), "edges": list(edges)}
                 source = "yaml"
         scratch = self._builder_scratch_path(sheet_id)
-        if scratch.is_file() and (not fields or not widgets or source is None):
+        need_graph = not graph.get("nodes")
+        if scratch.is_file() and (not fields or not widgets or need_graph or source is None):
             try:
                 data = json.loads(scratch.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
@@ -836,9 +847,15 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 if not widgets and isinstance(layout.get("widgets"), list):
                     widgets = list(layout["widgets"])
+                if need_graph:
+                    g = data.get("graph") if isinstance(data.get("graph"), dict) else {}
+                    nodes = g.get("nodes") if isinstance(g.get("nodes"), list) else []
+                    edges = g.get("edges") if isinstance(g.get("edges"), list) else []
+                    if nodes or edges:
+                        graph = {"nodes": list(nodes), "edges": list(edges)}
                 if source is None:
                     source = "scratch"
-        return fields, widgets, source
+        return fields, widgets, graph, source
 
     def _builder_scratch_path(self, sheet_id: str) -> Path:
         return (
@@ -862,13 +879,16 @@ class Handler(BaseHTTPRequestHandler):
         fields = data.get("fields") if isinstance(data.get("fields"), dict) else {}
         layout = data.get("layout") if isinstance(data.get("layout"), dict) else {}
         widgets = layout.get("widgets") if isinstance(layout.get("widgets"), list) else []
+        g = data.get("graph") if isinstance(data.get("graph"), dict) else {}
+        nodes = g.get("nodes") if isinstance(g.get("nodes"), list) else []
+        edges = g.get("edges") if isinstance(g.get("edges"), list) else []
         return {
             "sheet_id": data.get("id") or sheet_id,
             "name": data.get("name") or sheet_id,
             "permissions": data.get("permissions"),
             "fields": fields,
             "layout": {"widgets": widgets},
-            "graph": {"nodes": [], "edges": []},
+            "graph": {"nodes": list(nodes), "edges": list(edges)},
             "_source": "yaml",
         }
 
@@ -975,6 +995,7 @@ class Handler(BaseHTTPRequestHandler):
 
         fields_in = body.get("fields") if isinstance(body.get("fields"), dict) else {}
         layout_in = body.get("layout") if isinstance(body.get("layout"), dict) else {}
+        graph_in = body.get("graph") if isinstance(body.get("graph"), dict) else {}
         name = str(body.get("name") or sheet_id)
         permissions = body.get("permissions")
 
@@ -1020,6 +1041,13 @@ class Handler(BaseHTTPRequestHandler):
             out["layout"] = {"widgets": widgets}
         elif isinstance(existing.get("layout"), dict):
             out["layout"] = existing["layout"]
+
+        g_nodes = graph_in.get("nodes") if isinstance(graph_in.get("nodes"), list) else []
+        g_edges = graph_in.get("edges") if isinstance(graph_in.get("edges"), list) else []
+        if g_nodes or g_edges:
+            out["graph"] = {"nodes": g_nodes, "edges": g_edges}
+        elif isinstance(existing.get("graph"), dict):
+            out["graph"] = existing["graph"]
 
         ypath.parent.mkdir(parents=True, exist_ok=True)
         dumped = yaml.safe_dump(

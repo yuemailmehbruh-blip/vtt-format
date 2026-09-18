@@ -33,6 +33,12 @@
 
   /** Display drag state */
   let dispDrag = null;
+  /** Display canvas zoom/pan (session-only, not persisted) */
+  let displayView = { scale: 1, x: 0, y: 0 };
+  let displayPan = null; // { ox, oy, vx, vy } or null
+  let spaceDown = false;
+  /** Mode for newly added buttons */
+  let buttonAddMode = "trigger";
   /** Graph drag / wire state */
   let graphDrag = null;
   let wireFrom = null; // { nodeId, x, y }
@@ -136,7 +142,16 @@
       if (node.op === "floor") return 1;
       return 2;
     }
+    if (node.kind === "field" && node.role === "output") return 1;
+    // Optional trigger wire so entry → roll is connectable; value ignored at runtime
+    if (node.kind === "roll") return 1;
     return 0;
+  }
+
+  function hasOutputPort(node) {
+    if (!node) return false;
+    if (node.kind === "field" && node.role === "output") return false;
+    return true;
   }
 
   /**
@@ -229,6 +244,10 @@
         } else {
           throw new Error(`Unknown op: ${op}`);
         }
+      } else if (n.kind === "roll" || n.kind === "entry" || n.kind === "function") {
+        throw new Error(
+          "Roll/entry nodes are runtime-only and cannot feed formula field outputs"
+        );
       } else {
         throw new Error(`Unknown node kind: ${n.kind}`);
       }
@@ -288,6 +307,19 @@
     setStatus(`Loaded ${doc.sheet_id} (${src})`, "ok");
   }
 
+  function migrateWidget(w) {
+    if (!w || w.shape !== "button") return w;
+    if (w.action && w.action.type === "roll") {
+      if (w.mode == null) w.mode = "trigger";
+      if (w.function_id == null) w.function_id = "";
+      delete w.action;
+    }
+    if (w.mode !== "toggle") w.mode = "trigger";
+    if (w.function_id == null) w.function_id = "";
+    if (w.label == null) w.label = "Button";
+    return w;
+  }
+
   function normalizeDoc(raw) {
     const d = emptyDoc(raw.sheet_id || "player");
     d.sheet_id = raw.sheet_id || d.sheet_id;
@@ -296,7 +328,7 @@
     d.permissions = raw.permissions || null;
     d.layout = {
       widgets: Array.isArray(raw.layout && raw.layout.widgets)
-        ? raw.layout.widgets.map((w) => ({ ...w }))
+        ? raw.layout.widgets.map((w) => migrateWidget({ ...w }))
         : [],
     };
     d.graph = {
@@ -415,20 +447,63 @@
     return { x: p.x, y: p.y };
   }
 
+  function displayWorldPoint(evt) {
+    const p = svgPoint(displaySvg, evt);
+    return {
+      x: (p.x - displayView.x) / displayView.scale,
+      y: (p.y - displayView.y) / displayView.scale,
+    };
+  }
+
+  function applyDisplayTransform() {
+    const g = displaySvg.querySelector("#display-root");
+    if (g) {
+      g.setAttribute(
+        "transform",
+        `translate(${displayView.x},${displayView.y}) scale(${displayView.scale})`
+      );
+    }
+  }
+
+  function setDisplayView(next) {
+    displayView = {
+      scale: Math.min(8, Math.max(0.2, next.scale != null ? next.scale : displayView.scale)),
+      x: next.x != null ? next.x : displayView.x,
+      y: next.y != null ? next.y : displayView.y,
+    };
+    applyDisplayTransform();
+  }
+
+  function zoomDisplayAt(svgX, svgY, factor) {
+    const old = displayView.scale;
+    const scale = Math.min(8, Math.max(0.2, old * factor));
+    if (scale === old) return;
+    // Keep world point under (svgX,svgY) stable
+    const wx = (svgX - displayView.x) / old;
+    const wy = (svgY - displayView.y) / old;
+    setDisplayView({
+      scale,
+      x: svgX - wx * scale,
+      y: svgY - wy * scale,
+    });
+  }
+
   function renderDisplay() {
     const widgets = doc.layout.widgets || [];
-    let html = "";
+    let html = `<g id="display-root" transform="translate(${displayView.x},${displayView.y}) scale(${displayView.scale})">`;
     for (const w of widgets) {
       const sel = w.id === selectedWidgetId ? " widget-selected" : "";
       const cx = w.x + w.w / 2;
       const cy = w.y + w.h / 2;
       if (w.shape === "button") {
-        const label = w.label || "Roll";
-        const sides = (w.action && w.action.sides) || 20;
+        const label = w.label || "Button";
+        const mode = w.mode === "toggle" ? "toggle" : "trigger";
+        const fid = w.function_id || "";
+        const sub = fid ? `${mode} · ${fid}` : mode;
         html += `<g class="widget" data-id="${esc(w.id)}">`;
         html += `<rect class="widget-button${sel}" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="10" data-id="${esc(w.id)}" />`;
         html += `<text class="widget-value" x="${cx}" y="${cy - 2}">${esc(label)}</text>`;
-        html += `<text class="widget-label" x="${cx}" y="${cy + 14}">d${esc(String(sides))}</text>`;
+        html += `<text class="widget-label" x="${cx}" y="${cy + 14}">${esc(sub)}</text>`;
         html += `</g>`;
       } else if (w.shape === "circle") {
         const r = Math.min(w.w, w.h) / 2;
@@ -449,6 +524,7 @@
         html += `</g>`;
       }
     }
+    html += `</g>`;
     displaySvg.innerHTML = html;
     renderDisplayProps();
   }
@@ -484,27 +560,35 @@
   function renderDisplayProps() {
     const w = selectedWidgetId ? findWidget(selectedWidgetId) : null;
     if (!w) {
-      displayProps.innerHTML = `<span class="hint">Select a widget to bind a field · tool: ${displayTool}</span>`;
+      displayProps.innerHTML = `<span class="hint">Select a widget to bind a field · tool: ${displayTool} · wheel zoom · mid/space/empty drag pan</span>`;
       return;
     }
     if (w.shape === "button") {
-      const label = w.label != null ? w.label : "Roll";
-      const sides = (w.action && w.action.sides) || 20;
+      const label = w.label != null ? w.label : "Button";
+      const mode = w.mode === "toggle" ? "toggle" : "trigger";
+      const fid = w.function_id != null ? w.function_id : "";
       displayProps.innerHTML = `
         <label>Label <input type="text" id="prop-label" value="${esc(label)}" style="width:8rem" /></label>
-        <label>Sides <input type="number" id="prop-sides" min="2" value="${esc(String(sides))}" style="width:4rem" /></label>
-        <span class="hint">button · roll dN @ (${Math.round(w.x)},${Math.round(w.y)})</span>
+        <label>Mode <select id="prop-mode">
+          <option value="trigger"${mode === "trigger" ? " selected" : ""}>trigger</option>
+          <option value="toggle"${mode === "toggle" ? " selected" : ""}>toggle</option>
+        </select></label>
+        <label>Function <input type="text" id="prop-fn" value="${esc(fid)}" placeholder="function_id" style="width:8rem" /></label>
+        <span class="hint">button · ${esc(mode)}${fid ? " · " + esc(fid) : ""} @ (${Math.round(w.x)},${Math.round(w.y)})</span>
       `;
       const lab = document.getElementById("prop-label");
-      const sid = document.getElementById("prop-sides");
+      const modeEl = document.getElementById("prop-mode");
+      const fnEl = document.getElementById("prop-fn");
       lab.addEventListener("change", () => {
-        w.label = lab.value.trim() || "Roll";
+        w.label = lab.value.trim() || "Button";
         renderDisplay();
       });
-      sid.addEventListener("change", () => {
-        const n = Math.max(2, Math.floor(Number(sid.value) || 20));
-        w.action = { type: "roll", sides: n };
-        sid.value = String(n);
+      modeEl.addEventListener("change", () => {
+        w.mode = modeEl.value === "toggle" ? "toggle" : "trigger";
+        renderDisplay();
+      });
+      fnEl.addEventListener("change", () => {
+        w.function_id = fnEl.value.trim();
         renderDisplay();
       });
       return;
@@ -539,16 +623,51 @@
     }
   }
 
+  const btnAddModeEl = document.getElementById("btn-add-mode");
+  if (btnAddModeEl) {
+    btnAddModeEl.addEventListener("change", () => {
+      buttonAddMode = btnAddModeEl.value === "toggle" ? "toggle" : "trigger";
+    });
+  }
+
   displaySvg.addEventListener("pointerdown", (e) => {
-    const p = svgPoint(displaySvg, e);
+    const screen = svgPoint(displaySvg, e);
+    const p = displayWorldPoint(e);
+    const wantPan =
+      e.button === 1 ||
+      (e.button === 0 && spaceDown) ||
+      (e.button === 0 && displayTool === "select" && !hitWidget(p.x, p.y) && !spaceDown);
+
+    if (wantPan && displayTool !== "box" && displayTool !== "circle" && displayTool !== "button" && displayTool !== "delete") {
+      // Empty-space pan only when select and no hit; middle/space always
+      if (e.button === 1 || spaceDown || !hitWidget(p.x, p.y)) {
+        e.preventDefault();
+        displayPan = {
+          sx: e.clientX,
+          sy: e.clientY,
+          vx: displayView.x,
+          vy: displayView.y,
+        };
+        displaySvg.setPointerCapture(e.pointerId);
+        selectedWidgetId = null;
+        renderDisplay();
+        return;
+      }
+    }
+
     if (displayTool === "box" || displayTool === "circle" || displayTool === "button") {
       let w;
       if (displayTool === "button") {
+        const mode =
+          (btnAddModeEl && btnAddModeEl.value === "toggle") || buttonAddMode === "toggle"
+            ? "toggle"
+            : "trigger";
         w = {
           id: uid("w"),
           shape: "button",
-          label: "Roll",
-          action: { type: "roll", sides: 20 },
+          label: "Button",
+          mode,
+          function_id: "",
           x: p.x - 44,
           y: p.y - 22,
           w: 88,
@@ -589,13 +708,32 @@
         oy: p.y - hit.y,
       };
       displaySvg.setPointerCapture(e.pointerId);
+    } else if (displayTool === "select") {
+      displayPan = {
+        sx: e.clientX,
+        sy: e.clientY,
+        vx: displayView.x,
+        vy: displayView.y,
+      };
+      displaySvg.setPointerCapture(e.pointerId);
     }
     renderDisplay();
   });
 
   displaySvg.addEventListener("pointermove", (e) => {
+    if (displayPan) {
+      const ctm = displaySvg.getScreenCTM();
+      const a = ctm && ctm.a ? ctm.a : 1;
+      const d = ctm && ctm.d ? ctm.d : 1;
+      setDisplayView({
+        scale: displayView.scale,
+        x: displayPan.vx + (e.clientX - displayPan.sx) / a,
+        y: displayPan.vy + (e.clientY - displayPan.sy) / d,
+      });
+      return;
+    }
     if (!dispDrag) return;
-    const p = svgPoint(displaySvg, e);
+    const p = displayWorldPoint(e);
     const w = findWidget(dispDrag.id);
     if (!w) return;
     w.x = p.x - dispDrag.ox;
@@ -605,7 +743,59 @@
 
   displaySvg.addEventListener("pointerup", () => {
     dispDrag = null;
+    displayPan = null;
   });
+  displaySvg.addEventListener("pointercancel", () => {
+    dispDrag = null;
+    displayPan = null;
+  });
+
+  displaySvg.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      const screen = svgPoint(displaySvg, e);
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      zoomDisplayAt(screen.x, screen.y, factor);
+    },
+    { passive: false }
+  );
+
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && !e.repeat) {
+      spaceDown = true;
+      displaySvg.style.cursor = "grab";
+    }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.code === "Space") {
+      spaceDown = false;
+      displaySvg.style.cursor = "";
+    }
+  });
+
+  const btnZoomIn = document.getElementById("btn-zoom-in");
+  const btnZoomOut = document.getElementById("btn-zoom-out");
+  const btnZoomReset = document.getElementById("btn-zoom-reset");
+  if (btnZoomIn) {
+    btnZoomIn.addEventListener("click", () => {
+      const wrap = document.getElementById("display-wrap");
+      const rect = wrap.getBoundingClientRect();
+      zoomDisplayAt(rect.width / 2, rect.height / 2, 1.2);
+    });
+  }
+  if (btnZoomOut) {
+    btnZoomOut.addEventListener("click", () => {
+      const wrap = document.getElementById("display-wrap");
+      const rect = wrap.getBoundingClientRect();
+      zoomDisplayAt(rect.width / 2, rect.height / 2, 1 / 1.2);
+    });
+  }
+  if (btnZoomReset) {
+    btnZoomReset.addEventListener("click", () => {
+      setDisplayView({ scale: 1, x: 0, y: 0 });
+    });
+  }
 
   function syncDisplayToolButtons() {
     document.querySelectorAll("#display-tools [data-tool]").forEach((btn) => {
@@ -662,6 +852,8 @@
     }
     if (n.kind === "const") return String(n.value);
     if (n.kind === "op") return n.op === "floor" ? "floor" : n.op;
+    if (n.kind === "roll") return `d${n.sides != null ? n.sides : 20}`;
+    if (n.kind === "entry" || n.kind === "function") return n.name || "fn";
     return n.kind;
   }
 
@@ -669,6 +861,8 @@
     if (n.kind === "field") return n.role === "output" ? "output" : "field";
     if (n.kind === "const") return "const";
     if (n.kind === "op") return "op";
+    if (n.kind === "roll") return "roll";
+    if (n.kind === "entry" || n.kind === "function") return "entry";
     return "";
   }
 
@@ -702,17 +896,11 @@
       html += `<rect class="node-rect" width="${NODE_W}" height="${NODE_H}" />`;
       html += `<text class="node-title" x="12" y="22">${esc(nodeLabel(n))}</text>`;
       html += `<text class="node-sub" x="12" y="38">${esc(nodeSub(n))}</text>`;
-      // output port (except pure? always show out except maybe nothing — field output can still show for chaining; skip out on sinks)
-      if (!(n.kind === "field" && n.role === "output")) {
+      if (hasOutputPort(n)) {
         html += `<circle class="port" data-port="out" data-id="${esc(n.id)}" cx="${NODE_W}" cy="${NODE_H / 2}" r="6" />`;
       }
       // input ports
-      const ar =
-        n.kind === "op"
-          ? arityOf(n)
-          : n.kind === "field" && n.role === "output"
-            ? 1
-            : 0;
+      const ar = arityOf(n);
       for (let i = 0; i < ar; i++) {
         const pp = portPos({ x: 0, y: 0, kind: n.kind, op: n.op, role: n.role }, "in", i);
         // portPos with x,y 0 gives local coords
@@ -738,18 +926,13 @@
     const nodes = doc.graph.nodes || [];
     const R = 10;
     for (const n of nodes) {
-      if (!(n.kind === "field" && n.role === "output")) {
+      if (hasOutputPort(n)) {
         const p = portPos(n, "out");
         if ((x - p.x) * (x - p.x) + (y - p.y) * (y - p.y) <= R * R) {
           return { nodeId: n.id, port: "out", index: 0 };
         }
       }
-      const ar =
-        n.kind === "op"
-          ? arityOf(n)
-          : n.kind === "field" && n.role === "output"
-            ? 1
-            : 0;
+      const ar = arityOf(n);
       for (let i = 0; i < ar; i++) {
         const p = portPos(n, "in", i);
         if ((x - p.x) * (x - p.x) + (y - p.y) * (y - p.y) <= R * R) {
@@ -804,6 +987,12 @@
       body += `<label>Value <input type="number" id="g-const" value="${esc(String(n.value))}" style="width:5rem" /></label>`;
     } else if (n.kind === "op") {
       body += `<span class="hint">Op: ${esc(n.op)}</span>`;
+    } else if (n.kind === "roll") {
+      body += `<label>Sides <input type="number" id="g-sides" min="2" value="${esc(String(n.sides != null ? n.sides : 20))}" style="width:4rem" /></label>`;
+      body += `<span class="hint">runtime roll 1..sides</span>`;
+    } else if (n.kind === "entry" || n.kind === "function") {
+      body += `<label>Name <input type="text" id="g-entry-name" value="${esc(n.name || "")}" placeholder="function_id" style="width:8rem" /></label>`;
+      body += `<span class="hint">button function_id entry point</span>`;
     }
     if (n.kind === "field" && n.role === "output" && !compiled.error && compiled.formulas[n.field]) {
       body += `<span class="formula-preview">${esc(n.field)} ← ${esc(compiled.formulas[n.field])}</span>`;
@@ -815,6 +1004,8 @@
     const gf = document.getElementById("g-field");
     const gr = document.getElementById("g-role");
     const gc = document.getElementById("g-const");
+    const gs = document.getElementById("g-sides");
+    const ge = document.getElementById("g-entry-name");
     if (gf) {
       gf.addEventListener("change", () => {
         const id = gf.value.trim();
@@ -839,6 +1030,19 @@
         renderGraph();
       });
     }
+    if (gs) {
+      gs.addEventListener("change", () => {
+        n.sides = Math.max(2, Math.floor(Number(gs.value) || 20));
+        gs.value = String(n.sides);
+        renderGraph();
+      });
+    }
+    if (ge) {
+      ge.addEventListener("change", () => {
+        n.name = ge.value.trim();
+        renderGraph();
+      });
+    }
   }
 
   function addGraphNode(kind, op, x, y) {
@@ -855,6 +1059,11 @@
       n.value = 0;
     } else if (kind === "op") {
       n.op = op || "+";
+    } else if (kind === "roll") {
+      n.sides = 20;
+    } else if (kind === "entry" || kind === "function") {
+      n.kind = "entry";
+      n.name = "";
     }
     doc.graph.nodes.push(n);
     selectedNodeId = n.id;

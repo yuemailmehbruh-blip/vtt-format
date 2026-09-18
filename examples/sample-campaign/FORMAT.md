@@ -29,17 +29,31 @@ fields:
     default: <optional>
     formula: "<closed expression>"   # optional; read-only computed field
     notes: string                    # optional
-layout:                              # optional; from sheet builder (future play renderer)
+layout:                              # optional; from sheet builder (session visual sheet)
   widgets:
     - id: string
       shape: box|circle|button
       field: <field_name>           # box/circle
-      label: string                 # button
-      action: { type: roll, sides: N }  # button
+      label: string                 # button caption
+      mode: trigger|toggle          # button
+      function_id: string           # button → named graph entry
       x: number
       y: number
       w: number
       h: number
+graph:                               # optional; automation + named functions
+  nodes:
+    - id: string
+      kind: field|const|op|roll|entry
+      # field: name + role source|output
+      # const: value
+      # op: +|-|*|/|floor
+      # roll: sides (default 20) — runtime sample
+      # entry: name (function_id entry point)
+      x: number
+      y: number
+  edges:
+    - { id, from, to, toPort }
 ```
 
 **Closed formulas:** only named fields and a fixed operator set (e.g. `floor`, `+`, `-`, `*`, `/`, parentheses). No function imports, no I/O.
@@ -61,14 +75,14 @@ Shape (v1):
   "sheet_id": "player",
   "name": "Player Character",
   "fields": { "STR": {"type":"integer","default":10}, "STR_mod": {"type":"integer","formula":"floor((STR - 10) / 2)"} },
-  "layout": { "widgets": [ {"id":"…","shape":"box|circle|button","field":"STR","label":"Roll","action":{"type":"roll","sides":20},"x":0,"y":0,"w":72,"h":56} ] },
-  "graph": { "nodes": [], "edges": [] }
+  "layout": { "widgets": [ {"id":"…","shape":"button","label":"Attack","mode":"trigger","function_id":"attack","x":0,"y":0,"w":88,"h":44} ] },
+  "graph": { "nodes": [ {"id":"…","kind":"entry","name":"attack"}, {"id":"…","kind":"roll","sides":20} ], "edges": [] }
 }
 ```
 
-**Compile** writes/updates `build/sheets/<sheetId>.yaml` (fields + closed formulas; permissions stub preserved). An optional top-level `layout:` block is written for the session character sheet visual renderer (boxes/circles/buttons).
+**Compile** writes/updates `build/sheets/<sheetId>.yaml` (fields + closed formulas + `layout` + `graph`; permissions stub preserved). Session sheets load layout widgets and run named functions from `graph` entry nodes.
 
-Closed formula language (graph → string): field names, number literals, `+` `-` `*` `/`, parentheses, and `floor(…)`. No arbitrary code; cycles are rejected.
+Closed formula language (field-output graph → string): field names, number literals, `+` `-` `*` `/`, parentheses, and `floor(…)`. **Roll** / **entry** nodes are runtime-only (button functions) and must not feed formula field outputs. Cycles are rejected.
 
 
 ## Scene schema

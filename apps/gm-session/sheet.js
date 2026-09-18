@@ -14,6 +14,9 @@
   const svgEl = document.getElementById("sheet-svg");
   const rollToastEl = document.getElementById("roll-toast");
   const notesBlock = document.getElementById("notes-block");
+  const visualWrap = document.getElementById("sheet-visual-wrap");
+
+  const RT = window.SheetRuntime || null;
 
   /** @type {any} */
   let appearance = { size_tiles: 1 };
@@ -23,8 +26,17 @@
   let actorFields = {};
   /** @type {object[]} */
   let widgets = [];
+  /** @type {{ nodes: object[], edges: object[] }} */
+  let graph = { nodes: [], edges: [] };
   /** @type {Record<string, number|string>} */
   let liveValues = {};
+  /** @type {Record<string, boolean>} */
+  let toggleState = Object.create(null);
+
+  /** Session sheet view (after fit): pan/zoom in viewBox space */
+  let sheetView = { scale: 1, x: 0, y: 0, base: null };
+  let sheetPan = null;
+  let spaceDown = false;
 
   const APPEARANCE_CHANNEL = "gm-session-appearance";
   const ROLL_CHANNEL = "gm-session-roll";
@@ -46,6 +58,9 @@
       const on = btn.dataset.tab === name;
       btn.classList.toggle("active", on);
       btn.setAttribute("aria-selected", on ? "true" : "false");
+    }
+    if (isSheet) {
+      requestAnimationFrame(() => fitToView());
     }
   }
 
@@ -78,110 +93,17 @@
       .replace(/"/g, "&quot;");
   }
 
-  /**
-   * Closed formula language: identifiers, numbers, + - * /, parentheses, floor(...).
-   * @param {string} expr
-   * @param {Record<string, number>} env
-   */
   function evalClosedFormula(expr, env) {
-    const src = String(expr || "").trim();
-    if (!src) return NaN;
-    let i = 0;
-
-    function peek() {
-      while (i < src.length && /\s/.test(src[i])) i++;
-      return src[i];
+    if (RT && typeof RT.evalClosedFormula === "function") {
+      return RT.evalClosedFormula(expr, env);
     }
+    throw new Error("SheetRuntime missing");
+  }
 
-    function match(ch) {
-      if (peek() === ch) {
-        i++;
-        return true;
-      }
-      return false;
-    }
-
-    function parseIdent() {
-      peek();
-      const start = i;
-      if (!/[A-Za-z_]/.test(src[i] || "")) return null;
-      i++;
-      while (/[A-Za-z0-9_]/.test(src[i] || "")) i++;
-      return src.slice(start, i);
-    }
-
-    function parseNumber() {
-      peek();
-      const start = i;
-      if (!/[0-9.]/.test(src[i] || "")) return null;
-      while (/[0-9]/.test(src[i] || "")) i++;
-      if (src[i] === ".") {
-        i++;
-        while (/[0-9]/.test(src[i] || "")) i++;
-      }
-      const n = Number(src.slice(start, i));
-      return Number.isFinite(n) ? n : null;
-    }
-
-    function parsePrimary() {
-      peek();
-      if (match("(")) {
-        const v = parseExpr();
-        if (!match(")")) throw new Error("expected )");
-        return v;
-      }
-      const ident = parseIdent();
-      if (ident) {
-        if (ident === "floor") {
-          if (!match("(")) throw new Error("floor expects (");
-          const v = parseExpr();
-          if (!match(")")) throw new Error("expected )");
-          return Math.floor(v);
-        }
-        const raw = env[ident];
-        const n = typeof raw === "number" ? raw : Number(raw);
-        return Number.isFinite(n) ? n : 0;
-      }
-      const num = parseNumber();
-      if (num != null) return num;
-      throw new Error("unexpected token at " + i);
-    }
-
-    function parseUnary() {
-      peek();
-      if (match("-")) return -parseUnary();
-      if (match("+")) return parseUnary();
-      return parsePrimary();
-    }
-
-    function parseTerm() {
-      let v = parseUnary();
-      for (;;) {
-        peek();
-        if (match("*")) v *= parseUnary();
-        else if (match("/")) {
-          const d = parseUnary();
-          v = d === 0 ? NaN : v / d;
-        } else break;
-      }
-      return v;
-    }
-
-    function parseExpr() {
-      let v = parseTerm();
-      for (;;) {
-        peek();
-        if (match("+")) v += parseTerm();
-        else if (match("-")) v -= parseTerm();
-        else break;
-      }
-      return v;
-    }
-
-    const result = parseExpr();
-    peek();
-    if (i < src.length) throw new Error("trailing junk");
-    return result;
+  function rollDie(sides) {
+    if (RT && typeof RT.rollDie === "function") return RT.rollDie(sides);
+    const n = Math.max(2, Math.floor(Number(sides) || 20));
+    return 1 + Math.floor(Math.random() * n);
   }
 
   function recomputeLive() {
@@ -250,11 +172,6 @@
     }, 2200);
   }
 
-  function rollDie(sides) {
-    const n = Math.max(2, Math.floor(Number(sides) || 20));
-    return 1 + Math.floor(Math.random() * n);
-  }
-
   /** localStorage shared across pywebview windows (sessionStorage is not). */
   function rollStore() {
     try {
@@ -281,10 +198,6 @@
     } catch (_) {}
   }
 
-  /**
-   * Publish a layout-button roll to session history (storage + BroadcastChannel
-   * + pywebview session_roll bridge). Keeps sheet toast separately.
-   */
   function publishRoll(buttonLabel, result, detail) {
     const actorName =
       (titleEl && titleEl.textContent && titleEl.textContent.trim()) ||
@@ -316,19 +229,129 @@
     }
   }
 
-  function layoutBounds(list) {
-    let maxX = 320;
-    let maxY = 220;
+  function contentBounds(list) {
+    if (!list.length) return { minX: 0, minY: 0, maxX: 320, maxY: 220 };
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
     for (const w of list) {
-      const r = (w.x || 0) + (w.w || 0) + 24;
-      const b = (w.y || 0) + (w.h || 0) + 28;
-      if (r > maxX) maxX = r;
-      if (b > maxY) maxY = b;
+      const x0 = w.x || 0;
+      const y0 = w.y || 0;
+      const x1 = x0 + (w.w || 0);
+      const y1 = y0 + (w.h || 0) + 18;
+      if (x0 < minX) minX = x0;
+      if (y0 < minY) minY = y0;
+      if (x1 > maxX) maxX = x1;
+      if (y1 > maxY) maxY = y1;
     }
-    return { w: Math.max(maxX, 320), h: Math.max(maxY, 220) };
+    if (!Number.isFinite(minX)) {
+      return { minX: 0, minY: 0, maxX: 320, maxY: 220 };
+    }
+    return { minX, minY, maxX, maxY };
   }
 
-  function renderVisual() {
+  function applyViewBox() {
+    const base = sheetView.base;
+    if (!base) return;
+    const { minX, minY, w, h } = base;
+    const s = sheetView.scale;
+    const vw = w / s;
+    const vh = h / s;
+    const vx = minX + sheetView.x;
+    const vy = minY + sheetView.y;
+    svgEl.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
+    svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    svgEl.setAttribute("width", "100%");
+    svgEl.setAttribute("height", "100%");
+  }
+
+  function fitToView() {
+    const list = widgets || [];
+    if (!list.length) {
+      sheetView.base = null;
+      svgEl.removeAttribute("viewBox");
+      return;
+    }
+    const b = contentBounds(list);
+    const pad = 20;
+    const minX = b.minX - pad;
+    const minY = b.minY - pad;
+    const w = Math.max(40, b.maxX - b.minX + pad * 2);
+    const h = Math.max(40, b.maxY - b.minY + pad * 2);
+    sheetView = { scale: 1, x: 0, y: 0, base: { minX, minY, w, h } };
+    applyViewBox();
+  }
+
+  function svgPoint(svg, evt) {
+    const pt = svg.createSVGPoint();
+    pt.x = evt.clientX;
+    pt.y = evt.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return { x: 0, y: 0 };
+    const p = pt.matrixTransform(ctm.inverse());
+    return { x: p.x, y: p.y };
+  }
+
+  function normalizeButton(w) {
+    const mode = w.mode === "toggle" ? "toggle" : "trigger";
+    let functionId = w.function_id != null ? String(w.function_id) : "";
+    if (!functionId && w.action && w.action.type === "roll") {
+      // Legacy frontend roll — no automation; leave empty
+      functionId = "";
+    }
+    return { mode, functionId, label: w.label || "Button" };
+  }
+
+  function buttonSubtitle(w) {
+    const { mode, functionId } = normalizeButton(w);
+    if (functionId) return `${mode} · ${functionId}`;
+    return mode;
+  }
+
+  async function runButtonFunction(w) {
+    const { mode, functionId, label } = normalizeButton(w);
+    if (!functionId) {
+      setStatus("Button has no function id");
+      return;
+    }
+    if (!RT || typeof RT.evaluateNamedFunction !== "function") {
+      setStatus("SheetRuntime missing");
+      return;
+    }
+    recomputeLive();
+    const result = RT.evaluateNamedFunction(graph, functionId, liveValues);
+    if (!result.ok) {
+      setStatus(result.error || "Function failed");
+      return;
+    }
+    for (const r of result.rolls || []) {
+      const detail = `d${r.sides}`;
+      const rollLabel = `${label} / ${functionId}`;
+      showRollToast(`${rollLabel}: ${r.result} (${detail})`);
+      publishRoll(rollLabel, r.result, detail);
+    }
+    const writes = result.writes || {};
+    const keys = Object.keys(writes);
+    if (keys.length) {
+      for (const k of keys) {
+        actorFields[k] = writes[k];
+        liveValues[k] = writes[k];
+      }
+      try {
+        await saveFields(writes);
+      } catch (err) {
+        setStatus(String(err));
+        return;
+      }
+    }
+    const rollSummary =
+      (result.rolls || []).map((r) => `${r.result}(d${r.sides})`).join(", ") || "ok";
+    setStatus(`${label} [${mode}] → ${functionId}: ${rollSummary}`);
+    renderVisual(false);
+  }
+
+  function renderVisual(doFit) {
     recomputeLive();
     const list = widgets || [];
     if (!list.length) {
@@ -340,22 +363,19 @@
         `No layout widgets — open Sheet builder, add boxes/circles/buttons, Compile.</text>`;
       return;
     }
-    const bounds = layoutBounds(list);
-    svgEl.setAttribute("width", String(bounds.w));
-    svgEl.setAttribute("height", String(bounds.h));
-    svgEl.setAttribute("viewBox", `0 0 ${bounds.w} ${bounds.h}`);
 
-    let html = "";
+    let html = `<g id="sheet-world">`;
     for (const w of list) {
       const cx = (w.x || 0) + (w.w || 0) / 2;
       const cy = (w.y || 0) + (w.h || 0) / 2;
       if (w.shape === "button") {
-        const label = w.label || "Roll";
-        const sides = (w.action && w.action.sides) || 20;
-        html += `<g class="sheet-btn" data-sides="${esc(String(sides))}" data-label="${esc(label)}" style="cursor:pointer">`;
-        html += `<rect class="widget-button" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="10" />`;
+        const { mode, functionId, label } = normalizeButton(w);
+        const pressed = mode === "toggle" && !!toggleState[w.id];
+        const sub = buttonSubtitle(w);
+        html += `<g class="sheet-btn${pressed ? " pressed" : ""}" data-id="${esc(w.id)}" data-mode="${esc(mode)}" data-function="${esc(functionId)}" style="cursor:pointer">`;
+        html += `<rect class="widget-button${pressed ? " toggle-on" : ""}" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="10" />`;
         html += `<text class="widget-btn-label" x="${cx}" y="${cy - 4}">${esc(label)}</text>`;
-        html += `<text class="widget-btn-sub" x="${cx}" y="${cy + 12}">d${esc(String(sides))}</text>`;
+        html += `<text class="widget-btn-sub" x="${cx}" y="${cy + 12}">${esc(sub)}</text>`;
         html += `</g>`;
       } else if (w.shape === "circle") {
         const r = Math.min(w.w || 0, w.h || 0) / 2;
@@ -391,16 +411,31 @@
         html += `</g>`;
       }
     }
+    html += `</g>`;
     svgEl.innerHTML = html;
 
+    if (doFit !== false || !sheetView.base) fitToView();
+    else applyViewBox();
+
     svgEl.querySelectorAll(".sheet-btn").forEach((g) => {
-      g.addEventListener("click", () => {
-        const sides = Number(g.getAttribute("data-sides")) || 20;
-        const label = g.getAttribute("data-label") || "Roll";
-        const result = rollDie(sides);
-        showRollToast(`${label}: ${result} (d${sides})`);
-        setStatus(`${label} → ${result}`);
-        publishRoll(label, result, `d${sides}`);
+      g.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = g.getAttribute("data-id");
+        const w = (widgets || []).find((x) => x.id === id);
+        if (!w) return;
+        const { mode } = normalizeButton(w);
+        if (mode === "toggle") {
+          const next = !toggleState[id];
+          toggleState[id] = next;
+          if (next) {
+            runButtonFunction(w).catch((err) => setStatus(String(err)));
+          } else {
+            renderVisual(false);
+            setStatus(`${normalizeButton(w).label} off`);
+          }
+        } else {
+          runButtonFunction(w).catch((err) => setStatus(String(err)));
+        }
       });
     });
 
@@ -416,7 +451,7 @@
         actorFields[fid] = n;
         saveFields({ [fid]: n })
           .then(() => {
-            renderVisual();
+            renderVisual(false);
             setStatus(`Saved ${fid}=${n}`);
           })
           .catch((err) => setStatus(String(err)));
@@ -483,8 +518,15 @@
     actorFields = data.fields && typeof data.fields === "object" ? data.fields : {};
     widgets =
       data.layout && Array.isArray(data.layout.widgets) ? data.layout.widgets : [];
+    graph =
+      data.graph && typeof data.graph === "object"
+        ? {
+            nodes: Array.isArray(data.graph.nodes) ? data.graph.nodes : [],
+            edges: Array.isArray(data.graph.edges) ? data.graph.edges : [],
+          }
+        : { nodes: [], edges: [] };
 
-    renderVisual();
+    renderVisual(true);
     if (!widgets.length && (data.text || "").trim()) {
       notesBlock.open = true;
     }
@@ -536,6 +578,85 @@
     setAppearanceStatus("Appearance saved · map tokens updated");
     notifyMap(actorId, appearance);
   }
+
+  // --- Zoom / pan on session sheet ---
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && !e.repeat) {
+      spaceDown = true;
+      if (visualWrap) visualWrap.style.cursor = "grab";
+    }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.code === "Space") {
+      spaceDown = false;
+      if (visualWrap) visualWrap.style.cursor = "";
+    }
+  });
+
+  if (svgEl) {
+    svgEl.addEventListener(
+      "wheel",
+      (e) => {
+        if (!sheetView.base) return;
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+        const oldS = sheetView.scale;
+        const next = Math.min(8, Math.max(0.25, oldS * factor));
+        if (next === oldS) return;
+        const p = svgPoint(svgEl, e);
+        const base = sheetView.base;
+        const ox = base.minX + sheetView.x;
+        const oy = base.minY + sheetView.y;
+        const oldW = base.w / oldS;
+        const oldH = base.h / oldS;
+        const fracX = oldW ? (p.x - ox) / oldW : 0.5;
+        const fracY = oldH ? (p.y - oy) / oldH : 0.5;
+        sheetView.scale = next;
+        const newW = base.w / next;
+        const newH = base.h / next;
+        sheetView.x = p.x - fracX * newW - base.minX;
+        sheetView.y = p.y - fracY * newH - base.minY;
+        applyViewBox();
+      },
+      { passive: false }
+    );
+
+    svgEl.addEventListener("pointerdown", (e) => {
+      if (!sheetView.base) return;
+      const isMid = e.button === 1;
+      const isSpace = spaceDown && e.button === 0;
+      if (!isMid && !isSpace) return;
+      e.preventDefault();
+      const ctm = svgEl.getScreenCTM();
+      sheetPan = {
+        sx: e.clientX,
+        sy: e.clientY,
+        vx: sheetView.x,
+        vy: sheetView.y,
+        a: ctm && ctm.a ? ctm.a : 1,
+        d: ctm && ctm.d ? ctm.d : 1,
+      };
+      svgEl.setPointerCapture(e.pointerId);
+    });
+    svgEl.addEventListener("pointermove", (e) => {
+      if (!sheetPan || !sheetView.base) return;
+      sheetView.x = sheetPan.vx - (e.clientX - sheetPan.sx) / sheetPan.a;
+      sheetView.y = sheetPan.vy - (e.clientY - sheetPan.sy) / sheetPan.d;
+      applyViewBox();
+    });
+    svgEl.addEventListener("pointerup", () => {
+      sheetPan = null;
+    });
+    svgEl.addEventListener("pointercancel", () => {
+      sheetPan = null;
+    });
+  }
+
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => fitToView(), 80);
+  });
 
   for (const btn of document.querySelectorAll(".tabs button")) {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab || "sheet"));

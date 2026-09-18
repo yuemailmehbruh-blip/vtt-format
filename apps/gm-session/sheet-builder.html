@@ -212,7 +212,17 @@
           <button type="button" data-tool="select" class="active" title="Select / move">Select</button>
           <button type="button" data-tool="box" title="Add box widget">Add box</button>
           <button type="button" data-tool="circle" title="Add circle widget">Add circle</button>
-          <button type="button" data-tool="button" title="Add roll button">Add button</button>
+          <button type="button" data-tool="button" title="Add function button">Add button</button>
+          <label class="hint" style="margin:0;display:flex;align-items:center;gap:0.25rem;color:var(--muted);font-size:0.75rem">mode
+            <select id="btn-add-mode" title="Mode for new buttons">
+              <option value="trigger">trigger</option>
+              <option value="toggle">toggle</option>
+            </select>
+          </label>
+          <span class="sep"></span>
+          <button type="button" id="btn-zoom-in" title="Zoom in">Zoom +</button>
+          <button type="button" id="btn-zoom-out" title="Zoom out">Zoom −</button>
+          <button type="button" id="btn-zoom-reset" title="Reset zoom/pan">Reset</button>
           <button type="button" data-tool="delete" class="danger" title="Delete selected">Delete</button>
         </div>
       </div>
@@ -238,6 +248,9 @@
           <button type="button" data-kind="op" data-op="*" title="Multiply">×</button>
           <button type="button" data-kind="op" data-op="/" title="Divide">÷</button>
           <button type="button" data-kind="op" data-op="floor" title="floor(x)">floor</button>
+          <span class="sep"></span>
+          <button type="button" data-kind="roll" title="Roll dN (runtime)">Roll</button>
+          <button type="button" data-kind="entry" title="Named function entry">Function</button>
           <span class="sep"></span>
           <button type="button" id="btn-graph-select" class="active" title="Select / move / wire">Select</button>
           <button type="button" id="btn-graph-delete" class="danger" title="Delete selected node/wire">Delete</button>

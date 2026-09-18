@@ -107,6 +107,17 @@
         "y": 140,
         "w": 72,
         "h": 56
+      },
+      {
+        "id": "w_attack",
+        "shape": "button",
+        "label": "Attack",
+        "mode": "trigger",
+        "function_id": "attack",
+        "x": 260,
+        "y": 40,
+        "w": 88,
+        "h": 44
       }
     ]
   },
@@ -162,6 +173,20 @@
         "role": "output",
         "x": 680,
         "y": 140
+      },
+      {
+        "id": "n_attack_entry",
+        "kind": "entry",
+        "name": "attack",
+        "x": 40,
+        "y": 320
+      },
+      {
+        "id": "n_attack_roll",
+        "kind": "roll",
+        "sides": 20,
+        "x": 220,
+        "y": 320
       }
     ],
     "edges": [
@@ -199,6 +224,12 @@
         "id": "e6",
         "from": "n_floor",
         "to": "n_out",
+        "toPort": 0
+      },
+      {
+        "id": "e_attack",
+        "from": "n_attack_entry",
+        "to": "n_attack_roll",
         "toPort": 0
       }
     ]

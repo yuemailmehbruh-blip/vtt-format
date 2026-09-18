@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.2**).
+Version is in `VERSION` (currently **0.6.3**).
 
 ## Run — desktop app (recommended)
 
@@ -223,6 +223,14 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+
+## 0.6.3
+
+- **Builder zoom/pan** — display canvas: wheel zoom toward cursor; Zoom + / − / Reset; pan with middle-mouse, Space+drag, or empty-space drag (Select). Session-only (not saved).
+- **Session fit-to-view** — character sheet sets SVG `viewBox` to the widget bounding box (padding) on load/resize; optional wheel zoom + Space/middle-mouse pan afterward.
+- **Buttons → functions** — `shape: button` uses `mode: trigger|toggle` + `function_id` (named automation). Removed frontend `action: {type:roll, sides}`. Props: label, mode, function id; subtitle shows mode + function.
+- **Automations Roll + Function** — graph nodes `kind: roll` (sides) and `kind: entry` (name). Runtime (`sheet-runtime.js`) resolves button `function_id` → entry, evaluates reachable DAG; rolls publish via `publishRoll`. Toggle: on runs function, off does not; pressed style in-session.
+- **Sample** — Attack button `function_id: attack` → entry `attack` → roll d20; compile writes `graph` into `build/sheets/*.yaml`.
 
 ## 0.6.2
 
