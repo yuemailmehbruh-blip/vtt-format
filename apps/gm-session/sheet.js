@@ -35,8 +35,8 @@
   let actorFields = {};
   /** @type {object[]} */
   let widgets = [];
-  /** @type {{ nodes: object[], edges: object[] }} */
-  let graph = { nodes: [], edges: [] };
+  /** @type {{ nodes: object[], edges: object[], collapsed?: object[] }} */
+  let graph = { nodes: [], edges: [], collapsed: [] };
   /** @type {string|null} schema id from GET /api/sheet */
   let sheetId = null;
   /** @type {Record<string, number|string>} */
@@ -177,6 +177,37 @@
   function isFormulaField(fid) {
     const def = schemaFields[fid];
     return !!(def && def.formula);
+  }
+
+  function widgetLabel(w) {
+    if (RT && typeof RT.widgetLabel === "function") return RT.widgetLabel(w);
+    return String((w && (w.label || w.field)) || "").trim();
+  }
+
+  function widgetDisplayId(w) {
+    if (RT && typeof RT.widgetDisplayId === "function") return RT.widgetDisplayId(w);
+    const id = w && w.id != null ? String(w.id).trim() : "";
+    if (id && !(RT && RT.isGeneratedWidgetUid && RT.isGeneratedWidgetUid(id))) return id;
+    return String((w && (w.field || w.label)) || "").trim();
+  }
+
+  function widgetValueMode(w) {
+    if (w && w.value_mode === "receive") return "receive";
+    if (w && w.value_mode === "create") return "create";
+    const key = widgetLabel(w);
+    return key && isFormulaField(key) ? "receive" : "create";
+  }
+
+  function resolveWidgetValue(w) {
+    if (RT && typeof RT.resolveWidgetValue === "function") {
+      return RT.resolveWidgetValue(w, {
+        liveValues,
+        schemaFields,
+        graph,
+      });
+    }
+    const key = widgetLabel(w);
+    return key && liveValues[key] != null ? liveValues[key] : 0;
   }
 
   function showRollToast(msg) {
@@ -645,35 +676,39 @@
         html += `</g>`;
       } else if (w.shape === "circle") {
         const r = Math.min(w.w || 0, w.h || 0) / 2;
-        const fid = w.field || "";
-        const val = fid ? liveValues[fid] : "";
-        const formula = !!(fid && isFormulaField(fid));
+        const key = widgetLabel(w);
+        const caption = widgetDisplayId(w) || key || "(id)";
+        const mode = widgetValueMode(w);
+        const editable = mode === "create" && !!key;
+        const val = resolveWidgetValue(w);
         html += `<g>`;
         html += `<circle class="widget-circle" cx="${cx}" cy="${cy}" r="${r}" />`;
-        if (fid && !formula) {
+        if (editable) {
           const foW = Math.min(r * 1.8, 56);
           html += `<foreignObject x="${cx - foW / 2}" y="${cy - 12}" width="${foW}" height="24">`;
-          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(fid)}" value="${esc(String(val))}" />`;
+          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(key)}" value="${esc(String(val))}" />`;
           html += `</foreignObject>`;
         } else {
-          html += `<text class="widget-value${formula ? " formula" : ""}" x="${cx}" y="${cy}">${esc(String(val))}</text>`;
+          html += `<text class="widget-value${mode === "receive" ? " formula" : ""}" x="${cx}" y="${cy}">${esc(String(val))}</text>`;
         }
-        html += `<text class="widget-label" x="${cx}" y="${cy + r + 14}">${esc(fid || "(field)")}</text>`;
+        html += `<text class="widget-label" x="${cx}" y="${cy + r + 14}">${esc(caption)}</text>`;
         html += `</g>`;
       } else {
-        const fid = w.field || "";
-        const val = fid ? liveValues[fid] : "";
-        const formula = !!(fid && isFormulaField(fid));
+        const key = widgetLabel(w);
+        const caption = widgetDisplayId(w) || key || "(id)";
+        const mode = widgetValueMode(w);
+        const editable = mode === "create" && !!key;
+        const val = resolveWidgetValue(w);
         html += `<g>`;
         html += `<rect class="widget-box" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="6" />`;
-        if (fid && !formula) {
+        if (editable) {
           html += `<foreignObject x="${(w.x || 0) + 4}" y="${(w.y || 0) + (w.h || 0) / 2 - 12}" width="${Math.max(24, (w.w || 0) - 8)}" height="24">`;
-          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(fid)}" value="${esc(String(val))}" />`;
+          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(key)}" value="${esc(String(val))}" />`;
           html += `</foreignObject>`;
         } else {
-          html += `<text class="widget-value${formula ? " formula" : ""}" x="${cx}" y="${cy}">${esc(String(val))}</text>`;
+          html += `<text class="widget-value${mode === "receive" ? " formula" : ""}" x="${cx}" y="${cy}">${esc(String(val))}</text>`;
         }
-        html += `<text class="widget-label" x="${cx}" y="${(w.y || 0) + (w.h || 0) + 14}">${esc(fid || "(field)")}</text>`;
+        html += `<text class="widget-label" x="${cx}" y="${(w.y || 0) + (w.h || 0) + 14}">${esc(caption)}</text>`;
         html += `</g>`;
       }
     }
@@ -787,8 +822,18 @@
         ? {
             nodes: Array.isArray(data.graph.nodes) ? data.graph.nodes : [],
             edges: Array.isArray(data.graph.edges) ? data.graph.edges : [],
+            collapsed: Array.isArray(data.graph.collapsed) ? data.graph.collapsed : [],
           }
-        : { nodes: [], edges: [] };
+        : { nodes: [], edges: [], collapsed: [] };
+
+    // Migrate legacy box/circle field → id/label/value_mode
+    if (RT && typeof RT.migrateDisplayWidget === "function") {
+      widgets = widgets.map((w) =>
+        w && (w.shape === "box" || w.shape === "circle")
+          ? RT.migrateDisplayWidget(w, schemaFields)
+          : w
+      );
+    }
 
     renderVisual(true);
     renderMechanics();

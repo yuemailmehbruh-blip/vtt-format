@@ -217,8 +217,30 @@
     ];
     if (!doc.layout.widgets.length) {
       doc.layout.widgets = [
-        { id: uid("w"), shape: "box", field: "STR", x: 40, y: 40, w: 72, h: 56 },
-        { id: uid("w"), shape: "circle", field: "STR_mod", x: 160, y: 40, w: 64, h: 64 },
+        {
+          uid: uid("w"),
+          id: "STR",
+          label: "STR",
+          field: "STR",
+          value_mode: "create",
+          shape: "box",
+          x: 40,
+          y: 40,
+          w: 72,
+          h: 56,
+        },
+        {
+          uid: uid("w"),
+          id: "STR",
+          label: "STR_mod",
+          field: "STR_mod",
+          value_mode: "receive",
+          shape: "circle",
+          x: 160,
+          y: 40,
+          w: 64,
+          h: 64,
+        },
       ];
     }
   }
@@ -300,17 +322,99 @@
     setStatus(`Loaded ${doc.sheet_id} (${src})`, "ok");
   }
 
-  function migrateWidget(w) {
-    if (!w || w.shape !== "button") return w;
-    if (w.action && w.action.type === "roll") {
-      if (w.mode == null) w.mode = "trigger";
+  function migrateWidget(w, fields) {
+    if (!w) return w;
+    if (w.shape === "button") {
+      if (w.action && w.action.type === "roll") {
+        if (w.mode == null) w.mode = "trigger";
+        if (w.function_id == null) w.function_id = "";
+        delete w.action;
+      }
+      if (w.mode !== "toggle") w.mode = "trigger";
       if (w.function_id == null) w.function_id = "";
-      delete w.action;
+      if (w.label == null) w.label = "Button";
+      return w;
     }
-    if (w.mode !== "toggle") w.mode = "trigger";
-    if (w.function_id == null) w.function_id = "";
-    if (w.label == null) w.label = "Button";
+    if (w.shape === "box" || w.shape === "circle") {
+      if (RT && typeof RT.migrateDisplayWidget === "function") {
+        return RT.migrateDisplayWidget(w, fields || doc && doc.fields, () => uid("w"));
+      }
+      // Fallback without runtime
+      if (!w.uid && w.id && /^w_[a-z0-9]+_[a-z0-9]+$/i.test(String(w.id))) {
+        w.uid = w.id;
+        w.id = w.field || w.label || "";
+      }
+      if (w.label == null || !String(w.label).trim()) {
+        w.label = (w.field != null && String(w.field).trim()) || (w.id || "");
+      }
+      w.field = w.label;
+      if (w.value_mode !== "create" && w.value_mode !== "receive") {
+        const key = w.label;
+        const fdef = (fields || (doc && doc.fields) || {})[key];
+        w.value_mode = fdef && fdef.formula ? "receive" : "create";
+      }
+      return w;
+    }
     return w;
+  }
+
+  function widgetUid(w) {
+    if (RT && typeof RT.widgetUid === "function") return RT.widgetUid(w);
+    if (!w) return "";
+    if (w.shape === "box" || w.shape === "circle") return String(w.uid || w.id || "");
+    return String(w.id || "");
+  }
+
+  function widgetLabel(w) {
+    if (RT && typeof RT.widgetLabel === "function") return RT.widgetLabel(w);
+    if (!w) return "";
+    return String(w.label || w.field || "").trim();
+  }
+
+  function widgetDisplayId(w) {
+    if (RT && typeof RT.widgetDisplayId === "function") return RT.widgetDisplayId(w);
+    if (!w) return "";
+    return String(w.id || w.field || w.label || "").trim();
+  }
+
+  /** Ensure schema fields from create/receive display widgets before compile. */
+  function syncLayoutFields() {
+    for (const w of doc.layout.widgets || []) {
+      if (w.shape !== "box" && w.shape !== "circle") continue;
+      migrateWidget(w, doc.fields);
+      const key = widgetLabel(w);
+      const displayId = widgetDisplayId(w);
+      const mode = w.value_mode === "receive" ? "receive" : "create";
+      w.value_mode = mode;
+      w.field = key; // alias
+      if (mode === "create") {
+        if (key) {
+          ensureField(key, { type: "integer", editable: true });
+          if (doc.fields[key] && doc.fields[key].formula) {
+            delete doc.fields[key].formula;
+          }
+          doc.fields[key].editable = "player_editable";
+        }
+      } else {
+        // receive: formula target when label is a distinct key
+        if (key && key !== displayId) {
+          ensureField(key);
+        }
+        // source variable for macro [x]=id
+        if (displayId) {
+          if (!doc.fields[displayId]) {
+            ensureField(displayId, { type: "integer", editable: true });
+          }
+        }
+        // Common ability-mod output so compileGraph can bind macros
+        if (displayId && key === displayId) {
+          const modKey = `${displayId}_mod`;
+          if (!doc.fields[modKey]) ensureField(modKey);
+        } else if (key && key !== displayId) {
+          ensureField(key);
+        }
+      }
+    }
   }
 
   function normalizeDoc(raw) {
@@ -321,7 +425,7 @@
     d.permissions = raw.permissions || null;
     d.layout = {
       widgets: Array.isArray(raw.layout && raw.layout.widgets)
-        ? raw.layout.widgets.map((w) => migrateWidget({ ...w }))
+        ? raw.layout.widgets.map((w) => migrateWidget({ ...w }, d.fields))
         : [],
     };
     d.graph = {
@@ -364,6 +468,7 @@
 
   function payload() {
     doc.name = sheetNameEl.value.trim() || doc.sheet_id;
+    syncLayoutFields();
     // Live-compile formulas into fields for save preview
     const compiled = compileGraph(doc.graph);
     if (!compiled.error) applyFormulasToFields(compiled.formulas);
@@ -512,7 +617,8 @@
     const widgets = doc.layout.widgets || [];
     let html = `<g id="display-root" transform="translate(${displayView.x},${displayView.y}) scale(${displayView.scale})">`;
     for (const w of widgets) {
-      const sel = w.id === selectedWidgetId ? " widget-selected" : "";
+      const wid = widgetUid(w);
+      const sel = wid === selectedWidgetId ? " widget-selected" : "";
       const cx = w.x + w.w / 2;
       const cy = w.y + w.h / 2;
       if (w.shape === "button") {
@@ -520,27 +626,51 @@
         const mode = w.mode === "toggle" ? "toggle" : "trigger";
         const fid = w.function_id || "";
         const sub = fid ? `${mode} · ${fid}` : mode;
-        html += `<g class="widget" data-id="${esc(w.id)}">`;
-        html += `<rect class="widget-button${sel}" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="10" data-id="${esc(w.id)}" />`;
+        html += `<g class="widget" data-id="${esc(wid)}">`;
+        html += `<rect class="widget-button${sel}" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="10" data-id="${esc(wid)}" />`;
         html += `<text class="widget-value" x="${cx}" y="${cy - 2}">${esc(label)}</text>`;
         html += `<text class="widget-label" x="${cx}" y="${cy + 14}">${esc(sub)}</text>`;
         html += `</g>`;
       } else if (w.shape === "circle") {
         const r = Math.min(w.w, w.h) / 2;
-        const val = fieldDefault(w.field);
-        const label = w.field || "(field)";
-        html += `<g class="widget" data-id="${esc(w.id)}" transform="translate(0,0)">`;
-        html += `<circle class="widget-circle${sel}" cx="${cx}" cy="${cy}" r="${r}" data-id="${esc(w.id)}" />`;
-        html += `<text class="widget-value" x="${cx}" y="${cy}">${esc(String(val))}</text>`;
-        html += `<text class="widget-label" x="${cx}" y="${cy + r + 14}">${esc(label)}</text>`;
+        const key = widgetLabel(w);
+        const caption = widgetDisplayId(w) || "(id)";
+        const mode = w.value_mode === "receive" ? "receive" : "create";
+        let val;
+        if (mode === "receive" && RT && typeof RT.resolveWidgetValue === "function") {
+          val = RT.resolveWidgetValue(w, {
+            liveValues: previewFieldValues(),
+            schemaFields: doc.fields,
+            graph: doc.graph,
+          });
+        } else {
+          val = key ? fieldDefault(key) : 0;
+        }
+        const valStr = String(val);
+        html += `<g class="widget" data-id="${esc(wid)}" transform="translate(0,0)">`;
+        html += `<circle class="widget-circle${sel}" cx="${cx}" cy="${cy}" r="${r}" data-id="${esc(wid)}" />`;
+        html += `<text class="widget-value" x="${cx}" y="${cy}">${esc(valStr)}</text>`;
+        html += `<text class="widget-label" x="${cx}" y="${cy + r + 14}">${esc(caption)}</text>`;
         html += `</g>`;
       } else {
-        const val = fieldDefault(w.field);
-        const label = w.field || "(field)";
-        html += `<g class="widget" data-id="${esc(w.id)}">`;
-        html += `<rect class="widget-box${sel}" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="6" data-id="${esc(w.id)}" />`;
-        html += `<text class="widget-value" x="${cx}" y="${cy}">${esc(String(val))}</text>`;
-        html += `<text class="widget-label" x="${cx}" y="${w.y + w.h + 14}">${esc(label)}</text>`;
+        const key = widgetLabel(w);
+        const caption = widgetDisplayId(w) || "(id)";
+        const mode = w.value_mode === "receive" ? "receive" : "create";
+        let val;
+        if (mode === "receive" && RT && typeof RT.resolveWidgetValue === "function") {
+          val = RT.resolveWidgetValue(w, {
+            liveValues: previewFieldValues(),
+            schemaFields: doc.fields,
+            graph: doc.graph,
+          });
+        } else {
+          val = key ? fieldDefault(key) : 0;
+        }
+        const valStr = String(val);
+        html += `<g class="widget" data-id="${esc(wid)}">`;
+        html += `<rect class="widget-box${sel}" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="6" data-id="${esc(wid)}" />`;
+        html += `<text class="widget-value" x="${cx}" y="${cy}">${esc(valStr)}</text>`;
+        html += `<text class="widget-label" x="${cx}" y="${w.y + w.h + 14}">${esc(caption)}</text>`;
         html += `</g>`;
       }
     }
@@ -558,7 +688,7 @@
   }
 
   function findWidget(id) {
-    return (doc.layout.widgets || []).find((w) => w.id === id);
+    return (doc.layout.widgets || []).find((w) => widgetUid(w) === id);
   }
 
   function hitWidget(x, y) {
@@ -618,31 +748,69 @@
       });
       return;
     }
-    const fdef = doc.fields[w.field] || {};
-    const isFormula = !!fdef.formula;
-    const hasField = !!(w.field && String(w.field).trim());
+    migrateWidget(w, doc.fields);
+    const key = widgetLabel(w);
+    const displayId = widgetDisplayId(w);
+    const mode = w.value_mode === "receive" ? "receive" : "create";
+    const fdef = key ? doc.fields[key] || {} : {};
+    const isReceive = mode === "receive";
+    const preview =
+      isReceive && RT && typeof RT.resolveWidgetValue === "function"
+        ? RT.resolveWidgetValue(w, {
+            liveValues: previewFieldValues(),
+            schemaFields: doc.fields,
+            graph: doc.graph,
+          })
+        : key
+          ? fieldDefault(key)
+          : 0;
     displayProps.innerHTML = `
-      <label>Field <input type="text" id="prop-field" value="${esc(w.field || "")}" placeholder="FIELD_ID" style="width:8rem" /></label>
-      <label>Value <input type="number" id="prop-value" ${!hasField || isFormula ? "disabled" : ""} value="${esc(String(hasField && fdef.default != null ? fdef.default : 0))}" style="width:5rem" title="${isFormula ? "Formula field (read-only)" : "Editable default"}" /></label>
-      ${isFormula ? `<span class="formula-preview">${esc(fdef.formula)}</span>` : ""}
-      <span class="hint">${w.shape} @ (${Math.round(w.x)},${Math.round(w.y)})</span>
+      <label>ID <input type="text" id="prop-id" value="${esc(displayId)}" placeholder="STR" style="width:6rem" title="Caption / macro [x] argument" /></label>
+      <label>Label <input type="text" id="prop-label-field" value="${esc(key)}" placeholder="STR_mod" style="width:7rem" title="Automation / schema field key" /></label>
+      <label>Mode <select id="prop-value-mode">
+        <option value="create"${mode === "create" ? " selected" : ""}>Create value</option>
+        <option value="receive"${mode === "receive" ? " selected" : ""}>Receive value</option>
+      </select></label>
+      <label>Value <input type="number" id="prop-value" ${isReceive || !key ? "disabled" : ""} value="${esc(String(!isReceive && fdef.default != null ? fdef.default : preview))}" style="width:5rem" title="${isReceive ? "Calculated (receive)" : "Editable default"}" /></label>
+      ${isReceive ? `<span class="formula-preview">${esc(fdef.formula ? fdef.formula : "ƒ macro/receive")}</span>` : ""}
+      <span class="hint">${w.shape} · sheet shows ID · automations use Label @ (${Math.round(w.x)},${Math.round(w.y)})</span>
     `;
-    const fieldInput = document.getElementById("prop-field");
+    const idInput = document.getElementById("prop-id");
+    const labelInput = document.getElementById("prop-label-field");
+    const modeEl = document.getElementById("prop-value-mode");
     const val = document.getElementById("prop-value");
-    fieldInput.addEventListener("change", () => {
-      const id = fieldInput.value.trim();
+    idInput.addEventListener("change", () => {
+      const id = idInput.value.trim();
       if (id && !isValidName(id)) {
-        setStatus("Field id must be identifier-like (optional [x] template)", "err");
+        setStatus("ID must be identifier-like", "err");
         return;
       }
-      w.field = id;
-      if (id) ensureField(id);
+      w.id = id;
+      if (!w.label && id) {
+        w.label = id;
+        w.field = id;
+      }
       renderDisplay();
     });
-    if (val && hasField && !isFormula) {
+    labelInput.addEventListener("change", () => {
+      const lab = labelInput.value.trim();
+      if (lab && !isValidName(lab)) {
+        setStatus("Label must be identifier-like (optional [x] template)", "err");
+        return;
+      }
+      w.label = lab;
+      w.field = lab;
+      if (lab && w.value_mode !== "receive") ensureField(lab);
+      renderDisplay();
+    });
+    modeEl.addEventListener("change", () => {
+      w.value_mode = modeEl.value === "receive" ? "receive" : "create";
+      renderDisplay();
+    });
+    if (val && !isReceive && key) {
       val.addEventListener("change", () => {
-        ensureField(w.field);
-        doc.fields[w.field].default = Number(val.value) || 0;
+        ensureField(key);
+        doc.fields[key].default = Number(val.value) || 0;
         renderDisplay();
       });
     }
@@ -700,9 +868,12 @@
         };
       } else {
         w = {
-          id: uid("w"),
-          shape: displayTool === "circle" ? "circle" : "box",
+          uid: uid("w"),
+          id: "",
+          label: "",
           field: "",
+          value_mode: "create",
+          shape: displayTool === "circle" ? "circle" : "box",
           x: p.x - 36,
           y: p.y - 28,
           w: displayTool === "circle" ? 64 : 72,
@@ -710,7 +881,7 @@
         };
       }
       doc.layout.widgets.push(w);
-      selectedWidgetId = w.id;
+      selectedWidgetId = widgetUid(w);
       displayTool = "select";
       syncDisplayToolButtons();
       renderDisplay();
@@ -719,16 +890,16 @@
     const hit = hitWidget(p.x, p.y);
     if (displayTool === "delete") {
       if (hit) {
-        doc.layout.widgets = doc.layout.widgets.filter((x) => x.id !== hit.id);
+        doc.layout.widgets = doc.layout.widgets.filter((x) => widgetUid(x) !== widgetUid(hit));
         selectedWidgetId = null;
         renderDisplay();
       }
       return;
     }
-    selectedWidgetId = hit ? hit.id : null;
+    selectedWidgetId = hit ? widgetUid(hit) : null;
     if (hit) {
       dispDrag = {
-        id: hit.id,
+        id: widgetUid(hit),
         ox: p.x - hit.x,
         oy: p.y - hit.y,
       };
@@ -863,7 +1034,7 @@
       const t = btn.getAttribute("data-tool");
       if (t === "delete") {
         if (selectedWidgetId) {
-          doc.layout.widgets = doc.layout.widgets.filter((x) => x.id !== selectedWidgetId);
+          doc.layout.widgets = doc.layout.widgets.filter((x) => widgetUid(x) !== selectedWidgetId);
           selectedWidgetId = null;
           renderDisplay();
         } else {

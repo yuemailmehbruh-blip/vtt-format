@@ -959,6 +959,341 @@
     return { formulas };
   }
 
+  /** Generated layout widget uid (builder uid("w")). */
+  function isGeneratedWidgetUid(s) {
+    return /^w_[a-z0-9]+_[a-z0-9]+$/i.test(String(s || "").trim());
+  }
+
+  /**
+   * Unique DOM/selection key for a layout widget.
+   * Boxes/circles may use uid (display id lives in id); buttons keep id as unique.
+   */
+  function widgetUid(w) {
+    if (!w) return "";
+    if (w.shape === "box" || w.shape === "circle") {
+      return String(w.uid || w.id || "");
+    }
+    return String(w.id || "");
+  }
+
+  /** Automation / schema field key for box|circle. */
+  function widgetLabel(w) {
+    if (!w) return "";
+    const lab = w.label != null && String(w.label).trim() ? String(w.label).trim() : "";
+    if (lab) return lab;
+    const f = w.field != null && String(w.field).trim() ? String(w.field).trim() : "";
+    return f;
+  }
+
+  /** Session/builder caption: display identity. */
+  function widgetDisplayId(w) {
+    if (!w) return "";
+    if (w.shape === "button") return w.label != null ? String(w.label) : "Button";
+    const id = w.id != null ? String(w.id).trim() : "";
+    if (id && !isGeneratedWidgetUid(id)) return id;
+    const f = w.field != null ? String(w.field).trim() : "";
+    if (f) return f;
+    const lab = w.label != null ? String(w.label).trim() : "";
+    return lab;
+  }
+
+  /**
+   * Migrate legacy box/circle widgets: field → label+id; keep generated id as uid.
+   * @param {object} w
+   * @param {Record<string, {formula?: string}>} [fields]
+   * @param {() => string} [makeUid]
+   */
+  function migrateDisplayWidget(w, fields, makeUid) {
+    if (!w || (w.shape !== "box" && w.shape !== "circle")) return w;
+    const out = Object.assign({}, w);
+    const gen = typeof makeUid === "function" ? makeUid : null;
+
+    if (!out.uid) {
+      if (out.id != null && isGeneratedWidgetUid(out.id)) {
+        out.uid = String(out.id);
+        const legacy =
+          (out.field != null && String(out.field).trim()) ||
+          (out.label != null && String(out.label).trim()) ||
+          "";
+        out.id = legacy;
+      } else if (gen) {
+        out.uid = gen();
+      }
+    }
+
+    if (out.label == null || !String(out.label).trim()) {
+      if (out.field != null && String(out.field).trim()) {
+        out.label = String(out.field).trim();
+      } else if (out.id != null && String(out.id).trim() && !isGeneratedWidgetUid(out.id)) {
+        out.label = String(out.id).trim();
+      } else {
+        out.label = "";
+      }
+    } else {
+      out.label = String(out.label).trim();
+    }
+
+    // Display id: prefer non-uid id, else legacy field/label
+    if (out.id == null || !String(out.id).trim() || isGeneratedWidgetUid(out.id)) {
+      out.id = out.label || (out.field != null ? String(out.field).trim() : "") || "";
+    } else {
+      out.id = String(out.id).trim();
+    }
+
+    // field stays an alias of label for backward compatibility
+    out.field = out.label;
+
+    if (out.value_mode !== "create" && out.value_mode !== "receive") {
+      const key = out.label;
+      const fdef = fields && key ? fields[key] : null;
+      out.value_mode = fdef && fdef.formula ? "receive" : "create";
+    }
+    return out;
+  }
+
+  /**
+   * Expand formula macros (no-entry collapsed groups) for [x]=argId.
+   * @returns {{ outputName: string, formula: string, blockName: string }[]}
+   */
+  function expandFormulaMacrosForId(graph, argId) {
+    const id = String(argId || "").trim();
+    /** @type {{ outputName: string, formula: string, blockName: string }[]} */
+    const results = [];
+    if (!id || !TEMPLATE_ID_RE.test(id)) return results;
+
+    const nodes = (graph && graph.nodes) || [];
+    const edges = (graph && graph.edges) || [];
+    const byId = Object.create(null);
+    for (const n of nodes) byId[n.id] = n;
+
+    /** @type {Record<string, {from:string, toPort:number}[]>} */
+    const incomingAll = Object.create(null);
+    for (const n of nodes) incomingAll[n.id] = [];
+    for (const e of edges) {
+      if (!byId[e.from] || !byId[e.to]) continue;
+      incomingAll[e.to].push({ from: e.from, toPort: e.toPort == null ? 0 : e.toPort });
+    }
+    for (const nid of Object.keys(incomingAll)) {
+      incomingAll[nid].sort((a, b) => a.toPort - b.toPort);
+    }
+
+    function exprOfOn(byIdLocal, incomingLocal, nodeId, memo, visiting) {
+      if (memo[nodeId] != null) return memo[nodeId];
+      if (visiting[nodeId]) throw new Error("Cycle while compiling");
+      visiting[nodeId] = true;
+      const n = byIdLocal[nodeId];
+      if (!n) throw new Error(`Missing node ${nodeId}`);
+      let out;
+      if (n.kind === "field") {
+        const fname = String(n.field || "").trim();
+        if (!isValidCompileName(fname)) {
+          throw new Error(`Invalid field name on node ${nodeId}`);
+        }
+        if (n.role === "output") {
+          const ins = incomingLocal[nodeId] || [];
+          if (ins.length !== 1) {
+            throw new Error(`Output field "${fname}" needs exactly one input wire`);
+          }
+          out = exprOfOn(byIdLocal, incomingLocal, ins[0].from, memo, visiting);
+        } else {
+          out = fname;
+        }
+      } else if (n.kind === "const") {
+        const v = Number(n.value);
+        if (!Number.isFinite(v)) throw new Error(`Bad constant on ${nodeId}`);
+        out = String(v);
+      } else if (n.kind === "op") {
+        const op = n.op;
+        const ins = incomingLocal[nodeId] || [];
+        function portFrom(port, fallbackIdx) {
+          return ins.find((x) => x.toPort === port) || ins[fallbackIdx];
+        }
+        if (op === "floor" || op === "not") {
+          if (ins.length < 1) throw new Error(`${op} needs one input`);
+          const a = portFrom(0, 0);
+          out = `${op}(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)})`;
+        } else if (op === "if") {
+          if (ins.length < 3) throw new Error("if needs three inputs (cond, then, else)");
+          const c = portFrom(0, 0);
+          const t = portFrom(1, 1);
+          const e = portFrom(2, 2);
+          out = `if(${exprOfOn(byIdLocal, incomingLocal, c.from, memo, visiting)}, ${exprOfOn(byIdLocal, incomingLocal, t.from, memo, visiting)}, ${exprOfOn(byIdLocal, incomingLocal, e.from, memo, visiting)})`;
+        } else if (op === "and" || op === "or") {
+          if (ins.length < 2) throw new Error(`${op} needs two inputs`);
+          const a = portFrom(0, 0);
+          const b = portFrom(1, 1);
+          out = `${op}(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)}, ${exprOfOn(byIdLocal, incomingLocal, b.from, memo, visiting)})`;
+        } else if (
+          op === "+" ||
+          op === "-" ||
+          op === "*" ||
+          op === "/" ||
+          op === "==" ||
+          op === "!=" ||
+          op === "<" ||
+          op === ">" ||
+          op === "<=" ||
+          op === ">="
+        ) {
+          if (ins.length < 2) throw new Error(`${op} needs two inputs`);
+          const a = portFrom(0, 0);
+          const b = portFrom(1, 1);
+          const ea = exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting);
+          const eb = exprOfOn(byIdLocal, incomingLocal, b.from, memo, visiting);
+          out = `(${ea} ${op} ${eb})`;
+        } else {
+          throw new Error(`Unknown op ${op}`);
+        }
+      } else if (n.kind === "roll" || n.kind === "entry" || n.kind === "function" || n.kind === "send_to_chat" || n.kind === "chat") {
+        throw new Error(`Node kind ${n.kind} cannot appear in a closed formula`);
+      } else {
+        throw new Error(`Unknown node kind ${n.kind}`);
+      }
+      visiting[nodeId] = false;
+      memo[nodeId] = out;
+      return out;
+    }
+
+    for (const block of (graph && graph.collapsed) || []) {
+      if (!block || !Array.isArray(block.nodeIds) || !block.nodeIds.length) continue;
+      const memberSet = new Set(block.nodeIds.map(String));
+      const members = nodes.filter((n) => memberSet.has(n.id));
+      const hasEntry = members.some(
+        (n) => n.kind === "entry" || n.kind === "function"
+      );
+      if (hasEntry) continue;
+
+      const blockLabel =
+        block.name != null && String(block.name).trim()
+          ? String(block.name).trim()
+          : String(block.id || "macro");
+
+      const outNodes = members.filter(
+        (n) => n.kind === "field" && n.role === "output"
+      );
+      for (const outNode of outNodes) {
+        const tmpl = String(outNode.field || "").trim();
+        if (!tmpl.includes("[x]")) continue;
+        const outputName = tmpl.split("[x]").join(id);
+        if (!isValidCompileName(outputName) || outputName.includes("[x]")) continue;
+
+        const subNodes = members.map((n) => substituteXInNode(n, id));
+        const subById = Object.create(null);
+        for (const n of subNodes) subById[n.id] = n;
+        const subIncoming = Object.create(null);
+        for (const n of subNodes) subIncoming[n.id] = [];
+        for (const e of edges) {
+          if (!memberSet.has(String(e.from)) || !memberSet.has(String(e.to))) continue;
+          if (!subById[e.from] || !subById[e.to]) continue;
+          subIncoming[e.to].push({
+            from: e.from,
+            toPort: e.toPort == null ? 0 : e.toPort,
+          });
+        }
+        for (const sid of Object.keys(subIncoming)) {
+          subIncoming[sid].sort((a, b) => a.toPort - b.toPort);
+        }
+        try {
+          const formula = exprOfOn(
+            subById,
+            subIncoming,
+            outNode.id,
+            Object.create(null),
+            Object.create(null)
+          );
+          results.push({ outputName, formula, blockName: blockLabel });
+        } catch (_) {
+          /* skip broken macro for live resolve */
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Resolve displayed value for a box/circle widget (create vs receive).
+   * @param {object} w
+   * @param {{
+   *   liveValues?: Record<string, number|string>,
+   *   schemaFields?: Record<string, {formula?: string, default?: unknown}>,
+   *   graph?: object
+   * }} [ctx]
+   */
+  function resolveWidgetValue(w, ctx) {
+    const c = ctx && typeof ctx === "object" ? ctx : {};
+    const live = c.liveValues && typeof c.liveValues === "object" ? c.liveValues : {};
+    const schema =
+      c.schemaFields && typeof c.schemaFields === "object" ? c.schemaFields : {};
+    const label = widgetLabel(w);
+    const displayId = widgetDisplayId(w);
+    const mode = w && w.value_mode === "receive" ? "receive" : "create";
+
+    function numOr(v, fallback) {
+      if (v === undefined || v === null || v === "") return fallback;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    if (mode === "create") {
+      if (label && live[label] != null) return numOr(live[label], 0);
+      if (label && schema[label] && schema[label].default != null) {
+        return numOr(schema[label].default, 0);
+      }
+      return 0;
+    }
+
+    // receive
+    const hasFormula = !!(label && schema[label] && schema[label].formula);
+    if (label && hasFormula) {
+      if (live[label] != null && live[label] !== "") return numOr(live[label], 0);
+      try {
+        const n = evalClosedFormula(String(schema[label].formula), live);
+        if (Number.isFinite(n)) return n;
+      } catch (_) {}
+    }
+
+    // Direct live value when label is a distinct formula target key already filled
+    if (label && label !== displayId && live[label] != null && live[label] !== "") {
+      return numOr(live[label], 0);
+    }
+
+    // Macro fallback: [x] := display id (or label)
+    const macroArg = displayId || label;
+    if (!macroArg) return 0;
+    const outputs = expandFormulaMacrosForId(c.graph, macroArg);
+    if (!outputs.length) {
+      // Last resort: schema/live for label even if create-looking
+      if (label && live[label] != null) return numOr(live[label], 0);
+      return 0;
+    }
+
+    const env = Object.assign({}, live);
+    if (macroArg && env[macroArg] == null && schema[macroArg] && schema[macroArg].default != null) {
+      env[macroArg] = schema[macroArg].default;
+    }
+
+    function evalOut(o) {
+      try {
+        const n = evalClosedFormula(o.formula, env);
+        return Number.isFinite(n) ? n : 0;
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    if (label) {
+      const hit = outputs.find((o) => o.outputName === label);
+      if (hit) return evalOut(hit);
+    }
+    // label empty or label === id → show primary derived output (e.g. STR_mod)
+    if (!label || label === displayId || label === macroArg) {
+      const prefer = outputs.find((o) => o.outputName === `${macroArg}_mod`);
+      if (prefer) return evalOut(prefer);
+      return evalOut(outputs[0]);
+    }
+    return 0;
+  }
+
   const api = {
     evalClosedFormula,
     rollDie,
@@ -968,6 +1303,13 @@
     extractTemplateId,
     compileGraph,
     bindMacroId,
+    isGeneratedWidgetUid,
+    widgetUid,
+    widgetLabel,
+    widgetDisplayId,
+    migrateDisplayWidget,
+    expandFormulaMacrosForId,
+    resolveWidgetValue,
   };
 
   global.SheetRuntime = api;

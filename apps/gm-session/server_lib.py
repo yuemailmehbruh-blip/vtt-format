@@ -346,7 +346,7 @@ class Handler(BaseHTTPRequestHandler):
             sheet_id = str(actor.get("sheet") or actor.get("sheet_id") or "").strip()
             schema_fields: dict = {}
             layout_widgets: list = []
-            schema_graph: dict = {"nodes": [], "edges": []}
+            schema_graph: dict = {"nodes": [], "edges": [], "collapsed": []}
             schema_source = None
             if sheet_id and _safe_segment(sheet_id):
                 schema_fields, layout_widgets, schema_graph, schema_source = (
@@ -945,7 +945,8 @@ class Handler(BaseHTTPRequestHandler):
                 g = data.get("graph") if isinstance(data.get("graph"), dict) else {}
                 nodes = g.get("nodes") if isinstance(g.get("nodes"), list) else []
                 edges = g.get("edges") if isinstance(g.get("edges"), list) else []
-                graph = {"nodes": list(nodes), "edges": list(edges)}
+                collapsed = g.get("collapsed") if isinstance(g.get("collapsed"), list) else []
+                graph = {"nodes": list(nodes), "edges": list(edges), "collapsed": list(collapsed)}
                 source = "yaml"
         scratch = self._builder_scratch_path(sheet_id)
         need_graph = not graph.get("nodes")
@@ -966,8 +967,13 @@ class Handler(BaseHTTPRequestHandler):
                     g = data.get("graph") if isinstance(data.get("graph"), dict) else {}
                     nodes = g.get("nodes") if isinstance(g.get("nodes"), list) else []
                     edges = g.get("edges") if isinstance(g.get("edges"), list) else []
-                    if nodes or edges:
-                        graph = {"nodes": list(nodes), "edges": list(edges)}
+                    collapsed = g.get("collapsed") if isinstance(g.get("collapsed"), list) else []
+                    if nodes or edges or collapsed:
+                        graph = {
+                            "nodes": list(nodes),
+                            "edges": list(edges),
+                            "collapsed": list(collapsed),
+                        }
                 if source is None:
                     source = "scratch"
         return fields, widgets, graph, source
@@ -997,13 +1003,18 @@ class Handler(BaseHTTPRequestHandler):
         g = data.get("graph") if isinstance(data.get("graph"), dict) else {}
         nodes = g.get("nodes") if isinstance(g.get("nodes"), list) else []
         edges = g.get("edges") if isinstance(g.get("edges"), list) else []
+        collapsed = g.get("collapsed") if isinstance(g.get("collapsed"), list) else []
         return {
             "sheet_id": data.get("id") or sheet_id,
             "name": data.get("name") or sheet_id,
             "permissions": data.get("permissions"),
             "fields": fields,
             "layout": {"widgets": widgets},
-            "graph": {"nodes": list(nodes), "edges": list(edges)},
+            "graph": {
+                "nodes": list(nodes),
+                "edges": list(edges),
+                "collapsed": list(collapsed),
+            },
             "_source": "yaml",
         }
 
@@ -1159,8 +1170,15 @@ class Handler(BaseHTTPRequestHandler):
 
         g_nodes = graph_in.get("nodes") if isinstance(graph_in.get("nodes"), list) else []
         g_edges = graph_in.get("edges") if isinstance(graph_in.get("edges"), list) else []
-        if g_nodes or g_edges:
-            out["graph"] = {"nodes": g_nodes, "edges": g_edges}
+        g_collapsed = (
+            graph_in.get("collapsed") if isinstance(graph_in.get("collapsed"), list) else []
+        )
+        if g_nodes or g_edges or g_collapsed:
+            out["graph"] = {
+                "nodes": g_nodes,
+                "edges": g_edges,
+                "collapsed": g_collapsed,
+            }
         elif isinstance(existing.get("graph"), dict):
             out["graph"] = existing["graph"]
 

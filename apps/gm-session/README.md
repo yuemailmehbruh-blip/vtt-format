@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.12**).
+Version is in `VERSION` (currently **0.6.13**).
 
 ## Run — desktop app (recommended)
 
@@ -228,6 +228,13 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+
+## 0.6.13
+
+- **ID + Label** — box/circle props: **ID** (session caption / macro `[x]` argument) and **Label** (automation/schema key). Legacy `field` migrates to both; `field` remains an alias of `label`. Unique widget key is `uid` (so two widgets can share display ID `STR`). Buttons unchanged (`label` + `function_id`).
+- **Create / Receive** — `value_mode: create|receive` (default receive if label has a formula). Create: editable number on `label`, no formula. Receive: read-only; resolves via schema formula or formula-macro bind with `[x]=ID` (e.g. ID=`STR` Label=`STR_mod`, or Label=`STR` showing `STR_mod`).
+- **Compile** — syncs layout fields then `compileGraph`; session loads `graph.collapsed` for live macro fallback via `resolveWidgetValue`.
+- **Tests** — `tests/display-widget-id-label.mjs`.
 
 ## 0.6.12
 

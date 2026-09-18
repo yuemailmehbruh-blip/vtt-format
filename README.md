@@ -147,6 +147,10 @@ GM Session gains a **Sheet builder** window: declarative display widgets (boxes/
 
 Session character sheets render the builder layout (boxes/circles/buttons) with live field values and closed formula evaluation. Roll buttons run `dN` on the sheet. Field widgets use a plain text id (no example dropdown). Notes text remains secondary.
 
+## 0.6.13 — Display ID/Label + create/receive
+
+Box/circle widgets split **ID** (sheet caption / macro `[x]`) from **Label** (automation field key), with **Create value** / **Receive value** modes so sheets reliably run values through formula macros (e.g. STR → STR_mod).
+
 ## 0.6.12 — Compress naming + formula macros
 
 Automations **Compress** names blocks via an in-UI textbox (any ≥1-node selection; prefills a sole named Function entry). Collapsed groups **without** an entry are formula macros: `compileGraph` binds `[x]` output templates to existing fields (e.g. `[x]_mod`→`STR_mod`/`DEX_mod`) and writes closed formulas.
