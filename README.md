@@ -147,6 +147,10 @@ GM Session gains a **Sheet builder** window: declarative display widgets (boxes/
 
 Session character sheets render the builder layout (boxes/circles/buttons) with live field values and closed formula evaluation. Roll buttons run `dN` on the sheet. Field widgets use a plain text id (no example dropdown). Notes text remains secondary.
 
+## 0.6.11 — Delete key + `[x]` template functions
+
+Automations **Delete** / **Backspace** remove the graph selection (nodes / compressed block / edge) when not typing in an input. Named entries may use a single `[x]` token (`check_[x]`, fields like `[x]_PROF`); buttons call `check_ATK` or `check_[ATK]` to instantiate — runtime clones the reachable subgraph and substitutes `[x]` before eval.
+
 ## 0.6.10 — Toggle flips fields + active arithmetic chat
 
 Toggle layout buttons (and Mechanics-tab Toggle) flip an actor field named by `function_id` / mechanic name between 0 and 1; Trigger still runs named automations. Proficiency: `function_id: atk_prof` + formula `if(atk_prof, …)` — no entry→output required for the toggle. `include_arithmetic` chat detail shows only the **active** arithmetic path (`if` → taken branch; no full logic tree).

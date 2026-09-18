@@ -92,6 +92,9 @@ Closed formula language (field-output graph → string): field names, number lit
 
 **Builder compress:** `graph.collapsed` is UI metadata only — Compile/runtime evaluate the flat `nodes`/`edges` and ignore `collapsed`.
 
+**Parameterized `[x]` templates (v1):** an entry name may include exactly one literal `[x]` (e.g. `check_[x]`). Field names on that subgraph may also use `[x]` (e.g. `[x]_PROF`). A trigger button’s `function_id` is either the concrete form `check_ATK` or the bracket form `check_[ATK]` — ID must match `[A-Za-z_][A-Za-z0-9_]*`. Matching: exact entry name first; else templates whose `prefix[x]suffix` fits the call; if several match, prefer the longest template name; still tied → error. Exact call of a template name (still containing `[x]`) errors — buttons must supply the ID. Evaluation clones the reachable subgraph (forward + ancestors), replaces every literal `[x]` in string node props (except `id`), then runs as a normal function. Compress/Publish keep template names unchanged. Automations: **Delete** / **Backspace** (when not typing in an input) deletes the graph selection like the toolbar Delete button.
+
+
 ## Mechanics library (campaign)
 
 Shared named functions live under:

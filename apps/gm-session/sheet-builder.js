@@ -158,6 +158,8 @@
 
   function ensureField(fid, opts) {
     if (!fid) return;
+    // Template placeholder names ([x]_PROF) are graph-only until instantiated
+    if (String(fid).includes("[x]")) return;
     if (!doc.fields[fid]) {
       doc.fields[fid] = {
         type: (opts && opts.type) || "integer",
@@ -170,6 +172,17 @@
       doc.fields[fid].formula = opts.formula;
       doc.fields[fid].editable = false;
     }
+  }
+
+  /**
+   * Field / entry names: identifier-like, optionally with literal [x] template tokens.
+   * After replacing each [x] with "x", must match /^[A-Za-z_][A-Za-z0-9_]*$/.
+   */
+  function isValidName(id) {
+    const s = String(id || "").trim();
+    if (!s) return false;
+    const collapsed = s.split("[x]").join("x");
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(collapsed);
   }
 
   // --- Seed sample STR → STR_mod graph ---
@@ -290,7 +303,7 @@
       let out;
       if (n.kind === "field") {
         const fname = String(n.field || "").trim();
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(fname)) {
+        if (!isValidName(fname)) {
           throw new Error(`Invalid field name on node ${nodeId}`);
         }
         // Source fields are just the name; output sinks compile from their input
@@ -381,6 +394,7 @@
 
   function applyFormulasToFields(formulas) {
     for (const [fid, formula] of Object.entries(formulas)) {
+      if (String(fid).includes("[x]")) continue; // template placeholders are runtime-only
       ensureField(fid, { editable: false });
       doc.fields[fid].formula = formula;
       doc.fields[fid].editable = false;
@@ -749,8 +763,8 @@
     const val = document.getElementById("prop-value");
     fieldInput.addEventListener("change", () => {
       const id = fieldInput.value.trim();
-      if (id && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
-        setStatus("Field id must be identifier-like", "err");
+      if (id && !isValidName(id)) {
+        setStatus("Field id must be identifier-like (optional [x] template)", "err");
         return;
       }
       w.field = id;
@@ -904,11 +918,39 @@
     { passive: false }
   );
 
+  function isTypingTarget(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    const tag = (el.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space" && !e.repeat) {
-      spaceDown = true;
-      displaySvg.style.cursor = "grab";
-      if (graphSvg) graphSvg.style.cursor = "grab";
+      if (!isTypingTarget(e.target) && !isTypingTarget(document.activeElement)) {
+        spaceDown = true;
+        displaySvg.style.cursor = "grab";
+        if (graphSvg) graphSvg.style.cursor = "grab";
+      }
+    }
+    // Automations: Delete/Backspace → same as toolbar Delete (nodes / compressed / edge)
+    if (
+      (e.key === "Delete" || e.key === "Backspace") &&
+      !e.altKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !isTypingTarget(e.target) &&
+      !isTypingTarget(document.activeElement)
+    ) {
+      const hasGraphSel =
+        selectedEdgeId ||
+        selectedCollapsedId ||
+        selectedNodeIds.size > 0 ||
+        selectedNodeId;
+      if (!hasGraphSel) return;
+      e.preventDefault();
+      deleteSelectedGraph();
     }
   });
   window.addEventListener("keyup", (e) => {
@@ -1600,7 +1642,7 @@
     }
     const n = selectedNodeId ? nodeById(selectedNodeId) : null;
     if (!n) {
-      let msg = `<span class="hint">Drag palette onto canvas · wire ports · wheel zoom · mid/space/empty pan · Shift-click multi-select</span>`;
+      let msg = `<span class="hint">Drag palette onto canvas · wire ports · Delete/Backspace removes selection · [x] in names = template (button supplies ID) · wheel zoom · mid/space/empty pan · Shift-click multi-select</span>`;
       if (compiled.error) {
         msg += ` <span class="formula-preview" style="color:var(--err)">${esc(compiled.error)}</span>`;
       } else if (Object.keys(compiled.formulas).length) {
@@ -1615,7 +1657,7 @@
     }
     let body = "";
     if (n.kind === "field") {
-      body += `<label>Field <input type="text" id="g-field" value="${esc(n.field || "")}" placeholder="FIELD_ID" style="width:8rem" /></label>`;
+      body += `<label>Field <input type="text" id="g-field" value="${esc(n.field || "")}" placeholder="FIELD or [x]_PROF" style="width:8rem" /></label>`;
       body += `<label>Role <select id="g-role">
         <option value="source"${n.role !== "output" ? " selected" : ""}>source</option>
         <option value="output"${n.role === "output" ? " selected" : ""}>output (formula sink)</option>
@@ -1647,8 +1689,8 @@
       body += `<label>Sides <input type="number" id="g-sides" min="2" value="${esc(String(n.sides != null ? n.sides : 20))}" style="width:4rem" /></label>`;
       body += `<span class="hint">runtime roll 1..sides</span>`;
     } else if (n.kind === "entry" || n.kind === "function") {
-      body += `<label>Name <input type="text" id="g-entry-name" value="${esc(n.name || "")}" placeholder="function_id" style="width:8rem" /></label>`;
-      body += `<span class="hint">button function_id entry point</span>`;
+      body += `<label>Name <input type="text" id="g-entry-name" value="${esc(n.name || "")}" placeholder="check_[x]" style="width:8rem" /></label>`;
+      body += `<span class="hint">button function_id entry · use [x] for templates (button check_ATK / check_[ATK])</span>`;
     } else if (n.kind === "send_to_chat" || n.kind === "chat") {
       body += `<label>Label <input type="text" id="g-chat-label" value="${esc(n.label || "")}" placeholder="optional" style="width:8rem" /></label>`;
       const arithOn = n.include_arithmetic === true;
@@ -1672,8 +1714,8 @@
     if (gf) {
       gf.addEventListener("change", () => {
         const id = gf.value.trim();
-        if (id && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
-          setStatus("Invalid field id", "err");
+        if (id && !isValidName(id)) {
+          setStatus("Invalid field id (use ident or [x] template)", "err");
           return;
         }
         n.field = id;

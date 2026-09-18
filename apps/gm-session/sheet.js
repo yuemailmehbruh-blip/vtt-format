@@ -584,12 +584,13 @@
       return;
     }
     let html =
-      `<p class="mech-empty" style="margin-bottom:0.5rem">Trigger runs the named function. Toggle flips field <em>name</em> between 0 and 1 (does not invoke the graph).</p>`;
+      `<p class="mech-empty" style="margin-bottom:0.5rem">Trigger runs the named function. Toggle flips field <em>name</em> between 0 and 1 (does not invoke the graph). Templates with <code>[x]</code> need a button id (e.g. check_ATK) — Trigger on the template name alone will error.</p>`;
     for (const name of names) {
+      const isTemplate = name.includes("[x]");
       const pressed = fieldToggleOn(name);
       html += `<div class="mech-row" data-fn="${esc(name)}">`;
-      html += `<span class="mech-name">${esc(name)}</span>`;
-      html += `<button type="button" class="mech-trigger" data-action="trigger">Trigger</button>`;
+      html += `<span class="mech-name">${esc(name)}${isTemplate ? ' <span class="mech-empty">(template)</span>' : ""}</span>`;
+      html += `<button type="button" class="mech-trigger" data-action="trigger" title="${isTemplate ? "Needs button function_id with concrete ID" : "Run named function"}">Trigger</button>`;
       html += `<button type="button" class="mech-toggle${pressed ? " toggle-on" : ""}" data-action="toggle" aria-pressed="${pressed ? "true" : "false"}">${pressed ? "On" : "Off"}</button>`;
       html += `</div>`;
     }

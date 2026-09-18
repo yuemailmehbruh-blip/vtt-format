@@ -3,6 +3,8 @@
  * Closed formulas + named-function DAG evaluation (entry / roll / send_to_chat / field / op / const).
  * Logic ops: == != < > <= >= and or not if; entryValue option for toggle 0/1.
  * Reachability: forward BFS from entry, then close under incoming ancestors before Kahn topo.
+ * Templates: entry names with [x] match function_id prefix+ID+suffix or prefix+[ID]+suffix;
+ * reachable subgraph is deep-cloned and [x] substituted before eval.
  */
 (function (global) {
   "use strict";
@@ -204,8 +206,101 @@
     return Number.isFinite(v) && v !== 0;
   }
 
+  const TEMPLATE_ID_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+  /**
+   * Extract ID from call given template prefix/suffix (exactly one [x] slot).
+   * Accepts call === prefix+ID+suffix or prefix+"["+ID+"]"+suffix.
+   * @returns {string|null}
+   */
+  function extractTemplateId(call, prefix, suffix) {
+    const c = String(call || "");
+    const p = String(prefix || "");
+    const s = String(suffix || "");
+    if (!c.startsWith(p)) return null;
+    if (s) {
+      if (!c.endsWith(s)) return null;
+    }
+    const mid = c.slice(p.length, c.length - s.length);
+    if (!mid) return null;
+    if (mid.startsWith("[") && mid.endsWith("]") && mid.length >= 3) {
+      const inner = mid.slice(1, -1);
+      return TEMPLATE_ID_RE.test(inner) ? inner : null;
+    }
+    return TEMPLATE_ID_RE.test(mid) ? mid : null;
+  }
+
+  /**
+   * Resolve function_id to an entry node, optionally via [x] template.
+   * @returns {{ entry: object, substId: string|null } | { error: string }}
+   */
+  function resolveNamedEntry(nodes, functionId) {
+    const name = String(functionId || "").trim();
+    if (!name) return { error: "Missing function id" };
+
+    const entries = (nodes || []).filter(
+      (n) => n && (n.kind === "entry" || n.kind === "function")
+    );
+
+    const exact = entries.find((n) => String(n.name || "").trim() === name);
+    if (exact) {
+      const ename = String(exact.name || "").trim();
+      if (ename.includes("[x]")) {
+        const hintPlain = ename.split("[x]").join("ID");
+        const hintBrackets = ename.split("[x]").join("[ID]");
+        return {
+          error:
+            `Template "${ename}" needs an ID — use a button with function_id like ${hintPlain} or ${hintBrackets}`,
+        };
+      }
+      return { entry: exact, substId: null };
+    }
+
+    /** @type {{ entry: object, substId: string, tmpl: string }[]} */
+    const matches = [];
+    for (const e of entries) {
+      const tmpl = String(e.name || "").trim();
+      if (!tmpl.includes("[x]")) continue;
+      const parts = tmpl.split("[x]");
+      if (parts.length !== 2) continue; // v1: exactly one [x]
+      const id = extractTemplateId(name, parts[0], parts[1]);
+      if (id) matches.push({ entry: e, substId: id, tmpl });
+    }
+    if (!matches.length) {
+      return { error: `No entry function named "${name}"` };
+    }
+    matches.sort((a, b) => b.tmpl.length - a.tmpl.length);
+    if (
+      matches.length >= 2 &&
+      matches[0].tmpl.length === matches[1].tmpl.length
+    ) {
+      return {
+        error: `Ambiguous template match for "${name}" (${matches[0].tmpl} vs ${matches[1].tmpl})`,
+      };
+    }
+    return { entry: matches[0].entry, substId: matches[0].substId };
+  }
+
+  /** Replace literal [x] in every string property except id. */
+  function substituteXInNode(node, id) {
+    const out = {};
+    for (const [k, v] of Object.entries(node || {})) {
+      if (k === "id") {
+        out[k] = v;
+      } else if (typeof v === "string") {
+        out[k] = v.split("[x]").join(id);
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+
   /**
    * Evaluate a named automation starting at an entry (or function) node.
+   * Supports [x] parameterized templates: entry name check_[x] matches
+   * function_id check_ATK or check_[ATK]; reachable subgraph is cloned and
+   * every string prop's literal [x] is replaced with the ID before eval.
    * @param {{ nodes?: object[], edges?: object[] }} graph
    * @param {string} functionId
    * @param {Record<string, number|string>} fieldEnv
@@ -226,30 +321,84 @@
       typeof opts.entryValue === "number" && Number.isFinite(opts.entryValue)
         ? opts.entryValue
         : 1;
-    const nodes = (graph && graph.nodes) || [];
-    const edges = (graph && graph.edges) || [];
+    let nodes = (graph && graph.nodes) || [];
+    let edges = (graph && graph.edges) || [];
     if (!name) {
       return { ok: false, error: "Missing function id", values: {}, writes: {}, rolls: [], messages: [] };
     }
 
-    const byId = Object.create(null);
-    for (const n of nodes) byId[n.id] = n;
-
-    const entry = nodes.find(
-      (n) =>
-        (n.kind === "entry" || n.kind === "function") &&
-        String(n.name || "").trim() === name
-    );
-    if (!entry) {
+    const resolved = resolveNamedEntry(nodes, name);
+    if (resolved.error) {
       return {
         ok: false,
-        error: `No entry function named "${name}"`,
+        error: resolved.error,
         values: {},
         writes: {},
         rolls: [],
         messages: [],
       };
     }
+    let entry = resolved.entry;
+    const substId = resolved.substId;
+
+    // Template: clone reachable subgraph, substitute [x] → ID (do not mutate stored graph).
+    if (substId) {
+      const byId0 = Object.create(null);
+      for (const n of nodes) byId0[n.id] = n;
+      /** @type {Record<string, string[]>} */
+      const outgoing0 = Object.create(null);
+      /** @type {Record<string, {from:string}[]>} */
+      const incoming0 = Object.create(null);
+      for (const n of nodes) {
+        outgoing0[n.id] = [];
+        incoming0[n.id] = [];
+      }
+      for (const e of edges) {
+        if (!byId0[e.from] || !byId0[e.to]) continue;
+        outgoing0[e.from].push(e.to);
+        incoming0[e.to].push({ from: e.from });
+      }
+      const reachable0 = new Set();
+      const stack0 = [entry.id];
+      while (stack0.length) {
+        const id = stack0.pop();
+        if (reachable0.has(id)) continue;
+        reachable0.add(id);
+        for (const to of outgoing0[id] || []) stack0.push(to);
+      }
+      let grew0 = true;
+      while (grew0) {
+        grew0 = false;
+        for (const id of [...reachable0]) {
+          for (const inc of incoming0[id] || []) {
+            if (!reachable0.has(inc.from)) {
+              reachable0.add(inc.from);
+              grew0 = true;
+            }
+          }
+        }
+      }
+      nodes = nodes
+        .filter((n) => reachable0.has(n.id))
+        .map((n) => substituteXInNode(n, substId));
+      edges = edges
+        .filter((e) => reachable0.has(e.from) && reachable0.has(e.to))
+        .map((e) => ({ ...e }));
+      entry = nodes.find((n) => n.id === entry.id);
+      if (!entry) {
+        return {
+          ok: false,
+          error: `Template instantiation failed for "${name}"`,
+          values: {},
+          writes: {},
+          rolls: [],
+          messages: [],
+        };
+      }
+    }
+
+    const byId = Object.create(null);
+    for (const n of nodes) byId[n.id] = n;
 
     /** @type {Record<string, {from:string, toPort:number}[]>} */
     const incoming = Object.create(null);
@@ -522,6 +671,8 @@
     rollDie,
     arityOf,
     evaluateNamedFunction,
+    resolveNamedEntry,
+    extractTemplateId,
   };
 
   global.SheetRuntime = api;

@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.10**).
+Version is in `VERSION` (currently **0.6.11**).
 
 ## Run — desktop app (recommended)
 
@@ -228,6 +228,13 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+
+## 0.6.11
+
+- **Delete / Backspace** — in Automations (not while typing in an input/textarea/select), deletes the current graph selection the same way as the Delete toolbar button (selected nodes, selected compressed block, or selected edge).
+- **`[x]` template functions** — entry/function names and field names may include the literal token `[x]` (exactly one `[x]` in the entry name for matching). Button `function_id` `check_ATK` or `check_[ATK]` instantiates template `check_[x]`: runtime clones the reachable subgraph, replaces `[x]` in string node properties, then evaluates. Exact Trigger of a template name without an ID errors clearly. Prefer longest template name when multiple match.
+- **Builder / Mechanics** — Compress/Publish keep template names; graph props hint notes `[x]` instantiation; Mechanics lists templates (marked) but Trigger without a concrete ID fails by design.
+- **Tests** — `tests/evaluate-templates.mjs`.
 
 ## 0.6.10
 
