@@ -1,5 +1,5 @@
 /**
- * Display widgets: migrate field→id/label + resolve receive via formula macro.
+ * Display widgets: migrate → label/input_id/output_id + display fallback.
  * Run: node apps/gm-session/tests/display-widget-id-label.mjs
  */
 import { readFileSync } from "fs";
@@ -17,39 +17,102 @@ vm.runInNewContext(code, sandbox);
 const {
   migrateDisplayWidget,
   resolveWidgetValue,
-  widgetLabel,
-  widgetDisplayId,
+  widgetHasOutputValue,
+  widgetCaption,
+  widgetInputId,
+  widgetOutputId,
   widgetUid,
   expandFormulaMacrosForId,
   evalClosedFormula,
   compileGraph,
+  unwrapBracketIdent,
+  isValidCompileName,
 } = sandbox.SheetRuntime;
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
 }
 
-// --- migrate legacy field ---
+// --- migrate legacy field-only ---
 const legacy = migrateDisplayWidget(
   { id: "w_m5xk_1", shape: "box", field: "STR", x: 0, y: 0, w: 72, h: 56 },
   { STR: { type: "integer", default: 10 } },
   () => "w_new_uid"
 );
 assert(legacy.uid === "w_m5xk_1", `uid: ${legacy.uid}`);
-assert(legacy.id === "STR", `display id: ${legacy.id}`);
+assert(legacy.input_id === "STR", `input_id: ${legacy.input_id}`);
+assert(legacy.output_id === "STR", `output_id: ${legacy.output_id}`);
 assert(legacy.label === "STR", `label: ${legacy.label}`);
 assert(legacy.field === "STR", `field alias: ${legacy.field}`);
-assert(legacy.value_mode === "create", `mode: ${legacy.value_mode}`);
+assert(legacy.value_mode === undefined, "value_mode removed");
 assert(widgetUid(legacy) === "w_m5xk_1", "widgetUid");
-assert(widgetDisplayId(legacy) === "STR", "widgetDisplayId");
-assert(widgetLabel(legacy) === "STR", "widgetLabel");
+assert(widgetCaption(legacy) === "STR", "widgetCaption");
+assert(widgetInputId(legacy) === "STR", "widgetInputId");
 
+// Legacy field with formula (pure formula key)
 const legacyMod = migrateDisplayWidget(
   { id: "w_abc_2", shape: "circle", field: "STR_mod", x: 0, y: 0, w: 64, h: 64 },
   { STR_mod: { type: "integer", formula: "floor((STR - 10) / 2)" } }
 );
-assert(legacyMod.value_mode === "receive", `mod mode: ${legacyMod.value_mode}`);
-assert(legacyMod.id === "STR_mod" && legacyMod.label === "STR_mod", "mod id/label");
+assert(legacyMod.input_id === "STR_mod" && legacyMod.output_id === "STR_mod", "mod ids");
+assert(legacyMod.label === "STR_mod", "mod label");
+
+// --- migrate 0.6.13 receive: id=caption, label=automation ---
+const recv613 = migrateDisplayWidget(
+  {
+    uid: "w_r",
+    id: "STR",
+    label: "STR_mod",
+    field: "STR_mod",
+    value_mode: "receive",
+    shape: "circle",
+  },
+  {}
+);
+assert(recv613.input_id === "STR", `recv input ${recv613.input_id}`);
+assert(recv613.output_id === "STR_mod", `recv output ${recv613.output_id}`);
+assert(recv613.label === "STR", `recv caption ${recv613.label}`);
+assert(recv613.field === "STR", "recv field=input");
+assert(recv613.value_mode === undefined, "recv no value_mode");
+
+// --- migrate 0.6.13 create ---
+const create613 = migrateDisplayWidget(
+  {
+    uid: "w_c",
+    id: "STR",
+    label: "STR",
+    field: "STR",
+    value_mode: "create",
+    shape: "box",
+  },
+  {}
+);
+assert(create613.input_id === "STR" && create613.output_id === "STR", "create ids");
+assert(create613.label === "STR", "create label");
+
+// Already dual-value: keep
+const dual = migrateDisplayWidget(
+  {
+    uid: "w_d",
+    label: "Strength",
+    input_id: "STR",
+    output_id: "STR_mod",
+    shape: "box",
+  },
+  {}
+);
+assert(dual.label === "Strength" && dual.input_id === "STR" && dual.output_id === "STR_mod", "keep dual");
+
+// --- unwrapBracketIdent leftover ---
+assert(typeof unwrapBracketIdent === "function", "unwrapBracketIdent exported");
+{
+  const a = unwrapBracketIdent("[STR]");
+  assert(a.unwrapped === true && a.value === "STR", `unwrap [STR]: ${JSON.stringify(a)}`);
+  const d = unwrapBracketIdent("[x]_mod");
+  assert(d.unwrapped === false && d.value === "[x]_mod", `keep [x]_mod`);
+  assert(isValidCompileName("[x]_mod"), "[x]_mod still valid");
+  assert(!isValidCompileName("[STR]"), "[STR] invalid until unwrap");
+}
 
 // --- ability_mod macro graph ---
 function abilityModMacroGraph() {
@@ -92,35 +155,18 @@ assert(
   "expand eval STR 18 → 4"
 );
 
-// create box: ID=STR Label=STR
-const createW = {
+// Dual widget: Label Strength, Input STR, Output STR_mod
+const strengthW = {
   uid: "w_1",
-  id: "STR",
-  label: "STR",
+  label: "Strength",
+  input_id: "STR",
+  output_id: "STR_mod",
   field: "STR",
-  value_mode: "create",
   shape: "box",
 };
-assert(
-  resolveWidgetValue(createW, {
-    liveValues: { STR: 18 },
-    schemaFields: { STR: { type: "integer", default: 10 } },
-    graph,
-  }) === 18,
-  "create resolves live STR"
-);
 
-// receive box: ID=STR Label=STR_mod (formula on schema)
-const recvMod = {
-  uid: "w_2",
-  id: "STR",
-  label: "STR_mod",
-  field: "STR_mod",
-  value_mode: "receive",
-  shape: "circle",
-};
 assert(
-  resolveWidgetValue(recvMod, {
+  resolveWidgetValue(strengthW, {
     liveValues: { STR: 18, STR_mod: 4 },
     schemaFields: {
       STR: { type: "integer", default: 10 },
@@ -128,35 +174,73 @@ assert(
     },
     graph,
   }) === 4,
-  "receive STR_mod from live/formula"
+  "display STR_mod from formula/live"
 );
 
-// receive via macro when formula missing on schema
 assert(
-  resolveWidgetValue(recvMod, {
+  widgetHasOutputValue(strengthW, {
+    liveValues: { STR: 18 },
+    schemaFields: {
+      STR: { type: "integer", default: 10 },
+      STR_mod: { type: "integer", formula: "floor((STR - 10) / 2)" },
+    },
+    graph,
+  }) === true,
+  "has output when formula on STR_mod"
+);
+
+// Macro path when formula missing on schema
+assert(
+  resolveWidgetValue(strengthW, {
     liveValues: { STR: 18 },
     schemaFields: { STR: { type: "integer", default: 10 }, STR_mod: { type: "integer" } },
     graph,
   }) === 4,
-  "receive STR_mod via macro expand"
+  "display STR_mod via macro expand"
 );
 
-// receive ID=STR Label=STR → show derived mod (macro primary output)
-const recvSame = {
-  uid: "w_3",
-  id: "STR",
-  label: "STR",
+// Fallback to input when no output automation
+const plainW = {
+  uid: "w_2",
+  label: "Strength",
+  input_id: "STR",
+  output_id: "STR",
   field: "STR",
-  value_mode: "receive",
-  shape: "circle",
+  shape: "box",
 };
 assert(
-  resolveWidgetValue(recvSame, {
+  resolveWidgetValue(plainW, {
     liveValues: { STR: 18 },
     schemaFields: { STR: { type: "integer", default: 10 } },
     graph,
-  }) === 4,
-  "receive label===id shows STR_mod via macro"
+  }) === 18,
+  "fallback to input when output===input and no formula"
+);
+
+assert(
+  widgetHasOutputValue(plainW, {
+    liveValues: { STR: 18 },
+    schemaFields: { STR: { type: "integer", default: 10 } },
+    graph,
+  }) === false,
+  "no output when same key without formula"
+);
+
+// output set but unresolved → fallback to input
+const dangling = {
+  uid: "w_3",
+  label: "Strength",
+  input_id: "STR",
+  output_id: "MISSING_mod",
+  shape: "box",
+};
+assert(
+  resolveWidgetValue(dangling, {
+    liveValues: { STR: 14 },
+    schemaFields: { STR: { type: "integer", default: 10 }, MISSING_mod: { type: "integer" } },
+    graph,
+  }) === 14,
+  "fallback when output key has no formula/macro"
 );
 
 // compile still binds when fields present

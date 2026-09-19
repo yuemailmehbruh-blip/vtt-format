@@ -147,6 +147,10 @@ GM Session gains a **Sheet builder** window: declarative display widgets (boxes/
 
 Session character sheets render the builder layout (boxes/circles/buttons) with live field values and closed formula evaluation. Roll buttons run `dN` on the sheet. Field widgets use a plain text id (no example dropdown). Notes text remains secondary.
 
+## 0.6.14 — Label + Input/Output IDs (dual-value)
+
+Box/circle widgets show **Label** on the sheet; automations use **Input ID** / **Output ID**. Removed Create/Receive toggle — every widget stores a base and displays output-or-fallback. Session shows calculated primary + compact base editor when output is active.
+
 ## 0.6.13 — Display ID/Label + create/receive
 
 Box/circle widgets split **ID** (sheet caption / macro `[x]`) from **Label** (automation field key), with **Create value** / **Receive value** modes so sheets reliably run values through formula macros (e.g. STR → STR_mod).

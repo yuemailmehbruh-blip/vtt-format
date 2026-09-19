@@ -179,23 +179,34 @@
     return !!(def && def.formula);
   }
 
-  function widgetLabel(w) {
-    if (RT && typeof RT.widgetLabel === "function") return RT.widgetLabel(w);
-    return String((w && (w.label || w.field)) || "").trim();
+  function widgetCaption(w) {
+    if (RT && typeof RT.widgetCaption === "function") return RT.widgetCaption(w);
+    const lab = String((w && w.label) || "").trim();
+    if (lab) return lab;
+    return widgetInputId(w);
   }
 
-  function widgetDisplayId(w) {
-    if (RT && typeof RT.widgetDisplayId === "function") return RT.widgetDisplayId(w);
-    const id = w && w.id != null ? String(w.id).trim() : "";
-    if (id && !(RT && RT.isGeneratedWidgetUid && RT.isGeneratedWidgetUid(id))) return id;
-    return String((w && (w.field || w.label)) || "").trim();
+  function widgetInputId(w) {
+    if (RT && typeof RT.widgetInputId === "function") return RT.widgetInputId(w);
+    return String((w && (w.input_id || w.field)) || "").trim();
   }
 
-  function widgetValueMode(w) {
-    if (w && w.value_mode === "receive") return "receive";
-    if (w && w.value_mode === "create") return "create";
-    const key = widgetLabel(w);
-    return key && isFormulaField(key) ? "receive" : "create";
+  function widgetOutputId(w) {
+    if (RT && typeof RT.widgetOutputId === "function") return RT.widgetOutputId(w);
+    return String((w && (w.output_id || w.input_id || w.field)) || "").trim();
+  }
+
+  function widgetHasOutput(w) {
+    if (RT && typeof RT.widgetHasOutputValue === "function") {
+      return RT.widgetHasOutputValue(w, {
+        liveValues,
+        schemaFields,
+        graph,
+      });
+    }
+    const inKey = widgetInputId(w);
+    const outKey = widgetOutputId(w);
+    return !!(outKey && outKey !== inKey && isFormulaField(outKey));
   }
 
   function resolveWidgetValue(w) {
@@ -206,7 +217,7 @@
         graph,
       });
     }
-    const key = widgetLabel(w);
+    const key = widgetInputId(w);
     return key && liveValues[key] != null ? liveValues[key] : 0;
   }
 
@@ -676,37 +687,65 @@
         html += `</g>`;
       } else if (w.shape === "circle") {
         const r = Math.min(w.w || 0, w.h || 0) / 2;
-        const key = widgetLabel(w);
-        const caption = widgetDisplayId(w) || key || "(id)";
-        const mode = widgetValueMode(w);
-        const editable = mode === "create" && !!key;
-        const val = resolveWidgetValue(w);
+        const inKey = widgetInputId(w);
+        const caption = widgetCaption(w) || inKey || "(label)";
+        const hasOut = widgetHasOutput(w);
+        const displayVal = resolveWidgetValue(w);
+        const baseVal =
+          inKey && liveValues[inKey] != null
+            ? liveValues[inKey]
+            : inKey && schemaFields[inKey] && schemaFields[inKey].default != null
+              ? schemaFields[inKey].default
+              : 0;
         html += `<g>`;
         html += `<circle class="widget-circle" cx="${cx}" cy="${cy}" r="${r}" />`;
-        if (editable) {
+        const outKey = widgetOutputId(w);
+        if (hasOut && inKey && outKey && outKey !== inKey) {
+          // Calculated primary + compact base editor
+          html += `<text class="widget-value formula" x="${cx}" y="${cy - 8}">${esc(String(displayVal))}</text>`;
+          const foW = Math.min(r * 1.4, 48);
+          html += `<foreignObject x="${cx - foW / 2}" y="${cy + 2}" width="${foW}" height="18">`;
+          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit field-edit-base" type="number" data-field="${esc(inKey)}" value="${esc(String(baseVal))}" title="Base (${esc(inKey)})" />`;
+          html += `</foreignObject>`;
+        } else if (hasOut) {
+          html += `<text class="widget-value formula" x="${cx}" y="${cy}">${esc(String(displayVal))}</text>`;
+        } else if (inKey) {
           const foW = Math.min(r * 1.8, 56);
           html += `<foreignObject x="${cx - foW / 2}" y="${cy - 12}" width="${foW}" height="24">`;
-          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(key)}" value="${esc(String(val))}" />`;
+          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(inKey)}" value="${esc(String(displayVal))}" />`;
           html += `</foreignObject>`;
         } else {
-          html += `<text class="widget-value${mode === "receive" ? " formula" : ""}" x="${cx}" y="${cy}">${esc(String(val))}</text>`;
+          html += `<text class="widget-value" x="${cx}" y="${cy}">${esc(String(displayVal))}</text>`;
         }
         html += `<text class="widget-label" x="${cx}" y="${cy + r + 14}">${esc(caption)}</text>`;
         html += `</g>`;
       } else {
-        const key = widgetLabel(w);
-        const caption = widgetDisplayId(w) || key || "(id)";
-        const mode = widgetValueMode(w);
-        const editable = mode === "create" && !!key;
-        const val = resolveWidgetValue(w);
+        const inKey = widgetInputId(w);
+        const caption = widgetCaption(w) || inKey || "(label)";
+        const hasOut = widgetHasOutput(w);
+        const displayVal = resolveWidgetValue(w);
+        const baseVal =
+          inKey && liveValues[inKey] != null
+            ? liveValues[inKey]
+            : inKey && schemaFields[inKey] && schemaFields[inKey].default != null
+              ? schemaFields[inKey].default
+              : 0;
         html += `<g>`;
         html += `<rect class="widget-box" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="6" />`;
-        if (editable) {
+        const outKey = widgetOutputId(w);
+        if (hasOut && inKey && outKey && outKey !== inKey) {
+          html += `<text class="widget-value formula" x="${cx}" y="${cy - 8}">${esc(String(displayVal))}</text>`;
+          html += `<foreignObject x="${(w.x || 0) + 6}" y="${cy + 2}" width="${Math.max(28, (w.w || 0) - 12)}" height="18">`;
+          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit field-edit-base" type="number" data-field="${esc(inKey)}" value="${esc(String(baseVal))}" title="Base (${esc(inKey)})" />`;
+          html += `</foreignObject>`;
+        } else if (hasOut) {
+          html += `<text class="widget-value formula" x="${cx}" y="${cy}">${esc(String(displayVal))}</text>`;
+        } else if (inKey) {
           html += `<foreignObject x="${(w.x || 0) + 4}" y="${(w.y || 0) + (w.h || 0) / 2 - 12}" width="${Math.max(24, (w.w || 0) - 8)}" height="24">`;
-          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(key)}" value="${esc(String(val))}" />`;
+          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(inKey)}" value="${esc(String(displayVal))}" />`;
           html += `</foreignObject>`;
         } else {
-          html += `<text class="widget-value${mode === "receive" ? " formula" : ""}" x="${cx}" y="${cy}">${esc(String(val))}</text>`;
+          html += `<text class="widget-value" x="${cx}" y="${cy}">${esc(String(displayVal))}</text>`;
         }
         html += `<text class="widget-label" x="${cx}" y="${(w.y || 0) + (w.h || 0) + 14}">${esc(caption)}</text>`;
         html += `</g>`;
@@ -826,7 +865,7 @@
           }
         : { nodes: [], edges: [], collapsed: [] };
 
-    // Migrate legacy box/circle field → id/label/value_mode
+    // Migrate legacy box/circle → label/input_id/output_id
     if (RT && typeof RT.migrateDisplayWidget === "function") {
       widgets = widgets.map((w) =>
         w && (w.shape === "box" || w.shape === "circle")

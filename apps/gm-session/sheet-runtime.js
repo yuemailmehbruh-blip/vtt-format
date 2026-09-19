@@ -676,6 +676,18 @@
   }
 
   /**
+   * Unwrap a sole bracketed identifier like [STR] → STR.
+   * Does NOT touch real [x] templates ([x], [x]_mod, FOO_[x], etc.).
+   * @returns {{ value: string, unwrapped: boolean }}
+   */
+  function unwrapBracketIdent(raw) {
+    const s = String(raw == null ? "" : raw).trim();
+    const m = /^\[([A-Za-z_][A-Za-z0-9_]*)\]$/.exec(s);
+    if (m) return { value: m[1], unwrapped: true };
+    return { value: s, unwrapped: false };
+  }
+
+  /**
    * Bind concrete field F to template containing [x] (same ID in every slot).
    * @returns {string|null} ID or null
    */
@@ -966,7 +978,7 @@
 
   /**
    * Unique DOM/selection key for a layout widget.
-   * Boxes/circles may use uid (display id lives in id); buttons keep id as unique.
+   * Boxes/circles use uid; buttons keep id as unique.
    */
   function widgetUid(w) {
     if (!w) return "";
@@ -976,29 +988,61 @@
     return String(w.id || "");
   }
 
-  /** Automation / schema field key for box|circle. */
-  function widgetLabel(w) {
-    if (!w) return "";
-    const lab = w.label != null && String(w.label).trim() ? String(w.label).trim() : "";
-    if (lab) return lab;
-    const f = w.field != null && String(w.field).trim() ? String(w.field).trim() : "";
-    return f;
-  }
-
-  /** Session/builder caption: display identity. */
-  function widgetDisplayId(w) {
+  /** Sheet caption under box/circle (human label). Fallback: input_id. */
+  function widgetCaption(w) {
     if (!w) return "";
     if (w.shape === "button") return w.label != null ? String(w.label) : "Button";
-    const id = w.id != null ? String(w.id).trim() : "";
-    if (id && !isGeneratedWidgetUid(id)) return id;
-    const f = w.field != null ? String(w.field).trim() : "";
-    if (f) return f;
     const lab = w.label != null ? String(w.label).trim() : "";
-    return lab;
+    if (lab) return lab;
+    return widgetInputId(w);
   }
 
   /**
-   * Migrate legacy box/circle widgets: field → label+id; keep generated id as uid.
+   * @deprecated Prefer widgetCaption. Kept for older callers; returns sheet caption.
+   */
+  function widgetLabel(w) {
+    return widgetCaption(w);
+  }
+
+  /** Editable base field key (automations / schema). */
+  function widgetInputId(w) {
+    if (!w) return "";
+    const inn = w.input_id != null ? String(w.input_id).trim() : "";
+    if (inn) return inn;
+    const f = w.field != null ? String(w.field).trim() : "";
+    if (f) return f;
+    const id = w.id != null ? String(w.id).trim() : "";
+    if (id && !isGeneratedWidgetUid(id)) return id;
+    return "";
+  }
+
+  /** Display / formula target field key. Falls back to input_id. */
+  function widgetOutputId(w) {
+    if (!w) return "";
+    const o = w.output_id != null ? String(w.output_id).trim() : "";
+    if (o) return o;
+    return widgetInputId(w);
+  }
+
+  /**
+   * @deprecated Old "display id" (0.6.13 caption). Now returns caption (label).
+   */
+  function widgetDisplayId(w) {
+    return widgetCaption(w);
+  }
+
+  /**
+   * Migrate box/circle → { label, input_id, output_id }; drop value_mode.
+   *
+   * Rules (0.6.14 — sheet shows Label; automations use IDs):
+   * - Ensure uid (move generated id → uid).
+   * - If input_id/output_id already set: keep; field aliases input_id; strip value_mode.
+   * - Else from 0.6.13 (id=caption, label=automation key, value_mode):
+   *   - receive && label !== id → input_id=id, output_id=label, caption label=old id
+   *   - else → input_id = field || label || id; output_id = input_id;
+   *     caption prefers old id when it was the sheet caption
+   * - Pure legacy field-only → input_id=output_id=field, label=field
+   *
    * @param {object} w
    * @param {Record<string, {formula?: string}>} [fields]
    * @param {() => string} [makeUid]
@@ -1011,43 +1055,70 @@
     if (!out.uid) {
       if (out.id != null && isGeneratedWidgetUid(out.id)) {
         out.uid = String(out.id);
-        const legacy =
-          (out.field != null && String(out.field).trim()) ||
-          (out.label != null && String(out.label).trim()) ||
-          "";
-        out.id = legacy;
+        // Clear generated id so it is not treated as a field key / caption
+        out.id = "";
       } else if (gen) {
         out.uid = gen();
       }
     }
 
-    if (out.label == null || !String(out.label).trim()) {
-      if (out.field != null && String(out.field).trim()) {
-        out.label = String(out.field).trim();
-      } else if (out.id != null && String(out.id).trim() && !isGeneratedWidgetUid(out.id)) {
-        out.label = String(out.id).trim();
+    const hasInput = out.input_id != null && String(out.input_id).trim();
+    const hasOutput = out.output_id != null && String(out.output_id).trim();
+
+    if (hasInput || hasOutput) {
+      out.input_id = hasInput
+        ? String(out.input_id).trim()
+        : String(out.field || out.id || "").trim();
+      out.output_id = hasOutput ? String(out.output_id).trim() : out.input_id;
+      if (out.label == null || !String(out.label).trim()) {
+        out.label = out.input_id;
       } else {
-        out.label = "";
+        out.label = String(out.label).trim();
       }
+      out.field = out.input_id; // alias for older readers
+      delete out.value_mode;
+      return out;
+    }
+
+    const oldId =
+      out.id != null && String(out.id).trim() && !isGeneratedWidgetUid(out.id)
+        ? String(out.id).trim()
+        : "";
+    const oldField = out.field != null ? String(out.field).trim() : "";
+    const oldLabel = out.label != null ? String(out.label).trim() : "";
+    const oldMode =
+      out.value_mode === "receive" || out.value_mode === "create"
+        ? out.value_mode
+        : null;
+
+    // 0.6.13 receive with distinct automation label vs caption id
+    if (oldMode === "receive" && oldLabel && oldId && oldLabel !== oldId) {
+      out.input_id = oldId;
+      out.output_id = oldLabel;
+      // Old id was sheet caption; old label was automation key → swap roles
+      out.label = oldId;
     } else {
-      out.label = String(out.label).trim();
+      // Create-ish / same-key / field-only legacy
+      const autoKey = oldField || oldLabel || oldId || "";
+      out.input_id = autoKey;
+      out.output_id = autoKey;
+      // If old id was caption and label was the automation key (create, distinct)
+      if (oldId && oldLabel && oldId !== oldLabel && oldMode === "create") {
+        out.label = oldId;
+        out.input_id = oldLabel || oldField || oldId;
+        out.output_id = out.input_id;
+      } else if (oldId && (!oldLabel || oldLabel === autoKey)) {
+        out.label = oldId || autoKey;
+      } else if (oldLabel) {
+        out.label = oldLabel;
+      } else {
+        out.label = autoKey;
+      }
     }
 
-    // Display id: prefer non-uid id, else legacy field/label
-    if (out.id == null || !String(out.id).trim() || isGeneratedWidgetUid(out.id)) {
-      out.id = out.label || (out.field != null ? String(out.field).trim() : "") || "";
-    } else {
-      out.id = String(out.id).trim();
-    }
-
-    // field stays an alias of label for backward compatibility
-    out.field = out.label;
-
-    if (out.value_mode !== "create" && out.value_mode !== "receive") {
-      const key = out.label;
-      const fdef = fields && key ? fields[key] : null;
-      out.value_mode = fdef && fdef.formula ? "receive" : "create";
-    }
+    out.field = out.input_id; // alias of input_id for older readers
+    delete out.value_mode;
+    if (out.id != null && isGeneratedWidgetUid(out.id)) delete out.id;
     return out;
   }
 
@@ -1211,7 +1282,32 @@
   }
 
   /**
-   * Resolve displayed value for a box/circle widget (create vs receive).
+   * True when output_id has a useful automation-defined value (formula / macro / live).
+   */
+  function widgetHasOutputValue(w, ctx) {
+    const c = ctx && typeof ctx === "object" ? ctx : {};
+    const live = c.liveValues && typeof c.liveValues === "object" ? c.liveValues : {};
+    const schema =
+      c.schemaFields && typeof c.schemaFields === "object" ? c.schemaFields : {};
+    const inKey = widgetInputId(w);
+    const outKey = widgetOutputId(w);
+    if (!outKey) return false;
+    if (outKey === inKey) {
+      // Same key: only "output mode" if a formula drives it
+      return !!(schema[outKey] && schema[outKey].formula);
+    }
+    if (schema[outKey] && schema[outKey].formula) return true;
+    if (live[outKey] != null && live[outKey] !== "") return true;
+    // Macro can produce outKey from input_id as [x]
+    if (inKey) {
+      const outputs = expandFormulaMacrosForId(c.graph, inKey);
+      if (outputs.some((o) => o.outputName === outKey)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Resolve displayed value: output_id if automations define it, else input_id base.
    * @param {object} w
    * @param {{
    *   liveValues?: Record<string, number|string>,
@@ -1224,9 +1320,8 @@
     const live = c.liveValues && typeof c.liveValues === "object" ? c.liveValues : {};
     const schema =
       c.schemaFields && typeof c.schemaFields === "object" ? c.schemaFields : {};
-    const label = widgetLabel(w);
-    const displayId = widgetDisplayId(w);
-    const mode = w && w.value_mode === "receive" ? "receive" : "create";
+    const inKey = widgetInputId(w);
+    const outKey = widgetOutputId(w);
 
     function numOr(v, fallback) {
       if (v === undefined || v === null || v === "") return fallback;
@@ -1234,65 +1329,60 @@
       return Number.isFinite(n) ? n : fallback;
     }
 
-    if (mode === "create") {
-      if (label && live[label] != null) return numOr(live[label], 0);
-      if (label && schema[label] && schema[label].default != null) {
-        return numOr(schema[label].default, 0);
+    function readInput() {
+      if (inKey && live[inKey] != null) return numOr(live[inKey], 0);
+      if (inKey && schema[inKey] && schema[inKey].default != null) {
+        return numOr(schema[inKey].default, 0);
       }
       return 0;
     }
 
-    // receive
-    const hasFormula = !!(label && schema[label] && schema[label].formula);
-    if (label && hasFormula) {
-      if (live[label] != null && live[label] !== "") return numOr(live[label], 0);
+    if (!widgetHasOutputValue(w, c)) {
+      return readInput();
+    }
+
+    // Prefer live/schema formula on output_id
+    if (outKey && schema[outKey] && schema[outKey].formula) {
+      if (live[outKey] != null && live[outKey] !== "") return numOr(live[outKey], 0);
       try {
-        const n = evalClosedFormula(String(schema[label].formula), live);
+        const n = evalClosedFormula(String(schema[outKey].formula), live);
         if (Number.isFinite(n)) return n;
       } catch (_) {}
     }
 
-    // Direct live value when label is a distinct formula target key already filled
-    if (label && label !== displayId && live[label] != null && live[label] !== "") {
-      return numOr(live[label], 0);
+    if (outKey && outKey !== inKey && live[outKey] != null && live[outKey] !== "") {
+      return numOr(live[outKey], 0);
     }
 
-    // Macro fallback: [x] := display id (or label)
-    const macroArg = displayId || label;
-    if (!macroArg) return 0;
-    const outputs = expandFormulaMacrosForId(c.graph, macroArg);
-    if (!outputs.length) {
-      // Last resort: schema/live for label even if create-looking
-      if (label && live[label] != null) return numOr(live[label], 0);
-      return 0;
-    }
-
-    const env = Object.assign({}, live);
-    if (macroArg && env[macroArg] == null && schema[macroArg] && schema[macroArg].default != null) {
-      env[macroArg] = schema[macroArg].default;
-    }
-
-    function evalOut(o) {
-      try {
-        const n = evalClosedFormula(o.formula, env);
-        return Number.isFinite(n) ? n : 0;
-      } catch (_) {
-        return 0;
+    // Macro fallback: [x] := input_id
+    const macroArg = inKey;
+    if (macroArg) {
+      const outputs = expandFormulaMacrosForId(c.graph, macroArg);
+      const env = Object.assign({}, live);
+      if (env[macroArg] == null && schema[macroArg] && schema[macroArg].default != null) {
+        env[macroArg] = schema[macroArg].default;
+      }
+      function evalOut(o) {
+        try {
+          const n = evalClosedFormula(o.formula, env);
+          return Number.isFinite(n) ? n : null;
+        } catch (_) {
+          return null;
+        }
+      }
+      if (outKey) {
+        const hit = outputs.find((o) => o.outputName === outKey);
+        if (hit) {
+          const n = evalOut(hit);
+          if (n != null) return n;
+        }
       }
     }
 
-    if (label) {
-      const hit = outputs.find((o) => o.outputName === label);
-      if (hit) return evalOut(hit);
-    }
-    // label empty or label === id → show primary derived output (e.g. STR_mod)
-    if (!label || label === displayId || label === macroArg) {
-      const prefer = outputs.find((o) => o.outputName === `${macroArg}_mod`);
-      if (prefer) return evalOut(prefer);
-      return evalOut(outputs[0]);
-    }
-    return 0;
+    // Output claimed but unresolved → fall back to input
+    return readInput();
   }
+
 
   const api = {
     evalClosedFormula,
@@ -1303,10 +1393,16 @@
     extractTemplateId,
     compileGraph,
     bindMacroId,
+    isValidCompileName,
+    unwrapBracketIdent,
     isGeneratedWidgetUid,
     widgetUid,
+    widgetCaption,
     widgetLabel,
+    widgetInputId,
+    widgetOutputId,
     widgetDisplayId,
+    widgetHasOutputValue,
     migrateDisplayWidget,
     expandFormulaMacrosForId,
     resolveWidgetValue,

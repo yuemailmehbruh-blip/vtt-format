@@ -187,6 +187,41 @@
     return /^[A-Za-z_][A-Za-z0-9_]*$/.test(collapsed);
   }
 
+  /** Unwrap [STR] → STR; leave real [x] templates untouched. */
+  function unwrapBracketIdent(raw) {
+    if (RT && typeof RT.unwrapBracketIdent === "function") {
+      return RT.unwrapBracketIdent(raw);
+    }
+    const s = String(raw == null ? "" : raw).trim();
+    const m = /^\[([A-Za-z_][A-Za-z0-9_]*)\]$/.exec(s);
+    if (m) return { value: m[1], unwrapped: true };
+    return { value: s, unwrapped: false };
+  }
+
+  let bracketIdentHintShown = false;
+
+  function maybeHintBracketUnwrap() {
+    if (bracketIdentHintShown) return;
+    bracketIdentHintShown = true;
+    setStatus(
+      "Use STR (not [STR]). Put [x] only on Automations Field nodes inside the macro.",
+      "ok"
+    );
+  }
+
+  /** Clearer error when brackets remain invalid on display ID/Label. */
+  function displayNameError(kind, raw) {
+    const s = String(raw || "").trim();
+    if (/^\[[A-Za-z_][A-Za-z0-9_]*\]$/.test(s)) {
+      // Should have been unwrapped; defensive
+      return `${kind} must be STR or STR_mod (or a [x] template like [x]_mod). Do not use ${s} — that is not a template token.`;
+    }
+    if (s.includes("[") || s.includes("]")) {
+      return `${kind} must be STR or STR_mod (or a [x] template like [x]_mod). Do not use [STR] — that is not a template token.`;
+    }
+    return `${kind} must be STR or STR_mod (or a [x] template like [x]_mod). Do not use [STR] — that is not a template token.`;
+  }
+
   // --- Seed sample STR → STR_mod graph ---
   function seedStrModGraph() {
     ensureField("STR", { default: 10 });
@@ -219,27 +254,15 @@
       doc.layout.widgets = [
         {
           uid: uid("w"),
-          id: "STR",
-          label: "STR",
+          label: "Strength",
+          input_id: "STR",
+          output_id: "STR_mod",
           field: "STR",
-          value_mode: "create",
           shape: "box",
           x: 40,
           y: 40,
           w: 72,
           h: 56,
-        },
-        {
-          uid: uid("w"),
-          id: "STR",
-          label: "STR_mod",
-          field: "STR_mod",
-          value_mode: "receive",
-          shape: "circle",
-          x: 160,
-          y: 40,
-          w: 64,
-          h: 64,
         },
       ];
     }
@@ -337,22 +360,23 @@
     }
     if (w.shape === "box" || w.shape === "circle") {
       if (RT && typeof RT.migrateDisplayWidget === "function") {
-        return RT.migrateDisplayWidget(w, fields || doc && doc.fields, () => uid("w"));
+        const m = RT.migrateDisplayWidget(w, fields || doc && doc.fields, () => uid("w"));
+        Object.keys(w).forEach((k) => delete w[k]);
+        Object.assign(w, m);
+        return w;
       }
       // Fallback without runtime
       if (!w.uid && w.id && /^w_[a-z0-9]+_[a-z0-9]+$/i.test(String(w.id))) {
         w.uid = w.id;
-        w.id = w.field || w.label || "";
+        w.id = "";
       }
-      if (w.label == null || !String(w.label).trim()) {
-        w.label = (w.field != null && String(w.field).trim()) || (w.id || "");
+      if (!w.input_id) {
+        w.input_id = (w.field != null && String(w.field).trim()) || (w.label || w.id || "");
       }
-      w.field = w.label;
-      if (w.value_mode !== "create" && w.value_mode !== "receive") {
-        const key = w.label;
-        const fdef = (fields || (doc && doc.fields) || {})[key];
-        w.value_mode = fdef && fdef.formula ? "receive" : "create";
-      }
+      if (!w.output_id) w.output_id = w.input_id;
+      if (w.label == null || !String(w.label).trim()) w.label = w.input_id || "";
+      w.field = w.input_id;
+      delete w.value_mode;
       return w;
     }
     return w;
@@ -365,54 +389,69 @@
     return String(w.id || "");
   }
 
+  function widgetCaption(w) {
+    if (RT && typeof RT.widgetCaption === "function") return RT.widgetCaption(w);
+    if (!w) return "";
+    const lab = String(w.label || "").trim();
+    if (lab) return lab;
+    return widgetInputId(w);
+  }
+
+  function widgetInputId(w) {
+    if (RT && typeof RT.widgetInputId === "function") return RT.widgetInputId(w);
+    if (!w) return "";
+    return String(w.input_id || w.field || "").trim();
+  }
+
+  function widgetOutputId(w) {
+    if (RT && typeof RT.widgetOutputId === "function") return RT.widgetOutputId(w);
+    if (!w) return "";
+    return String(w.output_id || w.input_id || w.field || "").trim();
+  }
+
+  /** @deprecated use widgetCaption */
   function widgetLabel(w) {
-    if (RT && typeof RT.widgetLabel === "function") return RT.widgetLabel(w);
-    if (!w) return "";
-    return String(w.label || w.field || "").trim();
+    return widgetCaption(w);
   }
 
+  /** @deprecated use widgetCaption */
   function widgetDisplayId(w) {
-    if (RT && typeof RT.widgetDisplayId === "function") return RT.widgetDisplayId(w);
-    if (!w) return "";
-    return String(w.id || w.field || w.label || "").trim();
+    return widgetCaption(w);
   }
 
-  /** Ensure schema fields from create/receive display widgets before compile. */
+  /** Ensure input_id + output_id schema fields before compile so macros can bind. */
   function syncLayoutFields() {
     for (const w of doc.layout.widgets || []) {
       if (w.shape !== "box" && w.shape !== "circle") continue;
-      migrateWidget(w, doc.fields);
-      const key = widgetLabel(w);
-      const displayId = widgetDisplayId(w);
-      const mode = w.value_mode === "receive" ? "receive" : "create";
-      w.value_mode = mode;
-      w.field = key; // alias
-      if (mode === "create") {
-        if (key) {
-          ensureField(key, { type: "integer", editable: true });
-          if (doc.fields[key] && doc.fields[key].formula) {
-            delete doc.fields[key].formula;
+      const migrated = migrateWidget(w, doc.fields);
+      // migrateWidget may return a new object from RT — write back
+      if (migrated && migrated !== w) {
+        Object.keys(w).forEach((k) => delete w[k]);
+        Object.assign(w, migrated);
+      }
+      const inKey = widgetInputId(w);
+      const outKey = widgetOutputId(w);
+      w.input_id = inKey;
+      w.output_id = outKey || inKey;
+      w.field = inKey; // alias of input_id
+      delete w.value_mode;
+
+      if (inKey) {
+        ensureField(inKey, { type: "integer", editable: true });
+        if (doc.fields[inKey]) {
+          if (outKey && outKey !== inKey) {
+            // Distinct base: editable, no formula
+            if (doc.fields[inKey].formula) delete doc.fields[inKey].formula;
+            doc.fields[inKey].editable = "player_editable";
+          } else if (!doc.fields[inKey].formula) {
+            doc.fields[inKey].editable = "player_editable";
           }
-          doc.fields[key].editable = "player_editable";
+          // same key with formula: leave for compile/display (legacy formula-only widget)
         }
-      } else {
-        // receive: formula target when label is a distinct key
-        if (key && key !== displayId) {
-          ensureField(key);
-        }
-        // source variable for macro [x]=id
-        if (displayId) {
-          if (!doc.fields[displayId]) {
-            ensureField(displayId, { type: "integer", editable: true });
-          }
-        }
-        // Common ability-mod output so compileGraph can bind macros
-        if (displayId && key === displayId) {
-          const modKey = `${displayId}_mod`;
-          if (!doc.fields[modKey]) ensureField(modKey);
-        } else if (key && key !== displayId) {
-          ensureField(key);
-        }
+      }
+      if (outKey && outKey !== inKey) {
+        // Leave room for formulas; do not clear an existing formula on output
+        if (!doc.fields[outKey]) ensureField(outKey);
       }
     }
   }
@@ -633,18 +672,17 @@
         html += `</g>`;
       } else if (w.shape === "circle") {
         const r = Math.min(w.w, w.h) / 2;
-        const key = widgetLabel(w);
-        const caption = widgetDisplayId(w) || "(id)";
-        const mode = w.value_mode === "receive" ? "receive" : "create";
-        let val;
-        if (mode === "receive" && RT && typeof RT.resolveWidgetValue === "function") {
+        const caption = widgetCaption(w) || widgetInputId(w) || "(label)";
+        let val = 0;
+        if (RT && typeof RT.resolveWidgetValue === "function") {
           val = RT.resolveWidgetValue(w, {
             liveValues: previewFieldValues(),
             schemaFields: doc.fields,
             graph: doc.graph,
           });
         } else {
-          val = key ? fieldDefault(key) : 0;
+          const inKey = widgetInputId(w);
+          val = inKey ? fieldDefault(inKey) : 0;
         }
         const valStr = String(val);
         html += `<g class="widget" data-id="${esc(wid)}" transform="translate(0,0)">`;
@@ -653,18 +691,17 @@
         html += `<text class="widget-label" x="${cx}" y="${cy + r + 14}">${esc(caption)}</text>`;
         html += `</g>`;
       } else {
-        const key = widgetLabel(w);
-        const caption = widgetDisplayId(w) || "(id)";
-        const mode = w.value_mode === "receive" ? "receive" : "create";
-        let val;
-        if (mode === "receive" && RT && typeof RT.resolveWidgetValue === "function") {
+        const caption = widgetCaption(w) || widgetInputId(w) || "(label)";
+        let val = 0;
+        if (RT && typeof RT.resolveWidgetValue === "function") {
           val = RT.resolveWidgetValue(w, {
             liveValues: previewFieldValues(),
             schemaFields: doc.fields,
             graph: doc.graph,
           });
         } else {
-          val = key ? fieldDefault(key) : 0;
+          const inKey = widgetInputId(w);
+          val = inKey ? fieldDefault(inKey) : 0;
         }
         const valStr = String(val);
         html += `<g class="widget" data-id="${esc(wid)}">`;
@@ -749,68 +786,89 @@
       return;
     }
     migrateWidget(w, doc.fields);
-    const key = widgetLabel(w);
-    const displayId = widgetDisplayId(w);
-    const mode = w.value_mode === "receive" ? "receive" : "create";
-    const fdef = key ? doc.fields[key] || {} : {};
-    const isReceive = mode === "receive";
+    const caption = widgetCaption(w);
+    const inKey = widgetInputId(w);
+    const outKey = widgetOutputId(w);
+    const fdefIn = inKey ? doc.fields[inKey] || {} : {};
+    const fdefOut = outKey ? doc.fields[outKey] || {} : {};
     const preview =
-      isReceive && RT && typeof RT.resolveWidgetValue === "function"
+      RT && typeof RT.resolveWidgetValue === "function"
         ? RT.resolveWidgetValue(w, {
             liveValues: previewFieldValues(),
             schemaFields: doc.fields,
             graph: doc.graph,
           })
-        : key
-          ? fieldDefault(key)
+        : inKey
+          ? fieldDefault(inKey)
           : 0;
+    const hasOut =
+      RT && typeof RT.widgetHasOutputValue === "function"
+        ? RT.widgetHasOutputValue(w, {
+            liveValues: previewFieldValues(),
+            schemaFields: doc.fields,
+            graph: doc.graph,
+          })
+        : !!(outKey && outKey !== inKey && fdefOut.formula);
     displayProps.innerHTML = `
-      <label>ID <input type="text" id="prop-id" value="${esc(displayId)}" placeholder="STR" style="width:6rem" title="Caption / macro [x] argument" /></label>
-      <label>Label <input type="text" id="prop-label-field" value="${esc(key)}" placeholder="STR_mod" style="width:7rem" title="Automation / schema field key" /></label>
-      <label>Mode <select id="prop-value-mode">
-        <option value="create"${mode === "create" ? " selected" : ""}>Create value</option>
-        <option value="receive"${mode === "receive" ? " selected" : ""}>Receive value</option>
-      </select></label>
-      <label>Value <input type="number" id="prop-value" ${isReceive || !key ? "disabled" : ""} value="${esc(String(!isReceive && fdef.default != null ? fdef.default : preview))}" style="width:5rem" title="${isReceive ? "Calculated (receive)" : "Editable default"}" /></label>
-      ${isReceive ? `<span class="formula-preview">${esc(fdef.formula ? fdef.formula : "ƒ macro/receive")}</span>` : ""}
-      <span class="hint">${w.shape} · sheet shows ID · automations use Label @ (${Math.round(w.x)},${Math.round(w.y)})</span>
+      <label>Label <input type="text" id="prop-caption" value="${esc(caption)}" placeholder="Strength" style="width:8rem" title="Shown on the sheet" /></label>
+      <span class="hint">Label is shown on the sheet</span>
+      <label>Input ID <input type="text" id="prop-input-id" value="${esc(inKey)}" placeholder="STR" style="width:7rem" title="Editable base field key" /></label>
+      <span class="hint">Input ID is the editable base field</span>
+      <label>Output ID <input type="text" id="prop-output-id" value="${esc(outKey)}" placeholder="STR_mod" style="width:7rem" title="Automation / display field key" /></label>
+      <span class="hint">Output ID is what automations write / what we display (falls back to input)</span>
+      <label>Base <input type="number" id="prop-value" ${!inKey ? "disabled" : ""} value="${esc(String(fdefIn.default != null ? fdefIn.default : 0))}" style="width:5rem" title="Editable default for Input ID" /></label>
+      <span class="formula-preview">display ${esc(String(preview))}${hasOut ? " ƒ" : ""}</span>
+      ${hasOut && fdefOut.formula ? `<span class="formula-preview">${esc(fdefOut.formula)}</span>` : ""}
+      <span class="hint">${w.shape} · sheet shows Label · automations use Input/Output IDs @ (${Math.round(w.x)},${Math.round(w.y)})</span>
     `;
-    const idInput = document.getElementById("prop-id");
-    const labelInput = document.getElementById("prop-label-field");
-    const modeEl = document.getElementById("prop-value-mode");
+    const capInput = document.getElementById("prop-caption");
+    const inInput = document.getElementById("prop-input-id");
+    const outInput = document.getElementById("prop-output-id");
     const val = document.getElementById("prop-value");
-    idInput.addEventListener("change", () => {
-      const id = idInput.value.trim();
+    capInput.addEventListener("change", () => {
+      w.label = capInput.value.trim();
+      renderDisplay();
+    });
+    inInput.addEventListener("change", () => {
+      const raw = inInput.value.trim();
+      const u = unwrapBracketIdent(raw);
+      const id = u.value;
+      if (u.unwrapped) {
+        inInput.value = id;
+        maybeHintBracketUnwrap();
+      }
       if (id && !isValidName(id)) {
-        setStatus("ID must be identifier-like", "err");
+        setStatus(displayNameError("Input ID", raw), "err");
         return;
       }
-      w.id = id;
-      if (!w.label && id) {
-        w.label = id;
-        w.field = id;
-      }
+      w.input_id = id;
+      w.field = id;
+      if (!w.output_id) w.output_id = id;
+      if (!String(w.label || "").trim() && id) w.label = id;
+      if (id) ensureField(id, { type: "integer", editable: true });
       renderDisplay();
     });
-    labelInput.addEventListener("change", () => {
-      const lab = labelInput.value.trim();
-      if (lab && !isValidName(lab)) {
-        setStatus("Label must be identifier-like (optional [x] template)", "err");
+    outInput.addEventListener("change", () => {
+      const raw = outInput.value.trim();
+      const u = unwrapBracketIdent(raw);
+      const id = u.value;
+      if (u.unwrapped) {
+        outInput.value = id;
+        maybeHintBracketUnwrap();
+      }
+      if (id && !isValidName(id)) {
+        setStatus(displayNameError("Output ID", raw), "err");
         return;
       }
-      w.label = lab;
-      w.field = lab;
-      if (lab && w.value_mode !== "receive") ensureField(lab);
+      w.output_id = id || w.input_id || "";
+      if (w.output_id && w.output_id !== w.input_id) ensureField(w.output_id);
       renderDisplay();
     });
-    modeEl.addEventListener("change", () => {
-      w.value_mode = modeEl.value === "receive" ? "receive" : "create";
-      renderDisplay();
-    });
-    if (val && !isReceive && key) {
+    if (val && inKey) {
       val.addEventListener("change", () => {
-        ensureField(key);
-        doc.fields[key].default = Number(val.value) || 0;
+        ensureField(inKey, { type: "integer", editable: true });
+        doc.fields[inKey].default = Number(val.value) || 0;
+        if (doc.fields[inKey].formula) delete doc.fields[inKey].formula;
         renderDisplay();
       });
     }
@@ -869,10 +927,10 @@
       } else {
         w = {
           uid: uid("w"),
-          id: "",
           label: "",
+          input_id: "",
+          output_id: "",
           field: "",
-          value_mode: "create",
           shape: displayTool === "circle" ? "circle" : "box",
           x: p.x - 36,
           y: p.y - 28,
@@ -1775,7 +1833,8 @@
     }
     let body = "";
     if (n.kind === "field") {
-      body += `<label>Field <input type="text" id="g-field" value="${esc(n.field || "")}" placeholder="FIELD or [x]_PROF" style="width:8rem" /></label>`;
+      body += `<label>Field <input type="text" id="g-field" value="${esc(n.field || "")}" placeholder="[x] or [x]_mod" style="width:8rem" /></label>`;
+      body += `<span class="hint">source [x], output [x]_mod for ability_mod macros</span>`;
       body += `<label>Role <select id="g-role">
         <option value="source"${n.role !== "output" ? " selected" : ""}>source</option>
         <option value="output"${n.role === "output" ? " selected" : ""}>output (formula sink)</option>

@@ -32,11 +32,12 @@ fields:
 layout:                              # optional; from sheet builder (session visual sheet)
   widgets:
     - uid: string                   # unique widget key (box/circle; optional on legacy)
-      id: string                    # box/circle: display caption + macro [x] arg; button: unique key
+      id: string                    # button: unique key; box/circle: deprecated (was 0.6.13 caption)
       shape: box|circle|button
-      label: string                 # box/circle: automation/schema field key; button: title
-      field: <field_name>           # box/circle: alias of label (legacy / backward compat)
-      value_mode: create|receive    # box/circle only (default: receive if field has formula else create)
+      label: string                 # box/circle: sheet caption; button: title
+      input_id: string              # box/circle: editable base field key
+      output_id: string             # box/circle: display / automation target (may equal input_id)
+      field: <field_name>           # box/circle: alias of input_id (legacy / backward compat)
       mode: trigger|toggle          # button
       function_id: string           # trigger → named graph entry; toggle → field name to flip 0/1
       x: number
@@ -98,15 +99,17 @@ Closed formula language (field-output graph → string): field names, number lit
 - **Formula macro** — a collapsed group whose members include **no** `entry`/`function` node. Display `name` need not contain `[x]`. Internal field names may use `[x]` (e.g. source `[x]`, output `[x]_mod`). On Compile (`compileGraph`), for each such group, each output-role field template is matched against existing sheet field ids by substituting `[x]`→ID (example: template `[x]_mod` + field `STR_mod` → ID=`STR`). The member subgraph is compiled to a closed formula with all `[x]` replaced by that ID and written to `fields[F].formula` (non-editable). Invalid IDs are skipped; two macros claiming the same field id is an error.
 - **Function template** — entry/function name contains `[x]` (runtime instantiate; see below). Compress name for those blocks can be any user-typed label (often the entry name via prefill).
 
-**Display widgets (box/circle) — ID vs Label, Create vs Receive (0.6.13):**
-- **ID** (`id`) — short identity shown as the caption on the session sheet and builder display canvas. Also the macro argument `[x]` when resolving receive values.
-- **Label** (`label`) — automation / schema field key (field nodes, formulas, macros, `saveFields`). `field` is kept as an alias of `label` on save for backward compatibility. Legacy widgets with only `field` migrate to `label = field` and `id = field` (generated widget uids move to `uid`).
-- **Buttons** keep existing `label` (title) + `function_id`; do not use create/receive.
-- **`value_mode`:** `create` | `receive` (default: receive if the label field has a formula, else create).
-  - **Create value** — session: editable number bound to `label`; compile ensures `fields[label]` as integer, editable, no formula (source variable).
-  - **Receive value** — session: read-only calculated display. Resolve order: (1) `liveValues[label]` / schema formula for `label`; (2) else treat **ID** as macro `[x]`: expand formula macros with `[x]`→`id`; if an output name equals `label`, or `label` is empty/`=== id` and the macro has a primary output (prefer `{id}_mod`), evaluate that formula against the current env.
-- **Example:** create box ID=`STR` Label=`STR`; receive box ID=`STR` Label=`STR_mod` → edits `STR`, shows `STR_mod` (from formula or `ability_mod` macro). Receive with ID=`STR` Label=`STR` shows the derived mod when STR itself is create-only.
-- On **Compile / save**: create widgets `ensureField(label)` without formula; receive widgets ensure label (and display id as source); then `compileGraph` so macros bind to receive field keys.
+**Display widgets (box/circle) — Label + Input/Output IDs (0.6.14):**
+- **Label** (`label`) — human caption shown under the box/circle on the session sheet and builder canvas.
+- **Input ID** (`input_id`) — editable base field key (schema / `saveFields`). Always integer, editable, **no** formula after sync.
+- **Output ID** (`output_id`) — field key automations/macros/formulas write; what the sheet tries to **display**. May equal `input_id`.
+- **`field`** — kept as an alias of `input_id` for older readers.
+- **Buttons** keep existing `label` (title) + `function_id`. No create/receive toggle — every box/circle is dual-value.
+- **Display rule:** if `output_id` has a useful automation result (schema formula, macro-derived value, or live value from that path), show the resolved output; otherwise **fall back to the input (base) value**.
+- **Session UX:** when output is active and `output_id !== input_id`, show calculated value as primary (read-only) plus a compact base editor bound to `input_id`. When no output, a single editable control stores/shows `input_id`.
+- **Migrate (`migrateDisplayWidget`):** generated `id` → `uid`; if `input_id`/`output_id` missing: from 0.6.13 `value_mode===receive` with distinct `label`/`id` → `input_id=id`, `output_id=label`, caption `label=old id`; else `input_id=field||label||id`, `output_id=input_id`, caption prefers old caption `id`. Strip `value_mode`.
+- **Example:** Label=`Strength`, Input ID=`STR`, Output ID=`STR_mod` → edits store `STR`; sheet shows `STR_mod` when `ability_mod` (or a formula) defines it; otherwise shows `STR`.
+- On **Compile / save**: `syncLayoutFields` ensures both keys in the field set, then `compileGraph` so macros bind (e.g. `STR` + `STR_mod`).
 
 
 **Parameterized `[x]` templates (v1):** an entry name may include exactly one literal `[x]` (e.g. `check_[x]`). Field names on that subgraph may also use `[x]` (e.g. `[x]_PROF`). A trigger button’s `function_id` is either the concrete form `check_ATK` or the bracket form `check_[ATK]` — ID must match `[A-Za-z_][A-Za-z0-9_]*`. Matching: exact entry name first; else templates whose `prefix[x]suffix` fits the call; if several match, prefer the longest template name; still tied → error. Exact call of a template name (still containing `[x]`) errors — buttons must supply the ID. Evaluation clones the reachable subgraph (forward + ancestors), replaces every literal `[x]` in string node props (except `id`), then runs as a normal function. Compress/Publish keep template names unchanged. Automations: **Delete** / **Backspace** (when not typing in an input) deletes the graph selection like the toolbar Delete button.
