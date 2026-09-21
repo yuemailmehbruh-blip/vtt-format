@@ -123,34 +123,84 @@
     return 1 + Math.floor(Math.random() * n);
   }
 
+  function seedFieldValue(k, def, raw) {
+    let v = raw;
+    if (v === undefined || v === null) {
+      v =
+        actorFields[k] != null
+          ? actorFields[k]
+          : def && def.default != null
+            ? def.default
+            : 0;
+    }
+    if (def && (def.type === "integer" || def.type === "number")) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    }
+    if (typeof v === "string" && v !== "" && !Number.isNaN(Number(v))) {
+      return Number(v);
+    }
+    return v;
+  }
+
+  function collectEditableBases() {
+    /** @type {Set<string>} */
+    const bases = new Set();
+    for (const w of widgets || []) {
+      const inn = widgetInputId(w);
+      const out = widgetOutputId(w);
+      if (inn && out && inn !== out) bases.add(inn);
+    }
+    return bases;
+  }
+
   function recomputeLive() {
     /** @type {Record<string, number|string>} */
     const values = {};
     /** @type {Record<string, string>} */
     const formulas = {};
+    const editableBases = collectEditableBases();
 
     for (const [k, def] of Object.entries(schemaFields || {})) {
-      if (def && def.formula) {
+      // Editable dual-widget bases must never be formula-driven (edits ignored + 0).
+      if (def && def.formula && !editableBases.has(k)) {
         formulas[k] = String(def.formula);
       } else {
-        let v =
-          actorFields[k] != null
-            ? actorFields[k]
-            : def && def.default != null
-              ? def.default
-              : 0;
-        if (def && (def.type === "integer" || def.type === "number")) {
-          const n = Number(v);
-          values[k] = Number.isFinite(n) ? n : 0;
-        } else if (typeof v === "string" && v !== "" && !Number.isNaN(Number(v))) {
-          values[k] = Number(v);
-        } else {
-          values[k] = v;
-        }
+        values[k] = seedFieldValue(k, def);
       }
     }
     for (const [k, v] of Object.entries(actorFields || {})) {
       if (!(k in values) && !(k in formulas)) values[k] = v;
+    }
+
+    // Ensure editable bases are seeded even if absent from schema
+    for (const k of editableBases) {
+      if (k in formulas) delete formulas[k];
+      if (!(k in values)) {
+        values[k] = seedFieldValue(k, schemaFields[k]);
+      }
+    }
+
+    // Live-compile graph macros when schema formulas are missing/stale.
+    // Prefer compiled formulas as source of truth when compile succeeds.
+    if (RT && typeof RT.compileGraph === "function" && graph) {
+      const fieldKeys = new Set();
+      for (const k of Object.keys(schemaFields || {})) fieldKeys.add(k);
+      for (const k of Object.keys(actorFields || {})) fieldKeys.add(k);
+      for (const w of widgets || []) {
+        const inn = widgetInputId(w);
+        const out = widgetOutputId(w);
+        if (inn) fieldKeys.add(inn);
+        if (out) fieldKeys.add(out);
+      }
+      const compiled = RT.compileGraph(graph, [...fieldKeys]);
+      if (compiled && !compiled.error && compiled.formulas) {
+        for (const [k, f] of Object.entries(compiled.formulas)) {
+          if (!f || editableBases.has(k)) continue;
+          formulas[k] = String(f);
+          if (k in values) delete values[k];
+        }
+      }
     }
 
     for (let pass = 0; pass < 24; pass++) {
@@ -712,7 +762,7 @@
         } else if (inKey) {
           const foW = Math.min(r * 1.8, 56);
           html += `<foreignObject x="${cx - foW / 2}" y="${cy - 12}" width="${foW}" height="24">`;
-          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(inKey)}" value="${esc(String(displayVal))}" />`;
+          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(inKey)}" value="${esc(String(baseVal))}" />`;
           html += `</foreignObject>`;
         } else {
           html += `<text class="widget-value" x="${cx}" y="${cy}">${esc(String(displayVal))}</text>`;
@@ -742,7 +792,7 @@
           html += `<text class="widget-value formula" x="${cx}" y="${cy}">${esc(String(displayVal))}</text>`;
         } else if (inKey) {
           html += `<foreignObject x="${(w.x || 0) + 4}" y="${(w.y || 0) + (w.h || 0) / 2 - 12}" width="${Math.max(24, (w.w || 0) - 8)}" height="24">`;
-          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(inKey)}" value="${esc(String(displayVal))}" />`;
+          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit" type="number" data-field="${esc(inKey)}" value="${esc(String(baseVal))}" />`;
           html += `</foreignObject>`;
         } else {
           html += `<text class="widget-value" x="${cx}" y="${cy}">${esc(String(displayVal))}</text>`;

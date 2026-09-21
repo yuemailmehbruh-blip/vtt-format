@@ -1282,6 +1282,56 @@
   }
 
   /**
+   * Output field templates ([x]) from formula-macro collapsed groups (no entry).
+   * @returns {string[]}
+   */
+  function formulaMacroOutputTemplates(graph) {
+    /** @type {string[]} */
+    const tmpls = [];
+    const nodes = (graph && graph.nodes) || [];
+    const byId = Object.create(null);
+    for (const n of nodes) byId[n.id] = n;
+    for (const block of (graph && graph.collapsed) || []) {
+      if (!block || !Array.isArray(block.nodeIds) || !block.nodeIds.length) continue;
+      const members = block.nodeIds.map((id) => byId[id]).filter(Boolean);
+      if (members.some((n) => n.kind === "entry" || n.kind === "function")) continue;
+      for (const n of members) {
+        if (n.kind === "field" && n.role === "output") {
+          const tmpl = String(n.field || "").trim();
+          if (tmpl.includes("[x]")) tmpls.push(tmpl);
+        }
+      }
+    }
+    return tmpls;
+  }
+
+  /**
+   * Derive [x] macro arg ID(s) for a widget via bindMacroId against macro output
+   * templates (and optionally input_id). Must NOT pass full keys like
+   * STAT_STR_base as [x] — that expands STAT_[x]_mod → STAT_STAT_STR_base_mod.
+   * Bare IDs (STR) still work when outKey binds e.g. [x]_mod ← STR_mod → STR.
+   * @returns {string[]}
+   */
+  function deriveMacroArgIds(graph, inKey, outKey) {
+    /** @type {string[]} */
+    const ids = [];
+    const seen = Object.create(null);
+    function add(id) {
+      if (id == null) return;
+      const s = String(id).trim();
+      if (!s || seen[s] || !TEMPLATE_ID_RE.test(s)) return;
+      seen[s] = true;
+      ids.push(s);
+    }
+    const tmpls = formulaMacroOutputTemplates(graph);
+    for (const tmpl of tmpls) {
+      if (outKey) add(bindMacroId(tmpl, outKey));
+      if (inKey) add(bindMacroId(tmpl, inKey));
+    }
+    return ids;
+  }
+
+  /**
    * True when output_id has a useful automation-defined value (formula / macro / live).
    */
   function widgetHasOutputValue(w, ctx) {
@@ -1298,9 +1348,9 @@
     }
     if (schema[outKey] && schema[outKey].formula) return true;
     if (live[outKey] != null && live[outKey] !== "") return true;
-    // Macro can produce outKey from input_id as [x]
-    if (inKey) {
-      const outputs = expandFormulaMacrosForId(c.graph, inKey);
+    // Macro: derive [x] from bindMacroId(outputTemplate, outKey|inKey)
+    for (const mid of deriveMacroArgIds(c.graph, inKey, outKey)) {
+      const outputs = expandFormulaMacrosForId(c.graph, mid);
       if (outputs.some((o) => o.outputName === outKey)) return true;
     }
     return false;
@@ -1354,13 +1404,17 @@
       return numOr(live[outKey], 0);
     }
 
-    // Macro fallback: [x] := input_id
-    const macroArg = inKey;
-    if (macroArg) {
-      const outputs = expandFormulaMacrosForId(c.graph, macroArg);
+    // Macro fallback: derive [x] via bindMacroId(tmpl, outKey|inKey)
+    const macroIds = deriveMacroArgIds(c.graph, inKey, outKey);
+    if (macroIds.length) {
       const env = Object.assign({}, live);
-      if (env[macroArg] == null && schema[macroArg] && schema[macroArg].default != null) {
-        env[macroArg] = schema[macroArg].default;
+      if (inKey && env[inKey] == null && schema[inKey] && schema[inKey].default != null) {
+        env[inKey] = schema[inKey].default;
+      }
+      for (const mid of macroIds) {
+        if (env[mid] == null && schema[mid] && schema[mid].default != null) {
+          env[mid] = schema[mid].default;
+        }
       }
       function evalOut(o) {
         try {
@@ -1371,10 +1425,13 @@
         }
       }
       if (outKey) {
-        const hit = outputs.find((o) => o.outputName === outKey);
-        if (hit) {
-          const n = evalOut(hit);
-          if (n != null) return n;
+        for (const mid of macroIds) {
+          const outputs = expandFormulaMacrosForId(c.graph, mid);
+          const hit = outputs.find((o) => o.outputName === outKey);
+          if (hit) {
+            const n = evalOut(hit);
+            if (n != null) return n;
+          }
         }
       }
     }
@@ -1405,6 +1462,8 @@
     widgetHasOutputValue,
     migrateDisplayWidget,
     expandFormulaMacrosForId,
+    formulaMacroOutputTemplates,
+    deriveMacroArgIds,
     resolveWidgetValue,
   };
 

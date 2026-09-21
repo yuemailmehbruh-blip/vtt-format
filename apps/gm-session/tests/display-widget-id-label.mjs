@@ -227,17 +227,18 @@ assert(
 );
 
 // output set but unresolved → fallback to input
+// output_id must not match [x]_mod (MISSING_mod would bind ID=MISSING — valid macro path)
 const dangling = {
   uid: "w_3",
   label: "Strength",
   input_id: "STR",
-  output_id: "MISSING_mod",
+  output_id: "MISSING_NOPE",
   shape: "box",
 };
 assert(
   resolveWidgetValue(dangling, {
     liveValues: { STR: 14 },
-    schemaFields: { STR: { type: "integer", default: 10 }, MISSING_mod: { type: "integer" } },
+    schemaFields: { STR: { type: "integer", default: 10 }, MISSING_NOPE: { type: "integer" } },
     graph,
   }) === 14,
   "fallback when output key has no formula/macro"
@@ -252,3 +253,115 @@ assert(!compiled.error, compiled.error);
 assert(compiled.formulas.STR_mod, "compile writes STR_mod");
 
 console.log("display-widget-id-label: ok");
+
+// --- STAT_[x]_base / STAT_[x]_mod live resolve (0.6.15) ---
+// Must NOT pass STAT_STR_base as [x] (that yields STAT_STAT_STR_base_mod).
+function statAbilityModMacroGraph() {
+  return {
+    nodes: [
+      { id: "src", kind: "field", field: "STAT_[x]_base", role: "source", x: 0, y: 0 },
+      { id: "c10", kind: "const", value: 10, x: 0, y: 0 },
+      { id: "sub", kind: "op", op: "-", x: 0, y: 0 },
+      { id: "c2", kind: "const", value: 2, x: 0, y: 0 },
+      { id: "div", kind: "op", op: "/", x: 0, y: 0 },
+      { id: "fl", kind: "op", op: "floor", x: 0, y: 0 },
+      { id: "out", kind: "field", field: "STAT_[x]_mod", role: "output", x: 0, y: 0 },
+    ],
+    edges: [
+      { id: "e1", from: "src", to: "sub", toPort: 0 },
+      { id: "e2", from: "c10", to: "sub", toPort: 1 },
+      { id: "e3", from: "sub", to: "div", toPort: 0 },
+      { id: "e4", from: "c2", to: "div", toPort: 1 },
+      { id: "e5", from: "div", to: "fl", toPort: 0 },
+      { id: "e6", from: "fl", to: "out", toPort: 0 },
+    ],
+    collapsed: [
+      {
+        id: "c_stat_mod",
+        name: "stat_ability_mod",
+        nodeIds: ["src", "c10", "sub", "c2", "div", "fl", "out"],
+        x: 0,
+        y: 0,
+      },
+    ],
+  };
+}
+
+const {
+  deriveMacroArgIds,
+  formulaMacroOutputTemplates,
+} = sandbox.SheetRuntime;
+
+const statGraph = statAbilityModMacroGraph();
+assert(
+  formulaMacroOutputTemplates(statGraph).includes("STAT_[x]_mod"),
+  "output template listed"
+);
+assert(
+  deriveMacroArgIds(statGraph, "STAT_STR_base", "STAT_STR_mod").includes("STR"),
+  "derive ID=STR from outKey (not STAT_STR_base)"
+);
+assert(
+  !deriveMacroArgIds(statGraph, "STAT_STR_base", "STAT_STR_mod").includes("STAT_STR_base"),
+  "must not use full input_id as [x]"
+);
+
+// Wrong expand path (pre-fix): STAT_STR_base as [x] → nonsense output name
+const wrong = expandFormulaMacrosForId(statGraph, "STAT_STR_base");
+assert(
+  !wrong.some((o) => o.outputName === "STAT_STR_mod"),
+  "raw STAT_STR_base must not produce STAT_STR_mod"
+);
+
+const right = expandFormulaMacrosForId(statGraph, "STR");
+assert(right.length === 1 && right[0].outputName === "STAT_STR_mod", "STR → STAT_STR_mod");
+assert(
+  evalClosedFormula(right[0].formula, { STAT_STR_base: 18 }) === 4,
+  "STAT STR 18 → mod 4"
+);
+
+const statW = {
+  uid: "w_stat",
+  label: "Strength",
+  input_id: "STAT_STR_base",
+  output_id: "STAT_STR_mod",
+  shape: "box",
+};
+
+assert(
+  widgetHasOutputValue(statW, {
+    liveValues: { STAT_STR_base: 18 },
+    schemaFields: {
+      STAT_STR_base: { type: "integer", default: 10 },
+      STAT_STR_mod: { type: "integer" }, // no formula on schema
+    },
+    graph: statGraph,
+  }) === true,
+  "has output via macro expand (no schema formula)"
+);
+
+assert(
+  resolveWidgetValue(statW, {
+    liveValues: { STAT_STR_base: 18 },
+    schemaFields: {
+      STAT_STR_base: { type: "integer", default: 10 },
+      STAT_STR_mod: { type: "integer" },
+    },
+    graph: statGraph,
+  }) === 4,
+  "resolve STAT_STR_mod via macro when schema has no formula"
+);
+
+assert(
+  resolveWidgetValue(statW, {
+    liveValues: { STAT_STR_base: 10 },
+    schemaFields: {
+      STAT_STR_base: { type: "integer", default: 10 },
+      STAT_STR_mod: { type: "integer" },
+    },
+    graph: statGraph,
+  }) === 0,
+  "STAT 10 → mod 0"
+);
+
+console.log("display-widget-id-label (STAT_[x]): ok");

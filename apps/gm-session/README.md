@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.14**).
+Version is in `VERSION` (currently **0.6.15**).
 
 ## Run — desktop app (recommended)
 
@@ -228,6 +228,13 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+
+## 0.6.15
+
+- **Live macro [x] bind** — `resolveWidgetValue` / `widgetHasOutputValue` derive macro IDs via `bindMacroId` on formula-macro output templates (not raw `input_id`), so `STAT_STR_base` no longer expands as `[x]`.
+- **recomputeLive compiles graph** — merges `compileGraph` formulas (prefer compiled) so macros apply when schema formulas are missing/stale.
+- **Editable bases protected** — dual widgets (`input_id !== output_id`) never put `input_id` in the formulas map (stops short `STAT_[x]` from stealing the base).
+- **Single-input paint** — box/circle editable inputs use `baseVal`, not `displayVal`.
 
 ## 0.6.14
 
