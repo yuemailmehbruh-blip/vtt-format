@@ -22,6 +22,7 @@ ui_datas = [
     (str(APP / "sheet-builder.html"), "gm-session"),
     (str(APP / "sheet-builder.js"), "gm-session"),
     (str(APP / "sheet-runtime.js"), "gm-session"),
+    (str(APP / "infer-grid-from-walls.js"), "gm-session"),
     (str(APP / "VERSION"), "gm-session"),
 ]
 
