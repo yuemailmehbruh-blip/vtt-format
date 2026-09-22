@@ -237,14 +237,14 @@
           <button type="button" id="btn-zoom-in" title="Zoom in">Zoom +</button>
           <button type="button" id="btn-zoom-out" title="Zoom out">Zoom −</button>
           <button type="button" id="btn-zoom-reset" title="Reset zoom/pan">Reset</button>
-          <button type="button" data-tool="delete" class="danger" title="Delete selected">Delete</button>
+          <button type="button" data-tool="delete" class="danger" title="Delete selected (also Delete/Backspace)">Delete</button>
         </div>
       </div>
       <div class="canvas-wrap" id="display-wrap">
         <svg id="display-svg" xmlns="http://www.w3.org/2000/svg"></svg>
       </div>
       <div class="props" id="display-props">
-        <span class="hint">Select a widget to bind a field</span>
+        <span class="hint">Select a widget · Delete/Backspace removes Display selection</span>
       </div>
     </section>
 
@@ -259,6 +259,8 @@
           <span class="sep"></span>
           <button type="button" data-kind="op" data-op="+" title="Add">+</button>
           <button type="button" data-kind="op" data-op="-" title="Subtract">−</button>
+          <button type="button" data-kind="op" data-op="+=" title="Resource add (a+b)">+=</button>
+          <button type="button" data-kind="op" data-op="-=" title="Resource subtract (a-b)">−=</button>
           <button type="button" data-kind="op" data-op="*" title="Multiply">×</button>
           <button type="button" data-kind="op" data-op="/" title="Divide">÷</button>
           <button type="button" data-kind="op" data-op="floor" title="floor(x)">floor</button>

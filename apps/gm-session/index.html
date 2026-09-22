@@ -447,7 +447,7 @@
       <label><input type="checkbox" id="toggle-nametags" checked /> Nametags</label>
     </div>
     <span id="status"></span>
-    <span class="hint" id="header-hint">Click token to select · Double-click token for sheet · Drag actors onto map · Wheel zoom</span>
+    <span class="hint" id="header-hint">Click token to select · Delete removes token/layer · Double-click token for sheet · Drag actors onto map · Wheel zoom</span>
   </header>
   <div id="layout">
     <aside id="library">
@@ -464,6 +464,7 @@
           <label title="Image already has a drawn grid — 0.5.4 center 3×3 then 0.5.5 half-pitch fallback; align to map squares on import" style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.72rem;color:var(--muted);cursor:pointer;user-select:none;">
             <input type="checkbox" id="toggle-grid-fit" /> Has grid
           </label>
+          <button type="button" class="btn-add" id="btn-infer-grid-walls" title="Detect wall lines on the editing/top map layer and align a square grid when &gt;50% of walls match">Infer grid from walls</button>
           <button type="button" class="btn-add" id="btn-add-layer" title="Upload a map image as a new layer">Add layer</button>
         </div>
       </div>
@@ -511,6 +512,7 @@
     </div>
   </dialog>
 
+  <script src="/infer-grid-from-walls.js"></script>
   <script src="/session.js"></script>
 </body>
 </html>

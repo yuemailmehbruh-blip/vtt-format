@@ -553,11 +553,12 @@
             : inFrom(nodeId, 2);
           return formatArithmetic(taken, parentOp);
         }
-        if (op === "+" || op === "-" || op === "*" || op === "/") {
-          const expr = `${formatArithmetic(inFrom(nodeId, 0), op)} ${op} ${formatArithmetic(inFrom(nodeId, 1), op)}`;
+        if (op === "+" || op === "-" || op === "+=" || op === "-=" || op === "*" || op === "/") {
+          const sym = op === "+=" ? "+" : op === "-=" ? "-" : op;
+          const expr = `${formatArithmetic(inFrom(nodeId, 0), sym)} ${sym} ${formatArithmetic(inFrom(nodeId, 1), sym)}`;
           const needParen =
             parentOp &&
-            ((parentOp === "*" || parentOp === "/") && (op === "+" || op === "-"));
+            ((parentOp === "*" || parentOp === "/") && (sym === "+" || sym === "-"));
           return needParen ? `(${expr})` : expr;
         }
       }
@@ -608,6 +609,8 @@
           } else if (
             op === "+" ||
             op === "-" ||
+            op === "+=" ||
+            op === "-=" ||
             op === "*" ||
             op === "/" ||
             op === "==" ||
@@ -619,8 +622,8 @@
           ) {
             const a = inputVal(id, 0);
             const b = inputVal(id, 1);
-            if (op === "+") out = a + b;
-            else if (op === "-") out = a - b;
+            if (op === "+" || op === "+=") out = a + b;
+            else if (op === "-" || op === "-=") out = a - b;
             else if (op === "*") out = a * b;
             else if (op === "/") out = b === 0 ? NaN : a / b;
             else if (op === "==") out = a === b ? 1 : 0;
@@ -841,6 +844,8 @@
         } else if (
           op === "+" ||
           op === "-" ||
+          op === "+=" ||
+          op === "-=" ||
           op === "*" ||
           op === "/" ||
           op === "==" ||
@@ -853,7 +858,8 @@
           if (ins.length < 2) throw new Error(`Operator ${op} needs two inputs`);
           const a = portFrom(0, 0);
           const b = portFrom(1, 1);
-          out = `(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)} ${op} ${exprOfOn(byIdLocal, incomingLocal, b.from, memo, visiting)})`;
+          const sym = op === "+=" ? "+" : op === "-=" ? "-" : op;
+          out = `(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)} ${sym} ${exprOfOn(byIdLocal, incomingLocal, b.from, memo, visiting)})`;
         } else {
           throw new Error(`Unknown op: ${op}`);
         }
@@ -1197,6 +1203,8 @@
         } else if (
           op === "+" ||
           op === "-" ||
+          op === "+=" ||
+          op === "-=" ||
           op === "*" ||
           op === "/" ||
           op === "==" ||
@@ -1211,7 +1219,8 @@
           const b = portFrom(1, 1);
           const ea = exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting);
           const eb = exprOfOn(byIdLocal, incomingLocal, b.from, memo, visiting);
-          out = `(${ea} ${op} ${eb})`;
+          const sym = op === "+=" ? "+" : op === "-=" ? "-" : op;
+          out = `(${ea} ${sym} ${eb})`;
         } else {
           throw new Error(`Unknown op ${op}`);
         }

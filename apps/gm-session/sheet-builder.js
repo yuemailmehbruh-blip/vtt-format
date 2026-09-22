@@ -747,7 +747,7 @@
   function renderDisplayProps() {
     const w = selectedWidgetId ? findWidget(selectedWidgetId) : null;
     if (!w) {
-      displayProps.innerHTML = `<span class="hint">Select a widget to bind a field · tool: ${displayTool} · wheel zoom · mid/space/empty drag pan</span>`;
+      displayProps.innerHTML = `<span class="hint">Select a widget to bind a field · Delete/Backspace removes Display selection · tool: ${displayTool} · wheel zoom · mid/space/empty drag pan</span>`;
       return;
     }
     if (w.shape === "button") {
@@ -1031,7 +1031,7 @@
         if (graphSvg) graphSvg.style.cursor = "grab";
       }
     }
-    // Automations: Delete/Backspace → same as toolbar Delete (nodes / compressed / edge)
+    // Delete/Backspace: prefer graph selection; else Display widget selection
     if (
       (e.key === "Delete" || e.key === "Backspace") &&
       !e.altKey &&
@@ -1045,9 +1045,20 @@
         selectedCollapsedId ||
         selectedNodeIds.size > 0 ||
         selectedNodeId;
-      if (!hasGraphSel) return;
-      e.preventDefault();
-      deleteSelectedGraph();
+      if (hasGraphSel) {
+        e.preventDefault();
+        deleteSelectedGraph();
+        return;
+      }
+      if (selectedWidgetId) {
+        e.preventDefault();
+        doc.layout.widgets = doc.layout.widgets.filter(
+          (x) => widgetUid(x) !== selectedWidgetId
+        );
+        selectedWidgetId = null;
+        renderDisplay();
+        setStatus("Deleted display widget", "warn");
+      }
     }
   });
   window.addEventListener("keyup", (e) => {
@@ -1182,6 +1193,8 @@
       if (n.op === "and") return "and";
       if (n.op === "or") return "or";
       if (n.op === "not") return "not";
+      if (n.op === "+=") return "+=";
+      if (n.op === "-=") return "-=";
       return n.op;
     }
     if (n.kind === "roll") return `d${n.sides != null ? n.sides : 20}`;
@@ -1208,6 +1221,7 @@
         op === ">="
       )
         return "compare";
+      if (op === "+=" || op === "-=") return "adjust";
       return "op";
     }
     if (n.kind === "roll") return "roll";
@@ -1851,6 +1865,8 @@
         op === "or" ||
         op === "+" ||
         op === "-" ||
+        op === "+=" ||
+        op === "-=" ||
         op === "*" ||
         op === "/" ||
         op === "==" ||

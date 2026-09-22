@@ -41,6 +41,8 @@
   let sheetId = null;
   /** @type {Record<string, number|string>} */
   let liveValues = {};
+  /** Dual-value widget currently showing base editor (widget id), or null */
+  let editingDualWidgetId = null;
 
   /** Session sheet view (after fit): pan/zoom in viewBox space */
   let sheetView = { scale: 1, x: 0, y: 0, base: null };
@@ -244,6 +246,13 @@
   function widgetOutputId(w) {
     if (RT && typeof RT.widgetOutputId === "function") return RT.widgetOutputId(w);
     return String((w && (w.output_id || w.input_id || w.field)) || "").trim();
+  }
+
+  function widgetKey(w) {
+    if (RT && typeof RT.widgetUid === "function") return RT.widgetUid(w);
+    if (!w) return "";
+    if (w.shape === "box" || w.shape === "circle") return String(w.uid || w.id || "");
+    return String(w.id || "");
   }
 
   function widgetHasOutput(w) {
@@ -751,12 +760,16 @@
         html += `<circle class="widget-circle" cx="${cx}" cy="${cy}" r="${r}" />`;
         const outKey = widgetOutputId(w);
         if (hasOut && inKey && outKey && outKey !== inKey) {
-          // Calculated primary + compact base editor
-          html += `<text class="widget-value formula" x="${cx}" y="${cy - 8}">${esc(String(displayVal))}</text>`;
-          const foW = Math.min(r * 1.4, 48);
-          html += `<foreignObject x="${cx - foW / 2}" y="${cy + 2}" width="${foW}" height="18">`;
-          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit field-edit-base" type="number" data-field="${esc(inKey)}" value="${esc(String(baseVal))}" title="Base (${esc(inKey)})" />`;
-          html += `</foreignObject>`;
+          // Output-only until edit; click reveals base input (never paint display into base)
+          const editing = editingDualWidgetId === widgetKey(w);
+          if (editing) {
+            const foW = Math.min(r * 1.8, 64);
+            html += `<foreignObject x="${cx - foW / 2}" y="${cy - 12}" width="${foW}" height="24">`;
+            html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit field-edit-dual" type="number" data-field="${esc(inKey)}" data-dual-widget="${esc(widgetKey(w))}" value="${esc(String(baseVal))}" title="Base (${esc(inKey)})" />`;
+            html += `</foreignObject>`;
+          } else {
+            html += `<text class="widget-value formula dual-display" data-dual-widget="${esc(widgetKey(w))}" x="${cx}" y="${cy}" style="cursor:pointer">${esc(String(displayVal))}</text>`;
+          }
         } else if (hasOut) {
           html += `<text class="widget-value formula" x="${cx}" y="${cy}">${esc(String(displayVal))}</text>`;
         } else if (inKey) {
@@ -784,10 +797,14 @@
         html += `<rect class="widget-box" x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="6" />`;
         const outKey = widgetOutputId(w);
         if (hasOut && inKey && outKey && outKey !== inKey) {
-          html += `<text class="widget-value formula" x="${cx}" y="${cy - 8}">${esc(String(displayVal))}</text>`;
-          html += `<foreignObject x="${(w.x || 0) + 6}" y="${cy + 2}" width="${Math.max(28, (w.w || 0) - 12)}" height="18">`;
-          html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit field-edit-base" type="number" data-field="${esc(inKey)}" value="${esc(String(baseVal))}" title="Base (${esc(inKey)})" />`;
-          html += `</foreignObject>`;
+          const editing = editingDualWidgetId === widgetKey(w);
+          if (editing) {
+            html += `<foreignObject x="${(w.x || 0) + 4}" y="${(w.y || 0) + (w.h || 0) / 2 - 12}" width="${Math.max(24, (w.w || 0) - 8)}" height="24">`;
+            html += `<input xmlns="http://www.w3.org/1999/xhtml" class="field-edit field-edit-dual" type="number" data-field="${esc(inKey)}" data-dual-widget="${esc(widgetKey(w))}" value="${esc(String(baseVal))}" title="Base (${esc(inKey)})" />`;
+            html += `</foreignObject>`;
+          } else {
+            html += `<text class="widget-value formula dual-display" data-dual-widget="${esc(widgetKey(w))}" x="${cx}" y="${cy}" style="cursor:pointer">${esc(String(displayVal))}</text>`;
+          }
         } else if (hasOut) {
           html += `<text class="widget-value formula" x="${cx}" y="${cy}">${esc(String(displayVal))}</text>`;
         } else if (inKey) {
@@ -823,30 +840,75 @@
       });
     });
 
+    svgEl.querySelectorAll("text.dual-display").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const wid = el.getAttribute("data-dual-widget");
+        if (!wid) return;
+        editingDualWidgetId = wid;
+        renderVisual(false);
+      });
+    });
+
     svgEl.querySelectorAll("input.field-edit").forEach((input) => {
+      const isDual = input.classList.contains("field-edit-dual");
+      let committed = false;
       const commit = () => {
+        if (committed) return;
+        committed = true;
         const fid = input.getAttribute("data-field");
-        if (!fid || isFormulaField(fid)) return;
+        if (!fid || isFormulaField(fid)) {
+          if (isDual) {
+            editingDualWidgetId = null;
+            renderVisual(false);
+          }
+          return;
+        }
         const n = Number(input.value);
         if (!Number.isFinite(n)) {
+          committed = false;
           setStatus("Invalid number");
           return;
         }
         actorFields[fid] = n;
+        const finish = () => {
+          if (isDual) editingDualWidgetId = null;
+          renderVisual(false);
+          setStatus(`Saved ${fid}=${n}`);
+        };
         saveFields({ [fid]: n })
-          .then(() => {
+          .then(finish)
+          .catch((err) => {
+            if (isDual) editingDualWidgetId = null;
+            setStatus(String(err));
             renderVisual(false);
-            setStatus(`Saved ${fid}=${n}`);
-          })
-          .catch((err) => setStatus(String(err)));
+          });
       };
-      input.addEventListener("change", commit);
+      if (isDual) {
+        input.addEventListener("blur", commit);
+      } else {
+        input.addEventListener("change", commit);
+      }
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
           input.blur();
+          if (!isDual) commit();
+        } else if (e.key === "Escape" && isDual) {
+          e.preventDefault();
+          committed = true;
+          editingDualWidgetId = null;
+          renderVisual(false);
         }
       });
+      if (isDual) {
+        requestAnimationFrame(() => {
+          try {
+            input.focus();
+            input.select();
+          } catch (_) {}
+        });
+      }
     });
   }
 

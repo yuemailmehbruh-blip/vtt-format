@@ -168,3 +168,39 @@ const def = evaluateNamedFunction(toggleWrite, "set_ath_prof", {});
 assert(def.ok && def.writes.ath_prof === 1, "default entryValue is 1");
 
 console.log("OK evaluate-logic-ops: compare/and/or/not/if, formulas, entryValue");
+
+// --- Resource adjust ops += / -= (same as + / - for formulas) ---
+assert(arityOf({ kind: "op", op: "+=" }) === 2, "+= arity 2");
+assert(arityOf({ kind: "op", op: "-=" }) === 2, "-= arity 2");
+
+function adjustGraph(op) {
+  return {
+    nodes: [
+      { id: "e", kind: "entry", name: "adj" },
+      { id: "hp", kind: "field", field: "HP", role: "source" },
+      { id: "d", kind: "const", value: 1 },
+      { id: "op", kind: "op", op },
+      { id: "z", kind: "const", value: 0 },
+      { id: "mul", kind: "op", op: "*" },
+      { id: "add", kind: "op", op: "+" },
+      { id: "out", kind: "field", field: "HP", role: "output" },
+    ],
+    edges: [
+      { id: "t0", from: "e", to: "mul", toPort: 0 },
+      { id: "t1", from: "z", to: "mul", toPort: 1 },
+      { id: "1", from: "hp", to: "op", toPort: 0 },
+      { id: "2", from: "d", to: "op", toPort: 1 },
+      { id: "3", from: "op", to: "add", toPort: 0 },
+      { id: "4", from: "mul", to: "add", toPort: 1 },
+      { id: "5", from: "add", to: "out", toPort: 0 },
+    ],
+  };
+}
+const rSub = evaluateNamedFunction(adjustGraph("-="), "adj", { HP: 10 });
+assert(rSub.ok, `-= eval: ${rSub.error}`);
+assert(rSub.writes.HP === 9, `HP-=1 → 9, got ${rSub.writes.HP}`);
+const rAdd = evaluateNamedFunction(adjustGraph("+="), "adj", { HP: 10 });
+assert(rAdd.ok, `+= eval: ${rAdd.error}`);
+assert(rAdd.writes.HP === 11, `HP+=1 → 11, got ${rAdd.writes.HP}`);
+
+console.log("evaluate-logic-ops: ok");

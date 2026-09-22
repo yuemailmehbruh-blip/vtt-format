@@ -1661,6 +1661,108 @@
     return detectGridPitchStage2(imgData, w, h, minP2, maxP);
   }
 
+  /** Active editing map layer, else topmost visible map layer with an image. */
+  function layerForWallGridInfer() {
+    const editing = editingLayer();
+    if (editing && editing.img && editing.img.naturalWidth > 0) return editing;
+    for (let i = mapLayers.length - 1; i >= 0; i--) {
+      const l = mapLayers[i];
+      if (l.visible && l.img && l.img.naturalWidth > 0) return l;
+    }
+    return null;
+  }
+
+  /**
+   * Detect wall-like segments and fit a square grid when >50% of wall length
+   * aligns. Applies pitch/phase to layer size/position (Has-grid style).
+   */
+  async function inferGridFromWallsAction() {
+    const IG = window.InferGridFromWalls;
+    if (!IG || typeof IG.inferGridFromWallImageData !== "function") {
+      setStatus("Infer grid from walls: helper not loaded");
+      return;
+    }
+    const layer = layerForWallGridInfer();
+    if (!layer) {
+      setStatus("Infer grid from walls: no map layer image (Edit a layer or show one)");
+      return;
+    }
+    const img = layer.img;
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    if (w < 32 || h < 32) {
+      setStatus("Infer grid from walls: image too small");
+      return;
+    }
+    setStatus(`Inferring grid from walls on “${layer.name || layer.id}”…`);
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const c = canvas.getContext("2d", { willReadFrequently: true });
+      c.imageSmoothingEnabled = false;
+      c.drawImage(img, 0, 0);
+      let imgData;
+      try {
+        imgData = c.getImageData(0, 0, w, h);
+      } catch (err) {
+        setStatus(`Infer grid from walls: cannot read pixels (${err})`);
+        return;
+      }
+      const minP = Math.max(14, Math.floor(Math.min(w, h) / 80));
+      const maxP = Math.max(minP + 8, Math.floor(Math.min(w, h) / 4));
+      const hit = IG.inferGridFromWallImageData(imgData, w, h, minP, maxP);
+      if (!hit) {
+        setStatus(
+          "Infer grid from walls: no grid matched >50% of detected wall segments"
+        );
+        return;
+      }
+      const detected = {
+        pitch: hit.pitch,
+        phaseX: hit.phaseX,
+        phaseY: hit.phaseY,
+        width: w,
+        height: h,
+        stage: "walls",
+      };
+      const fitted = await gridFitImage(img, detected);
+      // Apply alignment to existing layer (size/position); keep original asset
+      // unless crop produced a meaningfully smaller canvas — then re-upload.
+      const fullScaleW = w * (gridSize / hit.pitch);
+      const fullScaleH = h * (gridSize / hit.pitch);
+      const usedCrop =
+        fitted.cropped &&
+        (Math.abs(fitted.w - fullScaleW) > gridSize * 0.25 ||
+          Math.abs(fitted.h - fullScaleH) > gridSize * 0.25);
+      if (usedCrop) {
+        const cropBuf = await fitted.blob.arrayBuffer();
+        const cropName = `maps/${(layer.name || layer.id || "layer")}-wallgrid.png`;
+        const uploaded = await postAssetBuffer(cropBuf, "image/png", cropName);
+        layer.asset = uploaded.hash;
+        layer.img = await loadImageByHash(uploaded.hash);
+      }
+      layer.x = fitted.x;
+      layer.y = fitted.y;
+      layer.w = fitted.w;
+      layer.h = fitted.h;
+      if (snapLayers) snapLayerOnRelease(layer);
+      extent = computeExtent(scene);
+      const ok = await persistSceneLayers();
+      if (!ok) return;
+      renderMapLayersList();
+      draw();
+      const pct = Math.round(hit.score * 100);
+      setStatus(
+        `Infer grid from walls: pitch ${hit.pitch.toFixed(1)}px · ${pct}% walls aligned` +
+          (fitted.cropped ? "" : " · uncropped fallback") +
+          (fitted.warning ? ` · ${fitted.warning}` : "")
+      );
+    } catch (err) {
+      setStatus(`Infer grid from walls failed: ${err}`);
+    }
+  }
+
   /**
    * Scale so 1 detected cell = 1 map cell. Put detected grid LINES on map grid
    * lines (not the image center). Crop to whole map squares. Marks are never drawn.
@@ -1844,6 +1946,13 @@
     layerFileInput.value = "";
     layerFileInput.click();
   });
+  const btnInferGridWalls = document.getElementById("btn-infer-grid-walls");
+  if (btnInferGridWalls) {
+    btnInferGridWalls.addEventListener("click", (e) => {
+      e.stopPropagation();
+      inferGridFromWallsAction();
+    });
+  }
   layerFileInput.addEventListener("change", () => {
     const file = layerFileInput.files && layerFileInput.files[0];
     if (file) addMapLayerFromFile(file);
@@ -2052,7 +2161,7 @@
     setStatus(`Selected “${token.name || token.id}” · ${size} tile(s) across`);
     const hint = document.getElementById("header-hint");
     if (hint) {
-      hint.textContent = `Selected: ${token.name || token.id} · Double-click for sheet · Drag to move`;
+      hint.textContent = `Selected: ${token.name || token.id} · Delete to remove · Double-click for sheet · Drag to move`;
     }
     draw();
   }
@@ -2065,7 +2174,7 @@
       const hint = document.getElementById("header-hint");
       if (hint) {
         hint.textContent =
-          "Click token to select · Double-click token for sheet · Drag actors onto map · Wheel zoom";
+          "Click token to select · Delete removes token/layer · Double-click token for sheet · Drag actors onto map · Wheel zoom";
       }
     }
   }
@@ -2569,6 +2678,58 @@
       openSheetBuilder("player");
     });
   }
+
+  function isTypingTarget(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    const tag = (el.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+
+  function removeSelectedToken() {
+    if (!selectedTokenId) return false;
+    const id = selectedTokenId;
+    const before = tokens.length;
+    tokens = tokens.filter((t) => t.id !== id);
+    if (tokens.length === before) return false;
+    selectedTokenId = null;
+    draw();
+    schedulePersist();
+    const hint = document.getElementById("header-hint");
+    if (hint) {
+      hint.textContent =
+        "Click token to select · Delete removes token/layer · Double-click token for sheet · Drag actors onto map · Wheel zoom";
+    }
+    setStatus(`Removed token · ${tokens.length} remaining`);
+    return true;
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (
+      (e.key !== "Delete" && e.key !== "Backspace") ||
+      e.altKey ||
+      e.metaKey ||
+      e.ctrlKey
+    ) {
+      return;
+    }
+    if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) {
+      return;
+    }
+    if (selectedTokenId) {
+      e.preventDefault();
+      removeSelectedToken();
+      return;
+    }
+    if (editingLayerId) {
+      const layer = editingLayer();
+      if (layer) {
+        e.preventDefault();
+        deleteLayer(layer);
+      }
+    }
+  });
 
   async function boot() {
     layout.classList.add("no-sheet");

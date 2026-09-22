@@ -11,7 +11,7 @@ No AI, no listen-server / multiplayer, no Prep/Editor apps — just the play-sid
 - **Desktop app:** `pywebview` (`pip install pywebview`) — Edge WebView2 on Windows
 - **Browser debug only:** `serve.py` (no sheet windows)
 
-Version is in `VERSION` (currently **0.6.15**).
+Version is in `VERSION` (currently **0.6.16**).
 
 ## Run — desktop app (recommended)
 
@@ -228,6 +228,14 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Roll buttons** — display tool **Add button** (`shape: button`, `action: {type:roll, sides:N}`); click rolls and toasts the result.
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
+
+## 0.6.16
+
+- **Dual-value boxes** — when a widget has distinct input/output IDs with an output formula, the sheet shows **only** the resolved display value until you click it; then a base number editor appears (bound to `input_id`, prefilled with `baseVal`, never the failed display `0`). Blur/Enter saves via `saveFields` and returns to output-only.
+- **Delete key** — Sheet builder Display pane: Delete/Backspace removes the selected widget (graph selection still preferred when both active). Session map: Delete/Backspace removes the selected token (persisted), or if no token but a layer is in Edit, runs the existing delete-layer confirm. Ignored while typing in inputs.
+- **Infer grid from walls** — new sidebar button next to Has-grid / Add layer. Detects long dark/high-contrast wall-like segments on the editing (or top visible) map layer, collapses double-line wall pairs to centerlines, and applies pitch/phase when **>50%** of wall length aligns to a candidate square grid (reuses Has-grid `gridFitImage` alignment). Status reports pitch and match %; failure clears with an explanation. Existing Has-grid printed-line detection unchanged.
+- **Resource adjust ops** — new binary `+=` / `-=` in the Automations palette (same as `+`/`−` at runtime: `(a,b)→a±b`). Compile expands them to `+`/`−` for closed-formula compatibility. Pattern: Field HP → Const 1 → `-=` → Output HP on a trigger.
+- **Tests** — `+=`/`-=` in `evaluate-logic-ops.mjs`; synthetic wall-grid scoring in `infer-grid-from-walls.mjs`.
 
 ## 0.6.15
 
