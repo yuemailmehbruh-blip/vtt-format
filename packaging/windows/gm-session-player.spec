@@ -15,6 +15,12 @@ block_cipher = None
 datas = [
     (str(PL / "player.html"), "player-session"),
     (str(PL / "player.js"), "player-session"),
+    (str(PL / "join.html"), "player-session"),
+    (str(PL / "join.js"), "player-session"),
+    (str(GM / "index.html"), "gm-session"),
+    (str(GM / "session.js"), "gm-session"),
+    (str(GM / "org-tree.js"), "gm-session"),
+    (str(GM / "infer-grid-from-walls.js"), "gm-session"),
     (str(GM / "sheet.html"), "gm-session"),
     (str(GM / "sheet.js"), "gm-session"),
     (str(GM / "sheet-runtime.js"), "gm-session"),

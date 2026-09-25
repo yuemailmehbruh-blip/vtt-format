@@ -1,8 +1,9 @@
 (() => {
   "use strict";
-
-  const ROLL_CHANNEL = "gm-session-roll";
-  const ROLL_HISTORY_KEY = "gm-session-roll-history";
+  // 0.7.1: the Rolls window shows the shared session chat (authoritative log on
+  // this GM server, state/chat/session.jsonl). Rolls and messages posted here, by
+  // sheets (GM or player) and by players all land in the same log; this window
+  // long-polls /api/chat so new lines appear immediately.
 
   const dieSidesEl = document.getElementById("die-sides");
   const btnDieRoll = document.getElementById("btn-die-roll");
@@ -10,77 +11,25 @@
   const bellStdevEl = document.getElementById("bell-stdev");
   const btnBellSample = document.getElementById("btn-bell-sample");
   const btnRollClear = document.getElementById("btn-roll-clear");
-  const rollHistoryListEl = document.getElementById("roll-history-list");
+  const listEl = document.getElementById("roll-history-list");
   const statusEl = document.getElementById("status");
+  const form = document.getElementById("chat-form");
+  const input = document.getElementById("chat-input");
 
-  /** @type {{label: string, result: number, detail: string, t?: number}[]} */
-  const rollHistory = [];
-
-  /** localStorage: shared across pywebview windows; cleared only via Clear. */
-  function rollStore() {
-    try {
-      return window.localStorage;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function readStoredHistory() {
-    const store = rollStore();
-    if (!store) return [];
-    try {
-      const raw = store.getItem(ROLL_HISTORY_KEY);
-      if (!raw) return [];
-      const list = JSON.parse(raw);
-      if (!Array.isArray(list)) return [];
-      return list
-        .filter((e) => e && typeof e === "object")
-        .map((e) => ({
-          label: String(e.label || ""),
-          result: e.result,
-          detail: String(e.detail || ""),
-          t: typeof e.t === "number" ? e.t : undefined,
-        }));
-    } catch (_) {
-      return [];
-    }
-  }
-
-  function writeStoredHistory() {
-    const store = rollStore();
-    if (!store) return;
-    try {
-      store.setItem(ROLL_HISTORY_KEY, JSON.stringify(rollHistory));
-    } catch (_) {}
-  }
-
-  function clearStoredHistory() {
-    const store = rollStore();
-    if (!store) return;
-    try {
-      store.removeItem(ROLL_HISTORY_KEY);
-    } catch (_) {}
-  }
+  let entries = [];
+  let seq = 0;
+  let epoch = null;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   function setStatus(msg) {
     statusEl.textContent = msg || "";
   }
 
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  /** Uniform integer from 1..sides inclusive. */
   function rollUniformInt(sides) {
     const n = Math.max(1, Math.floor(Number(sides) || 1));
     return 1 + Math.floor(Math.random() * n);
   }
 
-  /** Box–Muller normal sample, rounded to nearest integer. */
   function sampleBell(mean, stdev) {
     const m = Number(mean);
     const s = Number(stdev);
@@ -93,75 +42,87 @@
     return Math.round(m + z * s);
   }
 
-  function renderRollHistory() {
-    if (!rollHistoryListEl) return;
-    rollHistoryListEl.innerHTML = "";
-    if (rollHistory.length === 0) {
+  /** textContent only: nothing from a message is ever parsed as HTML. */
+  function render() {
+    const nearBottom = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 40;
+    listEl.innerHTML = "";
+    if (!entries.length) {
       const empty = document.createElement("div");
       empty.className = "roll-empty";
-      empty.textContent = "No rolls yet";
-      rollHistoryListEl.appendChild(empty);
+      empty.textContent = "No rolls or messages yet";
+      listEl.appendChild(empty);
       return;
     }
-    for (const entry of rollHistory) {
+    for (const e of entries) {
       const line = document.createElement("div");
-      line.className = "roll-line";
-      line.innerHTML =
-        `${escapeHtml(entry.label)} → <span class="roll-val">${escapeHtml(String(entry.result))}</span>` +
-        (entry.detail
-          ? ` <span style="color:var(--muted)">${escapeHtml(entry.detail)}</span>`
-          : "");
-      rollHistoryListEl.appendChild(line);
-    }
-    rollHistoryListEl.scrollTop = rollHistoryListEl.scrollHeight;
-  }
-
-  function entryKey(e) {
-    return `${e.t ?? ""}|${e.label}|${e.result}|${e.detail || ""}`;
-  }
-
-  /**
-   * Append a roll to in-memory history + localStorage and re-render.
-   * Dedupes identical (t,label,result,detail) so BroadcastChannel + pywebview
-   * bridges do not double-append the same sheet roll.
-   */
-  function appendRoll(label, result, detail, t) {
-    const entry = {
-      label: String(label || ""),
-      result,
-      detail: detail != null ? String(detail) : "",
-      t: typeof t === "number" ? t : Date.now(),
-    };
-    const key = entryKey(entry);
-    if (rollHistory.some((e) => entryKey(e) === key)) {
-      return;
-    }
-    // Soft dedupe: same label/result/detail within 2s (BC + bridge race without t)
-    for (let i = rollHistory.length - 1; i >= 0; i--) {
-      const e = rollHistory[i];
-      if (
-        e.label === entry.label &&
-        e.result === entry.result &&
-        (e.detail || "") === (entry.detail || "")
-      ) {
-        const te = typeof e.t === "number" ? e.t : 0;
-        if (!te || entry.t - te < 2000 || Date.now() - te < 2000) {
-          return;
+      line.className = `roll-line ${(e.sender && e.sender.role) || ""}`;
+      const time = document.createElement("span");
+      time.className = "time";
+      time.textContent = new Date(e.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const who = document.createElement("span");
+      who.className = "who";
+      who.textContent = (e.sender && e.sender.name) || "?";
+      line.append(time, who);
+      if (e.kind === "roll") {
+        line.append(document.createTextNode(`${e.label || "roll"} → `));
+        const v = document.createElement("span");
+        v.className = "roll-val";
+        v.textContent = String(e.result);
+        line.append(v);
+        if (e.detail) {
+          const d = document.createElement("span");
+          d.className = "det";
+          d.textContent = ` ${e.detail}`;
+          line.append(d);
         }
+      } else {
+        line.append(document.createTextNode(e.text || ""));
       }
-      if (typeof e.t === "number" && Date.now() - e.t > 5000) break;
+      listEl.appendChild(line);
     }
-    rollHistory.push(entry);
-    writeStoredHistory();
-    renderRollHistory();
-    setStatus(`${entry.label} → ${entry.result}`);
+    if (nearBottom || entries.length < 3) listEl.scrollTop = listEl.scrollHeight;
   }
 
-  function hydrateFromStorage() {
-    const stored = readStoredHistory();
-    rollHistory.length = 0;
-    for (const e of stored) {
-      rollHistory.push(e);
+  function merge(d) {
+    if (d.epoch !== epoch) entries = [];
+    const have = new Set(entries.map((e) => e.seq));
+    for (const e of d.entries || []) if (!have.has(e.seq)) entries.push(e);
+    entries.sort((a, b) => a.seq - b.seq);
+    entries = entries.slice(-500);
+    seq = d.seq || 0;
+    epoch = d.epoch;
+    render();
+  }
+
+  async function post(body) {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok) {
+      setStatus(`Not sent: ${(data && data.error) || "server unreachable"}`);
+      return false;
+    }
+    if (data.entry) merge({ epoch: data.epoch || epoch, seq: Math.max(seq, data.entry.seq), entries: [data.entry] });
+    return true;
+  }
+
+  async function loop() {
+    let wait = 0;
+    for (;;) {
+      try {
+        const q = epoch === null ? "after=0" : `after=${seq}&epoch=${encodeURIComponent(epoch)}`;
+        const res = await fetch(`/api/chat?${q}&wait=${wait}`);
+        if (!res.ok) throw new Error(String(res.status));
+        merge(await res.json());
+        wait = 20;
+        setStatus("Live");
+      } catch (_) {
+        setStatus("Reconnecting…");
+        await sleep(2000);
+      }
     }
   }
 
@@ -169,11 +130,9 @@
     btnDieRoll.addEventListener("click", () => {
       const sides = Math.max(1, Math.floor(Number(dieSidesEl && dieSidesEl.value) || 1));
       if (dieSidesEl) dieSidesEl.value = String(sides);
-      const result = rollUniformInt(sides);
-      appendRoll(`Dice 1–${sides}`, result, "");
+      post({ kind: "roll", label: `Dice 1–${sides}`, result: rollUniformInt(sides), detail: "" });
     });
   }
-
   if (btnBellSample) {
     btnBellSample.addEventListener("click", () => {
       const mean = Number(bellMeanEl && bellMeanEl.value);
@@ -183,33 +142,28 @@
         setStatus("Bell sample needs finite mean and σ > 0");
         return;
       }
-      appendRoll(`Bell μ=${mean} σ=${stdev}`, result, "");
+      post({ kind: "roll", label: `Bell μ=${mean} σ=${stdev}`, result, detail: "" });
     });
   }
-
+  if (form) {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      if (await post({ kind: "message", text })) input.value = "";
+      input.focus();
+    });
+  }
   if (btnRollClear) {
-    btnRollClear.addEventListener("click", () => {
-      rollHistory.length = 0;
-      clearStoredHistory();
-      renderRollHistory();
-      setStatus("History cleared");
+    btnRollClear.addEventListener("click", async () => {
+      if (!window.confirm("Clear the session chat for everyone? (The old log is kept in the campaign trash.)")) return;
+      const res = await fetch("/api/chat", { method: "DELETE" }).catch(() => null);
+      setStatus(res && res.ok ? "Chat cleared" : "Clear failed");
     });
   }
 
-  try {
-    if (typeof BroadcastChannel !== "undefined") {
-      const ch = new BroadcastChannel(ROLL_CHANNEL);
-      ch.onmessage = (ev) => {
-        const data = ev && ev.data;
-        if (!data || typeof data !== "object") return;
-        appendRoll(data.label, data.result, data.detail, data.t);
-      };
-    }
-  } catch (_) {}
-
-  window.__gmAppendRoll = appendRoll;
-
-  hydrateFromStorage();
-  renderRollHistory();
-  setStatus("Ready");
+  // Sheets post rolls straight to /api/chat; the old desktop bridge call is a no-op now.
+  window.__gmAppendRoll = () => {};
+  render();
+  loop();
 })();

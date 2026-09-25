@@ -26,7 +26,13 @@
   const updateStatusEl = document.getElementById("update-status");
 
   const params = new URLSearchParams(location.search);
-  let sceneId = params.get("scene") || "docks";
+  // 0.7.1: the GM Session Player main window runs this same file in player mode
+  // (served by the player app with window.GM_PLAYER_MODE = true): read-only map of the
+  // GM's active scene (own pan/zoom), own tokens draggable, Characters + Chat sidebar.
+  const PLAYER = !!window.GM_PLAYER_MODE;
+  if (PLAYER) document.documentElement.classList.add("player-mode");
+  let sceneId = PLAYER ? null : params.get("scene") || "docks";
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   /** @type {any} */
   let scene = null;
@@ -475,6 +481,12 @@
     ctx.restore();
   }
 
+  /** Player mode: only tokens of characters assigned to this player are draggable. */
+  let myActors = new Set();
+  function canMoveToken(t) {
+    return !PLAYER || (!!t && !!t.actor_id && myActors.has(t.actor_id));
+  }
+
   function drawTokens() {
     ctx.save();
     for (const t of tokens) {
@@ -514,6 +526,17 @@
       ctx.strokeStyle = selected ? "#6ea8fe" : "rgba(20, 24, 36, 0.85)";
       ctx.lineWidth = Math.max(1.5, 2 * Math.min(scale, 1.5));
       ctx.stroke();
+      if (PLAYER && canMoveToken(t) && !selected) {
+        // subtle "yours — drag me" outline
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, r + Math.max(2.5, 3 * Math.min(scale, 1.5)), 0, Math.PI * 2);
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = "rgba(125, 222, 165, 0.9)";
+        ctx.lineWidth = Math.max(1.5, 2 * Math.min(scale, 1.5));
+        ctx.stroke();
+        ctx.restore();
+      }
 
       if (!img) {
         const label = t.label || initials(t.name);
@@ -550,6 +573,7 @@
   function draw() {
     const rect = viewport.getBoundingClientRect();
     ctx.clearRect(0, 0, rect.width, rect.height);
+    if (PLAYER) updateZoomReadout();
     if (!scene) return;
 
     drawMapImages();
@@ -822,17 +846,30 @@
     }
   }
 
+  // 0.7.1: tokens this window changed/removed since the last save; the server
+  // applies only those on top of its file so a player's move made meanwhile stays.
+  const pendingTok = { changed: new Set(), removed: new Set(), full: false };
+
   async function persistTokens() {
-    if (!sceneId) return;
+    if (!sceneId || PLAYER) return;
+    const body = { scene: sceneId, tokens };
+    if (!pendingTok.full) body.merge = { changed: [...pendingTok.changed], removed: [...pendingTok.removed] };
+    pendingTok.changed.clear();
+    pendingTok.removed.clear();
+    pendingTok.full = false;
     try {
       const res = await fetch(`/api/tokens/${encodeURIComponent(sceneId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scene: sceneId, tokens }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         setStatus(`Token save failed (${res.status})`);
         return;
+      }
+      if (body.merge && dragMode !== "token" && !saveTimer) {
+        const data = await res.clone().json().catch(() => null);
+        if (data && Array.isArray(data.tokens)) applyServerTokens(data.tokens);
       }
       setStatus(`${tokens.length} token(s) · saved to state/tokens/${sceneId}.json`);
     } catch (err) {
@@ -840,11 +877,60 @@
     }
   }
 
-  function schedulePersist() {
+  function schedulePersist(change) {
+    if (change && change.changed) pendingTok.changed.add(change.changed);
+    else if (change && change.removed) pendingTok.removed.add(change.removed);
+    else pendingTok.full = true;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
+      saveTimer = null;
       persistTokens();
     }, 200);
+  }
+
+  function applyServerTokens(list) {
+    tokens = list.map((t) => {
+      const n = Number(t.size_tiles);
+      return { ...t, size_tiles: n > 0 ? n : 1 };
+    });
+    if (selectedTokenId && !tokens.some((t) => t.id === selectedTokenId)) selectedTokenId = null;
+    draw();
+  }
+
+  // GM: tokens moved elsewhere (a player, another window) appear live.
+  async function gmRefreshTokens() {
+    if (!sceneId || dragMode === "token" || saveTimer) return;
+    const res = await fetch(`/api/tokens/${encodeURIComponent(sceneId)}`).catch(() => null);
+    if (!res || !res.ok) return;
+    const data = await res.json().catch(() => null);
+    if (data && Array.isArray(data.tokens) && dragMode !== "token" && !saveTimer) applyServerTokens(data.tokens);
+  }
+
+  async function gmLiveLoop() {
+    let rev = null;
+    for (;;) {
+      try {
+        const res = await fetch(`/api/live?${rev === null ? "" : `map=${rev}&`}timeout=20`);
+        if (!res.ok) {
+          await sleep(3000);
+          continue;
+        }
+        const d = await res.json();
+        if (rev !== null && d.map_rev !== rev && d.scene_id === sceneId) await gmRefreshTokens();
+        rev = d.map_rev;
+      } catch (_) {
+        await sleep(3000);
+      }
+    }
+  }
+
+  function reportActiveScene() {
+    if (PLAYER) return;
+    fetch("/api/session/active", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scene: sceneId || null }),
+    }).catch(() => {});
   }
 
   async function loadUiPrefs() {
@@ -914,8 +1000,9 @@
         (actor.appearance && actor.appearance.size_tiles)
     );
     if (!(size > 0)) size = 1;
+    const newId = `${actor.id}-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
     tokens.push({
-      id: `${actor.id}-${Date.now()}-${Math.floor(Math.random() * 1e4)}`,
+      id: newId,
       actor_id: actor.id,
       name,
       label: initials(name),
@@ -924,7 +1011,7 @@
       size_tiles: size,
     });
     draw();
-    schedulePersist();
+    schedulePersist({ changed: newId });
   }
 
   async function loadScene(id, { fit = true } = {}) {
@@ -947,7 +1034,15 @@
     const g = scene.grid || {};
     metaEl.textContent = `grid ${g.size || "?"}px · ${g.type || "square"} · ${g.units || ""}`.trim();
 
-    await loadUiPrefs();
+    if (PLAYER) {
+      // view toggles (grid/nametags) stay local; snap follows the GM's setting
+      const sn = scene.snap || {};
+      snapToGrid = sn.snapToGrid !== false;
+      snapTarget = sn.snapTarget === "corner" ? "corner" : "center";
+    } else {
+      await loadUiPrefs();
+      reportActiveScene();
+    }
     await loadMapLayers(scene);
     await loadTokens();
     extent = computeExtent(scene);
@@ -987,6 +1082,11 @@
     selectedActorId = actorId;
     currentSheetActorId = actorId;
     renderLibrarySelection();
+    if (PLAYER && !(window.pywebview && window.pywebview.api && window.pywebview.api.open_sheet)) {
+      window.open(`/sheet.html?actor=${encodeURIComponent(actorId)}&mode=player`, `sheet-${actorId}`, "width=900,height=760");
+      setStatus(`Sheet opened: ${actorId}`);
+      return;
+    }
 
     const api =
       window.pywebview &&
@@ -1113,6 +1213,10 @@
         </span>`;
       row.querySelector("strong").textContent = actor.name || actor.id;
       row.querySelector(".name span").textContent = actor.sheet ? `sheet: ${actor.sheet}` : "actor";
+      if (PLAYER) {
+        row.title = "Double-click to open your sheet";
+        row.querySelector(".name span").textContent = actor.pending ? `${actor.pending} change(s) to send` : "synced";
+      }
       if (actor.has_sheet) {
         const flag = document.createElement("span");
         flag.className = "sheet-flag";
@@ -1189,7 +1293,7 @@
       row.dataset.ref = r.ref;
       row.dataset.panel = panel;
       row.tabIndex = 0;
-      row.draggable = true;
+      row.draggable = !PLAYER;
       row.style.marginLeft = `${r.depth * 0.9}rem`;
       if (orgSelected[panel] === r.ref) row.classList.add("selected");
       wireRow(panel, row, r.node);
@@ -1276,7 +1380,7 @@
     row.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       selectRow(panel, ref);
-      openOrgMenu(panel, node, e.clientX, e.clientY);
+      if (!PLAYER) openOrgMenu(panel, node, e.clientX, e.clientY);
     });
     row.addEventListener("dragstart", (e) => {
       if (orgRenaming) {
@@ -1709,6 +1813,12 @@
     renderLibrarySelection();
     renderMapLayersList();
     draw();
+    if (PLAYER) {
+      nameEl.textContent = "Waiting for the GM";
+      setStatus("The GM has no scene open right now");
+      return;
+    }
+    reportActiveScene();
     setStatus("No scenes — create one with Scenes → + Scene");
   }
 
@@ -2008,7 +2118,7 @@
       pollPlayers();
     });
   }
-  setInterval(pollPlayers, 3000);
+  if (!PLAYER) setInterval(pollPlayers, 3000);
 
   const orgMenuEl = document.getElementById("org-menu");
   function closeOrgMenu() {
@@ -2128,6 +2238,17 @@
       if (a && a.aura_fields) actorAuraFields.set(a.id, TA.pickAuraFields(a.aura_fields));
     }
     const o = library.organization || {};
+    if (PLAYER) {
+      myActors = new Set((library.actors || []).filter((a) => a.assigned).map((a) => a.id));
+      org = {
+        maps: [],
+        actors: OT.reconcile("actors", o.actors || [], [...myActors]),
+        scenes: [],
+      };
+      renderLibrary();
+      draw();
+      return;
+    }
     org = {
       maps: OT.reconcile("maps", o.maps || [], (library.maps || []).map((m) => m.id)),
       actors: OT.reconcile("actors", o.actors || [], (library.actors || []).map((a) => a.id)),
@@ -3602,7 +3723,9 @@
     pointerDownX = e.clientX;
     pointerDownY = e.clientY;
     pointerMoved = false;
-    if (hit) {
+    if (hit && !canMoveToken(hit)) {
+      selectToken(hit); // look, don't touch: pan instead
+    } else if (hit) {
       dragMode = "token";
       draggingToken = hit;
       draggingLayer = null;
@@ -3635,7 +3758,8 @@
         viewport.style.cursor = "move";
         return;
       }
-      viewport.style.cursor = hitTestToken(sx, sy) ? "move" : "grab";
+      const over = hitTestToken(sx, sy);
+      viewport.style.cursor = over ? (canMoveToken(over) ? "move" : "pointer") : "grab";
       return;
     }
 
@@ -3692,7 +3816,11 @@
         draggingToken.y = ny;
         draw();
       }
-      schedulePersist();
+      if (PLAYER) {
+        if (pointerMoved) playerMoveToken(draggingToken);
+      } else {
+        schedulePersist({ changed: draggingToken.id });
+      }
     }
     if (
       (dragMode === "layer-move" || dragMode === "layer-resize") &&
@@ -3747,11 +3875,12 @@
     if (isMapChrome(e.target)) return;
     const [sx, sy] = canvasLocal(e);
     const hit = hitTestToken(sx, sy);
-    if (hit && hit.actor_id) {
+    if (hit && hit.actor_id && (!PLAYER || myActors.has(hit.actor_id))) {
       selectToken(hit);
       openSheet(hit.actor_id);
       return;
     }
+    if (hit) return;
     fitToView();
     draw();
   });
@@ -3767,6 +3896,7 @@
   viewport.addEventListener("drop", (e) => {
     e.preventDefault();
     viewport.classList.remove("drop-target");
+    if (PLAYER) return;
     let actor = null;
     const raw = e.dataTransfer.getData("application/x-vtt-actor");
     if (raw) {
@@ -3899,7 +4029,7 @@
     if (tokens.length === before) return false;
     selectedTokenId = null;
     draw();
-    schedulePersist();
+    schedulePersist({ removed: id });
     const hint = document.getElementById("header-hint");
     if (hint) {
       hint.textContent =
@@ -3921,6 +4051,7 @@
     if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) {
       return;
     }
+    if (PLAYER) return; // players cannot delete anything
     if (document.querySelector("dialog[open]")) return;
     if (focusRegion === "sidebar") {
       // sidebar owns Delete: never touches the map's token/layer selection
@@ -3945,6 +4076,244 @@
     }
   });
 
+  // --- 0.7.1 player mode: live view, own-token moves, chat, connection ---------
+  const chatListEl = document.getElementById("chat-list");
+  const chatInputEl = document.getElementById("chat-input");
+  const playerConnEl = document.getElementById("player-conn");
+  const playerSyncEl = document.getElementById("player-last-sync");
+  let chatEntries = [];
+  let chatSeq = null;
+  let chatEpoch = null;
+  let pendingViewRefresh = false;
+
+  function updateZoomReadout() {
+    const z = document.getElementById("zoom-level");
+    if (z) z.textContent = `zoom ${Math.round(scale * 100)}%`;
+  }
+
+  async function playerApplyView(sid) {
+    if (dragMode === "token") {
+      pendingViewRefresh = true; // don't yank a token out from under the pointer
+      return;
+    }
+    pendingViewRefresh = false;
+    await loadLibrary();
+    if (!sid) {
+      if (scene || sceneId) showEmptyScene();
+      else {
+        nameEl.textContent = "Waiting for the GM";
+        setStatus("The GM has no scene open right now");
+      }
+      return;
+    }
+    const keepView = sid === sceneId && !!scene;
+    const sel = selectedTokenId;
+    await loadScene(sid, { fit: !keepView });
+    if (keepView && sel && tokens.some((t) => t.id === sel)) selectedTokenId = sel;
+    draw();
+  }
+
+  async function playerMoveToken(tok) {
+    const res = await fetch("/api/token-move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scene: sceneId, token: tok.id, x: tok.x, y: tok.y }),
+    }).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (res && res.ok) {
+      setStatus(`Moved ${tok.name || "token"} — sent to the GM`);
+    } else {
+      setStatus(`Move not accepted: ${(data && data.error) || "not connected to the GM"}`);
+      await playerApplyView(sceneId); // snap back to the GM's truth
+    }
+    if (pendingViewRefresh) playerApplyView(sceneId);
+  }
+
+  function fmtTime(ms) {
+    try {
+      return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /** Chat lines are built with textContent only (no HTML from messages). */
+  function renderChat() {
+    if (!chatListEl) return;
+    const nearBottom = chatListEl.scrollHeight - chatListEl.scrollTop - chatListEl.clientHeight < 40;
+    chatListEl.innerHTML = "";
+    if (!chatEntries.length) {
+      const empty = document.createElement("div");
+      empty.className = "chat-empty";
+      empty.textContent = "No messages yet — say hi or roll a die.";
+      chatListEl.appendChild(empty);
+    }
+    for (const e of chatEntries) {
+      const line = document.createElement("div");
+      const role = (e.sender && e.sender.role) || "player";
+      line.className = `chat-line ${e.kind === "roll" ? "roll" : "msg"} ${role}`;
+      const who = document.createElement("span");
+      who.className = "chat-who";
+      who.textContent = (e.sender && e.sender.name) || "?";
+      const time = document.createElement("span");
+      time.className = "chat-time";
+      time.textContent = fmtTime(e.t);
+      const body = document.createElement("span");
+      body.className = "chat-body";
+      if (e.kind === "roll") {
+        body.textContent = `${e.label || "roll"} → `;
+        const v = document.createElement("strong");
+        v.className = "chat-roll";
+        v.textContent = String(e.result);
+        body.appendChild(v);
+        if (e.detail) {
+          const d = document.createElement("span");
+          d.className = "chat-detail";
+          d.textContent = ` (${e.detail})`;
+          body.appendChild(d);
+        }
+      } else {
+        body.textContent = e.text || "";
+      }
+      line.append(time, who, body);
+      chatListEl.appendChild(line);
+    }
+    if (nearBottom || chatEntries.length < 3) chatListEl.scrollTop = chatListEl.scrollHeight;
+  }
+
+  async function loadChat(full) {
+    const q = full || chatSeq === null ? "after=0" : `after=${chatSeq}&epoch=${encodeURIComponent(chatEpoch || "")}`;
+    const res = await fetch(`/api/chat?${q}`).catch(() => null);
+    if (!res || !res.ok) return;
+    const d = await res.json();
+    if (full || chatSeq === null || d.epoch !== chatEpoch) chatEntries = [];
+    const seen = new Set(chatEntries.map((e) => e.seq));
+    for (const e of d.entries || []) if (!seen.has(e.seq)) chatEntries.push(e);
+    chatEntries.sort((a, b) => a.seq - b.seq);
+    chatEntries = chatEntries.slice(-500);
+    chatSeq = d.seq;
+    chatEpoch = d.epoch;
+    renderChat();
+  }
+
+  async function postChat(body) {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok) {
+      setStatus(`Not sent: ${(data && data.error) || "not connected to the GM"}`);
+      return false;
+    }
+    await loadChat(false);
+    return true;
+  }
+
+  function renderPlayerStatus(st) {
+    if (!st || !playerConnEl) return;
+    const state = st.state || "offline";
+    const label = { connected: "Connected", connecting: "Connecting…", offline: "Offline", error: "Error", "not-configured": "Not joined" }[state] || state;
+    playerConnEl.textContent = label;
+    playerConnEl.className = `players-chip player-conn ${state}`;
+    playerConnEl.title = st.last_error || `GM ${st.gm || ""}`;
+    if (playerSyncEl) playerSyncEl.textContent = st.last_sync ? `last sync ${new Date(st.last_sync * 1000).toLocaleTimeString()}` : "not synced yet";
+  }
+
+  async function playerLiveLoop() {
+    let since = -1;
+    let mapRev;
+    let sceneSeen;
+    for (;;) {
+      try {
+        const res = await fetch(`/papi/live?since=${since}&timeout=${since < 0 ? 0 : 5}`);
+        const d = await res.json();
+        const first = since < 0;
+        since = d.rev;
+        renderPlayerStatus(d.status);
+        if (first || d.map_rev !== mapRev || d.scene_id !== sceneSeen) {
+          mapRev = d.map_rev;
+          sceneSeen = d.scene_id;
+          await playerApplyView(d.scene_id);
+        } else {
+          await loadLibrary(); // sheet list / pending counts
+        }
+        if (first || d.chat_seq !== chatSeq || d.chat_epoch !== chatEpoch) await loadChat(first || d.chat_epoch !== chatEpoch);
+      } catch (_) {
+        await sleep(1000);
+      }
+    }
+  }
+
+  function wirePlayerUi() {
+    const form = document.getElementById("chat-form");
+    if (form) {
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const text = chatInputEl.value.trim();
+        if (!text) return;
+        chatInputEl.disabled = true;
+        const ok = await postChat({ kind: "message", text });
+        chatInputEl.disabled = false;
+        if (ok) chatInputEl.value = "";
+        chatInputEl.focus();
+      });
+    }
+    const btnRoll = document.getElementById("chat-roll");
+    if (btnRoll) {
+      btnRoll.addEventListener("click", () => {
+        const sides = Math.max(2, Math.min(1000, Math.floor(Number(document.getElementById("chat-die").value) || 20)));
+        const result = 1 + Math.floor(Math.random() * sides);
+        postChat({ kind: "roll", label: `d${sides}`, result, detail: `1d${sides}` });
+      });
+    }
+    const btnFull = document.getElementById("btn-full-sync");
+    if (btnFull) {
+      btnFull.addEventListener("click", async () => {
+        const sel = sidebarSelection();
+        const aid = (sel && sel.panel === "actors" && sel.node.actor) || selectedActorId || [...myActors][0];
+        if (!aid) {
+          setStatus("Select one of your characters first");
+          return;
+        }
+        const nm = entityName("actors", aid);
+        const ok = await confirmInApp(
+          `Full Sync “${nm}” → GM?`,
+          `Your whole copy of “${nm}” replaces the GM's copy of every field and the notes (the GM's newer edits to this sheet are overwritten).`,
+          "Overwrite GM copy"
+        );
+        if (!ok) return;
+        const res = await fetch(`/papi/fullsync/${encodeURIComponent(aid)}`, { method: "POST" }).catch(() => null);
+        const data = res ? await res.json().catch(() => ({})) : {};
+        setStatus(res && res.ok ? `Full sync sent: ${nm} (${data.applied || 0} field(s) changed on the GM)` : `Full sync failed: ${(data && data.error) || "offline"}`);
+      });
+    }
+    const btnLeave = document.getElementById("btn-leave");
+    if (btnLeave) {
+      btnLeave.addEventListener("click", async () => {
+        const api = window.pywebview && window.pywebview.api;
+        if (api && typeof api.leave === "function") {
+          api.leave();
+        } else {
+          await fetch("/papi/disconnect", { method: "POST" }).catch(() => {});
+          location.href = "/join.html";
+        }
+      });
+    }
+  }
+
+  async function playerBoot() {
+    layout.classList.add("no-sheet");
+    const hint = document.getElementById("header-hint");
+    if (hint) hint.textContent = "Drag empty map to pan · Wheel to zoom · Drag your own tokens (dashed outline) · Double-click your character for its sheet";
+    resize();
+    wirePlayerUi();
+    await loadLibrary();
+    nameEl.textContent = "Waiting for the GM";
+    playerLiveLoop();
+  }
+
   async function boot() {
     layout.classList.add("no-sheet");
     resize();
@@ -3956,7 +4325,7 @@
     else await openFallbackScene();
   }
 
-  boot().catch((err) => {
+  (PLAYER ? playerBoot() : boot().then(() => gmLiveLoop())).catch((err) => {
     console.error(err);
     setStatus(String(err));
   });

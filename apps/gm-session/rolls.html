@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Rolls</title>
+  <title>Rolls &amp; Chat</title>
   <style>
     :root {
       color-scheme: dark;
@@ -148,10 +148,16 @@
       background: var(--panel);
     }
     #status { color: var(--muted); font-size: 0.8rem; }
+    #chat-form { display: flex; gap: 0.4rem; padding: 0.55rem 0.85rem; border-top: 1px solid var(--border); }
+    #chat-input { flex: 1; min-width: 0; padding: 0.35rem 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }
+    .roll-line .who { font-weight: 600; color: var(--accent); margin-right: 0.3rem; }
+    .roll-line.gm .who { color: #f2c46d; }
+    .roll-line .time { color: var(--muted); font-size: 0.7rem; margin-right: 0.3rem; }
+    .roll-line .det { color: var(--muted); }
   </style>
 </head>
 <body>
-  <div class="head"><strong>Rolls</strong></div>
+  <div class="head"><strong>Rolls &amp; Chat</strong><span id="chat-note" style="color:var(--muted);font-size:0.78rem">shared with every player</span></div>
   <div class="body">
     <div class="section">
       <h3>Dice roll</h3>
@@ -173,12 +179,16 @@
     </div>
     <div class="section history-section">
       <div class="history-head">
-        <h3>Session history</h3>
-        <button type="button" class="ghost" id="btn-roll-clear" title="Clear this session's rolls">Clear</button>
+        <h3>Session chat</h3>
+        <button type="button" class="ghost" id="btn-roll-clear" title="Clear the shared session chat (moved to the campaign trash)">Clear</button>
       </div>
       <div id="roll-history-list" aria-live="polite">
         <div class="roll-empty">No rolls yet</div>
       </div>
+      <form id="chat-form" autocomplete="off">
+        <input type="text" id="chat-input" maxlength="500" placeholder="Message everyone…" />
+        <button type="submit" class="primary">Send</button>
+      </form>
     </div>
   </div>
   <div class="actions">

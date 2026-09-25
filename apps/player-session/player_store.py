@@ -144,6 +144,76 @@ class PlayerStore:
         except OSError:
             return "-"
 
+    def list_sheet_sig(self) -> list:
+        return [(x["id"], x["name"]) for x in self.list_sheets()]
+
+    # ------------------------------------------------------------ 0.7.1 map view + chat cache
+    def _camp_dir(self) -> Path | None:
+        d = self._sheets_dir()
+        return d.parent if d is not None else None
+
+    def save_view(self, view: dict) -> None:
+        d = self._camp_dir()
+        if d is not None:
+            sc.save_json(d / "view.json", view)
+
+    def load_view(self) -> dict:
+        d = self._camp_dir()
+        v = sc.load_json(d / "view.json", {}) if d is not None else {}
+        v.setdefault("scene", None)
+        v.setdefault("tokens", [])
+        v.setdefault("actors", {})
+        return v
+
+    def _asset_path(self, h: str) -> Path | None:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{8,128}", h or ""):
+            return None
+        return self.dir / "assets" / h
+
+    def has_asset(self, h: str) -> bool:
+        p = self._asset_path(h)
+        return bool(p and p.is_file())
+
+    def save_asset(self, h: str, data: bytes) -> None:
+        p = self._asset_path(h)
+        if p is None or not isinstance(data, (bytes, bytearray)):
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(p)
+
+    def asset_bytes(self, h: str) -> bytes | None:
+        p = self._asset_path(h)
+        return p.read_bytes() if p and p.is_file() else None
+
+    def load_chat(self) -> dict:
+        d = self._camp_dir()
+        c = sc.load_json(d / "chat.json", {}) if d is not None else {}
+        c.setdefault("epoch", None)
+        c.setdefault("seq", 0)
+        c.setdefault("entries", [])
+        return c
+
+    def merge_chat(self, d: dict, replace: bool) -> None:
+        with self.lock:
+            cur = {"epoch": d.get("epoch"), "seq": 0, "entries": []} if replace else self.load_chat()
+            if d.get("epoch") and cur.get("epoch") not in (None, d.get("epoch")) and not replace:
+                cur = {"epoch": d.get("epoch"), "seq": 0, "entries": []}
+            seen = {e.get("seq") for e in cur["entries"]}
+            for e in d.get("entries") or []:
+                if isinstance(e, dict) and isinstance(e.get("seq"), int) and e["seq"] not in seen:
+                    cur["entries"].append(e)
+                    seen.add(e["seq"])
+            cur["entries"].sort(key=lambda e: e["seq"])
+            cur["entries"] = cur["entries"][-500:]
+            cur["seq"] = max([cur.get("seq") or 0] + [e["seq"] for e in cur["entries"]])
+            if d.get("epoch"):
+                cur["epoch"] = d["epoch"]
+            dd = self._camp_dir()
+            if dd is not None:
+                sc.save_json(dd / "chat.json", cur)
+
     def local_edit(self, aid: str, values: dict) -> dict:
         """Edits from the player's sheet window → registers + change log."""
         with self.lock:

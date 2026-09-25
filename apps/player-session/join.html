@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Join a session — GM Session Player</title>
+  <style>
+    :root { color-scheme: dark; --bg: #12151c; --panel: #1b2030; --panel-2: #151a26; --text: #e8ecf4; --muted: #9aa3b5; --accent: #6ea8fe; --border: #2c3448; --ok: #7ddea5; --bad: #ff8a93; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; }
+    body { display: flex; align-items: center; justify-content: center; }
+    form { width: min(360px, 92vw); background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1.1rem 1.2rem 1rem; display: flex; flex-direction: column; gap: 0.7rem; }
+    h1 { margin: 0; font-size: 1.1rem; }
+    .sub { margin: -0.4rem 0 0.2rem; color: var(--muted); font-size: 0.8rem; }
+    label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8rem; color: var(--muted); }
+    input { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.45rem 0.55rem; font: inherit; }
+    input:focus { outline: none; border-color: var(--accent); }
+    button { background: #2a4a7a; color: var(--text); border: 1px solid #3d6cb0; border-radius: 6px; padding: 0.5rem; font: inherit; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: default; }
+    #msg { min-height: 1.2em; font-size: 0.8rem; color: var(--muted); }
+    #msg.bad { color: var(--bad); }
+    #msg.ok { color: var(--ok); }
+    .ver { color: var(--muted); font-size: 0.7rem; text-align: right; }
+  </style>
+</head>
+<body>
+  <form id="join" autocomplete="off">
+    <h1>Join a GM session</h1>
+    <p class="sub">Ask your GM for the address (the “Copy join IP” button on their side).</p>
+    <label>GM address <input id="gm" placeholder="192.168.1.20:8766" required /></label>
+    <label>Your name <input id="name" maxlength="60" placeholder="e.g. Alex" required /></label>
+    <label>Join code <input id="code" maxlength="64" placeholder="only if the GM set one" /></label>
+    <button type="submit" id="go">Join</button>
+    <div id="msg" role="status"></div>
+    <div class="ver" id="ver"></div>
+  </form>
+  <script src="/join.js"></script>
+</body>
+</html>

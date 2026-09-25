@@ -317,7 +317,7 @@
       border-color: var(--border);
     }
     /* 0.6.19 organization panels */
-    .org-panel { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.6rem; background: var(--panel-2); }
+    .org-panel, .chat-panel { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.6rem; background: var(--panel-2); }
     .org-head { display: flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--border); }
     .org-panel.collapsed .org-head { border-bottom: none; }
     .org-panel.collapsed .org-body { display: none; }
@@ -506,6 +506,32 @@
       overflow: visible;
     }
     #layer-file { display: none; }
+    /* 0.7.1 player mode (GM Session Player main window) */
+    .player-only { display: none !important; }
+    html.player-mode .player-only { display: revert !important; }
+    html.player-mode section.player-only { display: block !important; }
+    html.player-mode #panel-maps, html.player-mode #panel-scenes, html.player-mode #btn-players,
+    html.player-mode #btn-copy-join, html.player-mode #update-bar, html.player-mode #roll-dock,
+    html.player-mode .org-btns, html.player-mode .badge, html.player-mode #snap-target,
+    html.player-mode #toggle-snap, html.player-mode label:has(> #toggle-snap) { display: none !important; }
+    html.player-mode #library { display: flex; flex-direction: column; }
+    html.player-mode #panel-chat { flex: 1; min-height: 16rem; display: flex !important; flex-direction: column; }
+    .player-conn.connected { color: var(--ok); border-color: rgba(125, 222, 165, 0.45); }
+    .player-conn.offline, .player-conn.error { color: #ff8a93; border-color: #e06c75; }
+    .chat-body-wrap { display: flex; flex-direction: column; gap: 0.4rem; flex: 1; min-height: 0; }
+    #chat-list { flex: 1; min-height: 10rem; max-height: 46vh; overflow-y: auto; font-size: 0.8rem; padding: 0.3rem 0.35rem; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); }
+    .chat-line { padding: 0.12rem 0; line-height: 1.35; word-break: break-word; }
+    .chat-time { color: var(--muted); font-size: 0.68rem; margin-right: 0.35rem; }
+    .chat-who { font-weight: 600; margin-right: 0.35rem; color: var(--accent); }
+    .chat-line.gm .chat-who { color: #f2c46d; }
+    .chat-line.gm .chat-who::after { content: " (GM)"; font-weight: 400; color: var(--muted); font-size: 0.7rem; }
+    .chat-roll { color: var(--ok); }
+    .chat-detail { color: var(--muted); }
+    .chat-empty { color: var(--muted); font-style: italic; }
+    #chat-form { display: flex; gap: 0.3rem; }
+    #chat-input { flex: 1; min-width: 0; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 0.3rem 0.45rem; }
+    .chat-dice { display: flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; color: var(--muted); }
+    .chat-dice input { width: 3.6rem; margin-left: 0.15rem; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 0.15rem 0.3rem; }
     @media (max-width: 900px) {
       #layout { grid-template-columns: 200px 1fr; }
     }
@@ -517,6 +543,10 @@
     <span class="badge">GM Session (offline)</span>
     <button type="button" id="btn-players" class="players-chip" title="Players: address to join, join code, who is connected">Players</button>
     <button type="button" id="btn-copy-join" class="players-chip copy-join" hidden title="Copy the address players type to join (ip:port)">Copy join IP</button>
+    <span id="player-conn" class="players-chip player-conn player-only" title="Connection to the GM">Connecting…</span>
+    <span id="player-last-sync" class="meta player-only"></span>
+    <span id="zoom-level" class="meta player-only"></span>
+    <button type="button" id="btn-leave" class="players-chip player-only" title="Disconnect and go back to the join window">Leave</button>
     <span class="meta" id="scene-meta"></span>
     <div class="toggles" title="Grid visibility, snap, and nametags are independent">
       <label><input type="checkbox" id="toggle-grid" checked /> Grid</label>
@@ -574,6 +604,7 @@
         <div class="org-head">
           <button type="button" class="org-caret" aria-label="Collapse Characters" title="Collapse / expand Characters">▾</button>
           <h2>Characters</h2>
+          <span class="player-btns player-only"><button type="button" class="btn-add" id="btn-full-sync" title="Send your whole copy of the selected character to the GM (asks first)">Full Sync → GM</button></span>
           <span class="org-btns">
             <button type="button" class="btn-add" id="btn-sheet-builder" title="Open sheet builder (fields + automations)">Sheet builder</button>
             <button type="button" class="btn-add org-new-folder" title="New folder in Characters">+ Folder</button>
@@ -582,6 +613,20 @@
         </div>
         <div class="org-body">
           <div class="org-tree" id="actor-list" data-panel="actors"></div>
+        </div>
+      </section>
+      <section class="chat-panel player-only" id="panel-chat">
+        <div class="org-head"><h2>Rolls &amp; Chat</h2></div>
+        <div class="org-body chat-body-wrap">
+          <div id="chat-list" aria-live="polite"></div>
+          <form id="chat-form" autocomplete="off">
+            <input type="text" id="chat-input" maxlength="500" placeholder="Message everyone…" />
+            <button type="submit" class="btn-add" id="chat-send">Send</button>
+          </form>
+          <div class="chat-dice">
+            <label>Roll d<input type="number" id="chat-die" min="2" max="1000" value="20" /></label>
+            <button type="button" class="btn-add" id="chat-roll">Roll</button>
+          </div>
         </div>
       </section>
       <section class="org-panel" data-panel="scenes" id="panel-scenes">

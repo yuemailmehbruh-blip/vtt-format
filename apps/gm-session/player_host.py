@@ -23,15 +23,17 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import yaml
 
 import net_addrs  # noqa: E402
+from live_session import ChatError, LiveSession
 import sync_core as sc
 
 PLAYERS_FILE = "players.yaml"
 ACTOR_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
+ASSET_RE = re.compile(r"^[A-Za-z0-9_.-]{8,128}$")
 MAX_BODY = 1_000_000
 ONLINE_WINDOW_S = 8.0
 PLAYERS_HEADER = (
@@ -63,6 +65,47 @@ class PlayerHub:
         clk = sc.load_json(self._sync_dir() / "_clock.json", {})
         self.clock = sc.HLC(sc.GM_NODE, clk.get("l", 0), clk.get("c", 0))
         self.hosting = {"enabled": False, "host": None, "port": None, "error": None}
+        self.live = LiveSession(self.root)  # 0.7.1: active scene view + session chat
+        self._chat_times: dict[str, list[float]] = {}
+        self._move_times: dict[str, list[float]] = {}
+        self.token_mover = None  # callable(scene, token, x, y, allowed_actor_ids)
+
+    MOVE_RATE = (20, 5.0)  # at most 20 token moves per 5 s per player
+
+    def player_move_token(self, pid: str, body) -> dict:
+        """0.7.1: a player moves one of their own tokens in the GM's active scene."""
+        if not isinstance(body, dict):
+            raise sc.SyncError("body must be an object")
+        n, window = self.MOVE_RATE
+        now = time.time()
+        times = [t for t in self._move_times.get(pid, []) if now - t < window]
+        if len(times) >= n:
+            raise OverflowError("slow down: too many token moves")
+        scene = self.live.active_scene
+        if not scene or body.get("scene") != scene:
+            raise LookupError("that scene is not the GM's current scene")
+        if self.token_mover is None:
+            raise LookupError("token moves unavailable")
+        out = self.token_mover(scene, body.get("token"), body.get("x"), body.get("y"), set(self.assigned_to(pid)))
+        times.append(now)
+        self._move_times[pid] = times
+        self.live.refresh()  # push now instead of waiting for the next watcher tick
+        return out
+
+    # ------------------------------------------------------------ 0.7.1 chat
+    CHAT_RATE = (8, 10.0)  # at most 8 posts per 10 s per player
+
+    def player_chat(self, pid: str, body) -> dict:
+        n, window = self.CHAT_RATE
+        now = time.time()
+        times = [t for t in self._chat_times.get(pid, []) if now - t < window]
+        if len(times) >= n:
+            raise OverflowError("slow down: too many chat messages")
+        name = (self.load_players()["players"].get(pid) or {}).get("name") or pid[:8]
+        entry = self.live.post_chat({"id": pid, "name": name, "role": "player"}, body)
+        times.append(now)
+        self._chat_times[pid] = times
+        return entry
 
     # ------------------------------------------------------------ files
     def _sync_dir(self) -> Path:
@@ -526,6 +569,26 @@ class PlayerHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass  # player went away mid-response; it re-sends (idempotent by stamp)
 
+    def _send_bytes(self, data: bytes) -> None:
+        ctype = "application/octet-stream"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            ctype = "image/png"
+        elif data[:3] == b"\xff\xd8\xff":
+            ctype = "image/jpeg"
+        elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            ctype = "image/webp"
+        elif data[:6] in (b"GIF87a", b"GIF89a"):
+            ctype = "image/gif"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, max-age=31536000, immutable")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
         if n > MAX_BODY:
@@ -568,6 +631,46 @@ class PlayerHandler(BaseHTTPRequestHandler):
             pid = self._auth()
             if pid is None:
                 return
+            if method == "GET" and sub == "wait":
+                q = parse_qs(urlparse(self.path).query)
+                def qint(k):
+                    try:
+                        return int(q[k][0]) if k in q else None
+                    except (TypeError, ValueError):
+                        raise sc.SyncError(f"bad {k}")
+                epoch = q.get("epoch", [None])[0]
+                timeout = min(max(float(q.get("timeout", ["20"])[0] or 20), 0.0), 25.0)
+                self._send(200, self.hub.live.wait(qint("map"), qint("chat"), epoch, timeout))
+                return
+            if method == "GET" and sub == "view":
+                live = self.hub.live
+                self._send(200, {"rev": live.map_rev, **live.view})
+                return
+            if method == "GET" and sub.startswith("asset/"):
+                digest = sub[len("asset/"):]
+                if not ASSET_RE.match(digest) or digest not in self.hub.live.view_assets():
+                    self._send(404, {"error": "asset not in the current scene"})
+                    return
+                path = self.hub.root / "world" / "assets" / "by-hash" / digest
+                if not path.is_file():
+                    self._send(404, {"error": "asset missing"})
+                    return
+                self._send_bytes(path.read_bytes())
+                return
+            if method == "GET" and sub == "chat":
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    after = int(q.get("after", ["0"])[0])
+                except ValueError:
+                    raise sc.SyncError("bad after")
+                self._send(200, self.hub.live.chat_since(after))
+                return
+            if method == "POST" and sub == "token-move":
+                self._send(200, {"ok": True, "token": self.hub.player_move_token(pid, self._body())})
+                return
+            if method == "POST" and sub == "chat":
+                self._send(200, {"ok": True, "entry": self.hub.player_chat(pid, self._body())})
+                return
             if method == "GET" and sub == "sheets":
                 self._send(200, {"assigned": self.hub.assigned_summary(pid)})
             elif method == "GET" and sub.startswith("sheet/"):
@@ -586,8 +689,13 @@ class PlayerHandler(BaseHTTPRequestHandler):
                 self._send(200, self.hub.full_from_player(pid, aid, self._body().get("values")))
             else:
                 self._send(404, {"error": "not found"})
-        except OverflowError:
-            self._send(413, {"error": "request too large"})
+        except OverflowError as exc:
+            if str(exc).startswith("slow down"):
+                self._send(429, {"error": str(exc)})
+            else:
+                self._send(413, {"error": "request too large"})
+        except ChatError as exc:
+            self._send(400, {"error": str(exc)})
         except PermissionError as exc:
             self._send(403, {"error": str(exc)})
         except LookupError as exc:
@@ -619,5 +727,6 @@ def start_player_listener(hub: PlayerHub, host: str, port: int, version: str, qu
         return None
     srv.daemon_threads = True
     hub.hosting = {"enabled": True, "host": host, "port": srv.server_address[1], "error": None}
+    hub.live.start_watcher()
     threading.Thread(target=srv.serve_forever, name="gm-player-host", daemon=True, kwargs={"poll_interval": 0.5}).start()
     return srv

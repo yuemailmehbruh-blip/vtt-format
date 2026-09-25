@@ -7,10 +7,12 @@ import json
 import mimetypes
 import re
 import sys
+import math
+import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import campaign_model as cm
 import clipboard_os  # noqa: E402
@@ -464,6 +466,36 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/players":
             self._send_json(200, self.player_hub.gm_status())
             return
+        if path == "/api/live":
+            # 0.7.1: GM map window long-polls this to show token moves made by players
+            q = parse_qs(parsed.query)
+            try:
+                mrev = int(q["map"][0]) if "map" in q else None
+                timeout = min(max(float(q.get("timeout", ["20"])[0] or 20), 0.0), 25.0)
+            except ValueError:
+                self._send_json(400, {"error": "bad map/timeout"})
+                return
+            live = self.player_hub.live
+            live.refresh()
+            self._send_json(200, live.wait(mrev, None, None, timeout if mrev is not None else 0))
+            return
+        if path == "/api/chat":
+            # 0.7.1 shared session chat (GM rolls window). ?after=<seq>&epoch=<e>&wait=<s>
+            q = parse_qs(parsed.query)
+            try:
+                after = int(q.get("after", ["0"])[0])
+                wait = min(max(float(q.get("wait", ["0"])[0] or 0), 0.0), 25.0)
+            except ValueError:
+                self._send_json(400, {"error": "bad after/wait"})
+                return
+            live = self.player_hub.live
+            epoch = q.get("epoch", [None])[0]
+            if wait > 0:
+                live.wait(None, after, epoch, wait)
+            if epoch is not None and epoch != live.chat_epoch:
+                after = 0  # chat was cleared: send everything
+            self._send_json(200, live.chat_since(after))
+            return
         if path == "/api/migration":
             self._send_json(200, getattr(type(self), "migration_report", {}) or {})
             return
@@ -737,13 +769,25 @@ class Handler(BaseHTTPRequestHandler):
                         "size_tiles": size_tiles,
                     }
                 )
-            out = {"scene": scene_id, "tokens": cleaned}
             tokens_dir = self.campaign_root / "state" / "tokens"
             tokens_dir.mkdir(parents=True, exist_ok=True)
             tokens_path = tokens_dir / f"{scene_id}.json"
-            tokens_path.write_text(
-                json.dumps(out, indent=2) + "\n", encoding="utf-8"
-            )
+            merge = body.get("merge") if isinstance(body.get("merge"), dict) else None
+            with TOKENS_LOCK:
+                if merge is not None:
+                    # 0.7.1: only the tokens this window changed/removed are applied on
+                    # top of the file, so a player's move made meanwhile is kept.
+                    changed = {str(i) for i in (merge.get("changed") or [])}
+                    removed = {str(i) for i in (merge.get("removed") or [])}
+                    current = _read_tokens(tokens_path)
+                    mine = {t["id"]: t for t in cleaned}
+                    merged = [mine.get(t.get("id"), t) if t.get("id") in changed else t
+                              for t in current if t.get("id") not in removed]
+                    have = {t.get("id") for t in merged}
+                    merged += [t for t in cleaned if t["id"] in changed and t["id"] not in have]
+                    cleaned = merged
+                out = {"scene": scene_id, "tokens": cleaned}
+                _write_tokens(tokens_path, out)
             self._send_json(200, {"ok": True, **out})
             return
 
@@ -1094,6 +1138,31 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/assets":
             self._api_post_asset()
+            return
+
+        if path == "/api/chat":
+            body = self._json_object_or_400()
+            if body is None:
+                return
+            try:
+                entry = self.player_hub.live.post_chat({"id": "gm", "name": "GM", "role": "gm"}, body)
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, {"ok": True, "entry": entry, "epoch": self.player_hub.live.chat_epoch})
+            return
+
+        if path == "/api/session/active":
+            # 0.7.1: the GM map window reports the scene it shows (players see this one)
+            body = self._json_object_or_400()
+            if body is None:
+                return
+            sid = body.get("scene")
+            if sid is not None and not (isinstance(sid, str) and _safe_segment(sid)):
+                self._send_json(400, {"error": "invalid scene id"})
+                return
+            self.player_hub.live.set_active(sid)
+            self._send_json(200, {"ok": True, **self.player_hub.live.state()})
             return
 
         if path == "/api/clipboard":
@@ -1639,6 +1708,11 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
+        if path == "/api/chat":
+            moved = self.player_hub.live.clear_chat()
+            self._send_json(200, {"ok": True, "trash": moved})
+            return
+
         if path.startswith("/api/players/"):
             pid = path[len("/api/players/"):].strip("/")
             try:
@@ -1919,6 +1993,150 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
+TOKENS_LOCK = threading.Lock()
+TOKEN_COORD_LIMIT = 1_000_000.0
+
+
+def _read_tokens(path: Path) -> list[dict]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    toks = data.get("tokens") if isinstance(data, dict) else None
+    return [t for t in toks if isinstance(t, dict)] if isinstance(toks, list) else []
+
+
+def _write_tokens(path: Path, out: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def scene_snap(root: Path, scene_id: str) -> dict:
+    """The GM's snap setting for a scene (same prefs the GM map window uses)."""
+    try:
+        d = json.loads((Path(root) / "state" / "ui" / f"{scene_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        d = {}
+    d = d if isinstance(d, dict) else {}
+    return {"snapToGrid": d.get("snapToGrid") is not False,
+            "snapTarget": "corner" if d.get("snapTarget") == "corner" else "center"}
+
+
+def snap_point(x: float, y: float, g: float, snap: dict) -> tuple[float, float]:
+    """Mirror of session.js snapWorld/maybeSnap."""
+    if not snap.get("snapToGrid") or not g or g <= 0:
+        return x, y
+    if snap.get("snapTarget") == "corner":
+        return round(x / g) * g, round(y / g) * g
+    return math.floor(x / g) * g + g / 2, math.floor(y / g) * g + g / 2
+
+
+def move_token(root: Path, scene_id: str, token_id: str, x, y, allowed_actors: set[str]) -> dict:
+    """0.7.1 player token move (validated): token must exist in the scene and belong
+    to one of ``allowed_actors``; coordinates finite and within bounds; snapped with
+    the GM's setting. Last move received wins. Raises PermissionError/LookupError/ValueError."""
+    if not (_safe_segment(scene_id) and isinstance(token_id, str) and 0 < len(token_id) <= 200):
+        raise ValueError("bad scene or token id")
+    if isinstance(x, bool) or isinstance(y, bool) or not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+        raise ValueError("x and y must be numbers")
+    x, y = float(x), float(y)
+    if not (math.isfinite(x) and math.isfinite(y)) or abs(x) > TOKEN_COORD_LIMIT or abs(y) > TOKEN_COORD_LIMIT:
+        raise ValueError("coordinates out of range")
+    root = Path(root)
+    path = root / "state" / "tokens" / f"{scene_id}.json"
+    with TOKENS_LOCK:
+        toks = _read_tokens(path)
+        tok = next((t for t in toks if str(t.get("id")) == token_id), None)
+        if tok is None:
+            raise LookupError("token not in the current scene")
+        if str(tok.get("actor_id") or "") not in allowed_actors:
+            raise PermissionError("you can only move your own character's tokens")
+        raw = yaml.safe_load((root / "world" / "scenes" / f"{scene_id}.yaml").read_text(encoding="utf-8")) or {}
+        grid = cm.resolve_scene(root, raw).get("grid") or {}
+        try:
+            g = float(grid.get("size") or 70)
+        except (TypeError, ValueError):
+            g = 70.0
+        nx, ny = snap_point(x, y, g, scene_snap(root, scene_id))
+        tok["x"], tok["y"] = nx, ny
+        _write_tokens(path, {"scene": scene_id, "tokens": toks})
+    return {"id": token_id, "x": nx, "y": ny}
+
+PLAYER_LAYER_KEYS = ("id", "name", "asset", "x", "y", "w", "h", "flipX", "flipY", "rotation")
+PLAYER_TOKEN_KEYS = ("id", "actor_id", "name", "label", "x", "y", "size_tiles")
+PLAYER_GRID_KEYS = ("size", "type", "units", "distance")
+
+
+def build_player_view(root: Path, scene_id: str | None) -> tuple[dict, list[Path]]:
+    """0.7.1: what a player needs to draw the GM's active scene, and nothing else:
+    visible map image layers (position/size/flip/rotation), grid, tokens (position,
+    size, name/label) and, per token actor, its token appearance (image crop, auras)
+    and aura radius fields. Walls, lights, notes, hidden layers, other actors' sheets
+    are not included. Returns (view, files to watch for changes)."""
+    empty = {"scene": None, "tokens": [], "actors": {}, "assets": []}
+    root = Path(root)
+    if not scene_id or not _safe_segment(scene_id):
+        return empty, []
+    spath = root / "world" / "scenes" / f"{scene_id}.yaml"
+    watch = [spath, root / "state" / "tokens" / f"{scene_id}.json", root / "state" / "ui" / f"{scene_id}.json"]
+    if not spath.is_file():
+        return empty, watch
+    raw = yaml.safe_load(spath.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        return empty, watch
+    if raw.get("map") and _safe_segment(str(raw.get("map"))):
+        watch.append(cm.map_path(root, str(raw["map"])))
+    sc_ = cm.resolve_scene(root, raw)
+    layers = []
+    for l in sc_.get("layers") or []:
+        if isinstance(l, dict) and l.get("type") == "map" and l.get("asset") and l.get("visible", True) is not False:
+            layers.append({"type": "map", **{k: l[k] for k in PLAYER_LAYER_KEYS if k in l}})
+    if not layers and "map" not in raw and raw.get("background"):
+        layers = [{"type": "map", "id": "background", "name": "Base map", "asset": str(raw["background"]), "x": 0, "y": 0}]
+    grid_in = sc_.get("grid") if isinstance(sc_.get("grid"), dict) else {}
+    grid = {k: grid_in[k] for k in PLAYER_GRID_KEYS if k in grid_in}
+    tokens = []
+    try:
+        tdata = json.loads((root / "state" / "tokens" / f"{scene_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        tdata = {}
+    for t in (tdata.get("tokens") if isinstance(tdata, dict) else None) or []:
+        if isinstance(t, dict):
+            tokens.append({k: t[k] for k in PLAYER_TOKEN_KEYS if k in t})
+    actors: dict = {}
+    assets = {str(l["asset"]) for l in layers}
+    for aid in sorted({str(t.get("actor_id")) for t in tokens if t.get("actor_id")}):
+        if not _safe_segment(aid):
+            continue
+        apath = root / "world" / "actors" / f"{aid}.yaml"
+        watch.append(apath)
+        try:
+            data = yaml.safe_load(apath.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        appearance = data.get("appearance") if isinstance(data.get("appearance"), dict) else {}
+        try:
+            size = float(appearance.get("size_tiles", 1)) or 1.0
+        except (TypeError, ValueError):
+            size = 1.0
+        app = library_appearance(appearance, size if size > 0 else 1.0)
+        if app.get("image"):
+            assets.add(app["image"]["asset"])
+        actors[aid] = {"id": aid, "name": str(data.get("name") or aid), "appearance": app,
+                       "size_tiles": app["size_tiles"], "aura_fields": aura_field_values(data.get("fields"))}
+    view = {
+        "scene": {"id": scene_id, "name": str(sc_.get("name") or scene_id), "grid": grid, "layers": layers,
+                  "snap": scene_snap(root, scene_id)},
+        "tokens": tokens,
+        "actors": actors,
+        "assets": sorted(a for a in assets if _safe_segment(a)),
+    }
+    return view, watch
+
 CLIP_TEXT_RE = re.compile(r"^[0-9A-Za-z.\-\[\]:]{1,80}$")
 
 
@@ -1946,6 +2164,8 @@ def create_server(
     Handler.migration_report = cm.migrate_campaign(campaign)
     # 0.7.0 player session: hub always (GM endpoints); LAN listener only when asked.
     hub = ph.PlayerHub(campaign, sheet_payload=lambda aid: Handler.__new__(Handler).sheet_payload(aid))
+    hub.live.view_builder = lambda sid: build_player_view(campaign, sid)
+    hub.token_mover = lambda sid, tid, x, y, allowed: move_token(campaign, sid, tid, x, y, allowed)
     Handler.player_hub = hub
     Handler.player_server = None
     if player_port is not None:

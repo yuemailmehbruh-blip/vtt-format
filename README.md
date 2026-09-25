@@ -73,7 +73,7 @@ Double-click install on Windows 10/11 (no system browser):
 
 The installer places an editable `campaign\` folder next to the app (sample campaign). See `packaging/windows/README.md` for details.
 
-## GM Session Player (0.7.0) — how to host / join
+## GM Session Player (0.7.0+) — how to host / join
 
 **Host (GM):**
 1. Install and start **GM Session** as usual. It now also listens for players on port **8766** of every network interface (the GM window itself stays local-only).
@@ -83,8 +83,8 @@ The installer places an editable `campaign\` folder next to the app (sample camp
 
 **Join (player):**
 1. Install **GM-Session-Player-Setup.exe** (Start menu → **GM Session Player**).
-2. Enter the GM's address (`host:port`; the port defaults to 8766), your name and the join code if the GM set one, then **Connect**.
-3. Your assigned sheets appear on the left. Edits save on your computer and go to the GM every 2 seconds; if the GM is offline they wait and go across on reconnect. **Full Sync → GM** replaces the GM's copy with yours (asks first).
+2. The small **Join** window asks for the GM's address (`host:port`; the port defaults to 8766), your name and the join code if the GM set one. It remembers the last address and name. Press **Join**; it closes and the player session window opens.
+3. The session window looks like the GM's: the map of the scene the GM has open (pan with drag, zoom with the wheel — your view is your own), **Characters** (your assigned sheets; double-click opens the sheet) and **Rolls & Chat** (one chat for the whole table) in the sidebar. Tokens of your own characters have a dashed outline: drag them to move them (snapped like the GM's grid); everyone sees the move. Sheet edits save on your computer and go to the GM every 2 seconds; if the GM is offline they wait and go across on reconnect. **Full Sync → GM** replaces the GM's copy with yours (asks first). **Leave** goes back to the Join window.
 
 Same computer (testing): connect the player app to `127.0.0.1:8766`.
 

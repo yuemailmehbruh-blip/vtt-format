@@ -364,6 +364,21 @@
       detail: detail || "",
       t: Date.now(),
     };
+    // 0.7.1: rolls go to the shared session chat (GM server, or the player app which
+    // forwards to the GM attributed to the player). Old local path only if that fails.
+    fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "roll", label: String(label).slice(0, 200), result, detail: String(detail || "").slice(0, 300) }),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(String(res.status));
+      })
+      .catch(() => publishRollLocal(entry));
+  }
+
+  function publishRollLocal(entry) {
+    const { label, result, detail } = entry;
     appendRollToStorage(entry);
     try {
       if (typeof BroadcastChannel !== "undefined") {

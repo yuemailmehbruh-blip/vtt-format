@@ -47,6 +47,7 @@ a = Analysis(
         "player_host",
         "sync_core",
         "net_addrs",
+        "live_session",
         "clipboard_os",
         "webview",
         "webview.platforms.edgechromium",
