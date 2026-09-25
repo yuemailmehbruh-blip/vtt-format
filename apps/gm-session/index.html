@@ -338,6 +338,15 @@
     .org-row.selected, .org-row.selected:hover { background: rgba(110, 168, 254, 0.2) !important; border-color: var(--accent) !important; box-shadow: inset 3px 0 0 var(--accent); border-radius: 6px; color: var(--text); }
     .org-row.folder { border: 1px solid transparent; }
     .players-chip { font-size: 0.75rem; padding: 0.15rem 0.6rem; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); cursor: pointer; }
+    .players-chip.copy-join { color: var(--text); }
+    .players-chip.copied, .copy-btn.copied { color: var(--ok); border-color: rgba(125, 222, 165, 0.6); }
+    .players-chip.copy-failed, .copy-btn.copy-failed { color: #ff8a93; border-color: #e06c75; }
+    .join-addrs { list-style: none; margin: 0.35rem 0 0.4rem; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+    .join-addrs li { display: flex; align-items: center; gap: 0.5rem; }
+    .join-addrs li code { min-width: 11.5rem; }
+    .join-addrs .addr-note { font-size: 0.72rem; color: var(--muted); }
+    .join-addrs .addr-best { font-size: 0.68rem; color: var(--ok); border: 1px solid rgba(125, 222, 165, 0.45); border-radius: 999px; padding: 0 0.4rem; }
+    .copy-btn { font-size: 0.72rem; padding: 0.1rem 0.55rem; border-radius: 5px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
     .players-chip.online { color: var(--ok); border-color: rgba(125, 222, 165, 0.45); }
     .gm-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; min-width: 420px; max-width: 640px; }
     .gm-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
@@ -507,6 +516,7 @@
     <h1 id="scene-name">Loading…</h1>
     <span class="badge">GM Session (offline)</span>
     <button type="button" id="btn-players" class="players-chip" title="Players: address to join, join code, who is connected">Players</button>
+    <button type="button" id="btn-copy-join" class="players-chip copy-join" hidden title="Copy the address players type to join (ip:port)">Copy join IP</button>
     <span class="meta" id="scene-meta"></span>
     <div class="toggles" title="Grid visibility, snap, and nametags are independent">
       <label><input type="checkbox" id="toggle-grid" checked /> Grid</label>

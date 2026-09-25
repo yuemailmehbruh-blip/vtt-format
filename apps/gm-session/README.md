@@ -229,6 +229,13 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
 
+## 0.7.1 — Copy join IP
+
+- **Copy join IP** — compact button in the top bar (next to **Players**) copies the most likely join address as exactly `ip:port` (e.g. `192.168.4.227:8766`) with a brief "Copied ✓".
+- **Players dialog** lists every non-loopback IPv4 address with its own **Copy** button, most likely LAN address first (tagged "most likely"). Ranking: private range (10/8, 172.16/12, 192.168/16) on an adapter with a default route → other private → non-private; virtual adapters (vEthernet/Hyper-V/WSL, VirtualBox, VMware, Tailscale/100.64/10, ZeroTier, Docker, WireGuard/TAP…) are labelled and ranked last; loopback/link-local skipped (`net_addrs.py`; Windows uses Get-NetIPAddress/Get-NetRoute/Get-NetAdapter, cached 30 s).
+- **Clipboard that works in the desktop app** — tries the webview clipboard, then the desktop bridge (`copy_text` → Windows clipboard API), then a local `POST /api/clipboard` (GM server only, same-origin, accepts only `host:port`-shaped text), then legacy copy.
+- **Tests** — `tests/join-addresses.py` (ranking, virtual-adapter detection, `/api/players` address order, clipboard endpoint validation).
+
 ## 0.7.0 — GM Session Player
 
 - **New app: GM Session Player** (`apps/player-session/`, installer `GM-Session-Player-Setup.exe`, own install dir + Start menu entry, same version). Players enter the GM's address (`host:port`) and a display name, receive the characters the GM assigns them, and edit them with the same sheet renderer/runtime as the GM (buttons, automations and rolls run locally). Sheets are stored in `%LOCALAPPDATA%\GM Session Player` so they open and edit offline.

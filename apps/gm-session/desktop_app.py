@@ -291,6 +291,17 @@ class DesktopApi:
                 pass
         return f"notified:{notified}"
 
+    def copy_text(self, text: str = "") -> str:
+        """0.7.1 "Copy join IP": JS → OS clipboard (WebView2's navigator.clipboard can
+        be unavailable/denied). Only host:port-shaped text is accepted."""
+        import clipboard_os
+        from server_lib import CLIP_TEXT_RE
+
+        text = str(text or "")
+        if not CLIP_TEXT_RE.match(text):
+            return "error: not a join address"
+        return "ok" if clipboard_os.set_text(text) else "error: clipboard busy"
+
     def actor_deleted(self, actor_id: str) -> str:
         """Map → close the deleted character's sheet window (file is in trash)."""
         actor_id = (actor_id or "").strip()

@@ -77,7 +77,7 @@ The installer places an editable `campaign\` folder next to the app (sample camp
 
 **Host (GM):**
 1. Install and start **GM Session** as usual. It now also listens for players on port **8766** of every network interface (the GM window itself stays local-only).
-2. Click **Players** in the top bar. It shows the address players type, e.g. `192.168.1.20:8766`. Optionally set a **join code**.
+2. Click **Copy join IP** in the top bar (0.7.1+) and send that to your players, or click **Players**: it lists every address of this computer with a **Copy** button each, most likely LAN address first (e.g. `192.168.1.20:8766`). Optionally set a **join code**.
 3. Windows Firewall: the installer adds an allow rule for TCP 8766 when it runs as administrator. Otherwise Windows asks the first time GM Session starts — choose **Allow** on private networks. Players must be on the same network (or you forward the port yourself; the traffic is unencrypted HTTP, so do that only on networks you trust).
 4. When a player has joined, right-click a character → **Assign to player…**, tick the player, **Save**. The character gets a 👤 badge.
 

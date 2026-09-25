@@ -46,6 +46,8 @@ a = Analysis(
         "server_lib",
         "player_host",
         "sync_core",
+        "net_addrs",
+        "clipboard_os",
         "webview",
         "webview.platforms.edgechromium",
         "webview.platforms.winforms",

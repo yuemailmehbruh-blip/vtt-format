@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import campaign_model as cm
+import clipboard_os  # noqa: E402
 import player_host as ph
 import sync_core as sc
 
@@ -1095,6 +1096,24 @@ class Handler(BaseHTTPRequestHandler):
             self._api_post_asset()
             return
 
+        if path == "/api/clipboard":
+            # 0.7.1 fallback for "Copy join IP" when the webview's clipboard API is
+            # unavailable: OS clipboard, join-address-shaped text only, same-origin only.
+            origin = self.headers.get("Origin")
+            if origin and urlparse(origin).hostname not in ("127.0.0.1", "localhost", "::1"):
+                self._send_json(403, {"error": "cross-site request refused"})
+                return
+            body = self._json_object_or_400()
+            if body is None:
+                return
+            text = body.get("text")
+            if not (isinstance(text, str) and CLIP_TEXT_RE.match(text)):
+                self._send_json(400, {"error": "only a host:port join address can be copied"})
+                return
+            ok = clipboard_os.set_text(text)
+            self._send_json(200 if ok else 503, {"ok": ok, "text": text, "method": "os"})
+            return
+
         if path == "/api/players/fullsync":
             body = self._json_object_or_400()
             if body is None:
@@ -1900,6 +1919,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
+CLIP_TEXT_RE = re.compile(r"^[0-9A-Za-z.\-\[\]:]{1,80}$")
+
+
 def create_server(
     campaign: Path,
     host: str = "127.0.0.1",
@@ -1933,6 +1955,7 @@ def create_server(
         except OSError:
             pass
         Handler.player_server = ph.start_player_listener(hub, player_host or "0.0.0.0", player_port, version, quiet=quiet)
+        ph.net_addrs.warm()  # 0.7.1: rank join addresses in the background
 
     server = ThreadingHTTPServer((host, port), Handler)
     # If port was 0, pick the assigned one

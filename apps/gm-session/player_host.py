@@ -27,6 +27,7 @@ from urllib.parse import unquote, urlparse
 
 import yaml
 
+import net_addrs  # noqa: E402
 import sync_core as sc
 
 PLAYERS_FILE = "players.yaml"
@@ -49,20 +50,8 @@ def _sha(s: str) -> str:
 
 
 def lan_addresses() -> list[str]:
-    ips: set[str] = set()
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("10.255.255.255", 1))
-        ips.add(s.getsockname()[0])
-        s.close()
-    except OSError:
-        pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ips.add(info[4][0])
-    except OSError:
-        pass
-    return sorted(ip for ip in ips if not ip.startswith("127."))
+    """Ranked join addresses (0.7.1: see net_addrs.py), most likely LAN first."""
+    return [a["ip"] for a in net_addrs.join_addresses()]
 
 
 class PlayerHub:
@@ -445,8 +434,9 @@ class PlayerHub:
                 "sheets": [a for a, pids in data["assignments"].items() if pid in pids],
             })
         players.sort(key=lambda x: x["name"].lower())
+        infos = net_addrs.join_addresses()  # ranked, most likely LAN address first
         return {
-            "hosting": {**self.hosting, "addresses": lan_addresses()},
+            "hosting": {**self.hosting, "addresses": [a["ip"] for a in infos], "address_info": infos},
             "campaign_id": data["campaign_id"],
             "join_code_set": bool(data.get("join_code")),
             "join_code": data.get("join_code") or "",

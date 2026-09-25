@@ -1768,18 +1768,149 @@
       playersSig = sig;
       if (!orgRenaming) renderPanel("actors");
     }
+    updateCopyJoinButton();
     if (playersDlg && playersDlg.open) renderPlayersDialog();
   }
 
+  // --- 0.7.1 Copy join IP -----------------------------------------------------
+  // Order: browser clipboard (navigator.clipboard) → desktop bridge (pywebview
+  // js_api copy_text → OS clipboard) → local server endpoint (OS clipboard) →
+  // legacy execCommand. Returns the method that worked, or null.
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return "browser";
+      } catch (_) {
+        /* denied / unavailable in this webview: fall through */
+      }
+    }
+    const api = window.pywebview && window.pywebview.api;
+    if (api && typeof api.copy_text === "function") {
+      try {
+        if ((await api.copy_text(text)) === "ok") return "desktop";
+      } catch (_) {
+        /* fall through */
+      }
+    }
+    try {
+      const res = await fetch("/api/clipboard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (res.ok) return "server";
+    } catch (_) {
+      /* fall through */
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      if (ok) return "execCommand";
+    } catch (_) {
+      /* nothing left */
+    }
+    return null;
+  }
+
+  function joinAddresses() {
+    const h = players.hosting || {};
+    if (!h.enabled || !h.port) return [];
+    const info = h.address_info && h.address_info.length ? h.address_info : (h.addresses || []).map((ip) => ({ ip }));
+    return info.map((a) => ({ ...a, join: `${a.ip}:${h.port}` }));
+  }
+
+  async function copyWithFeedback(btn, text, idleLabel) {
+    const method = await copyText(text);
+    window.__gmLastCopy = { text, method, at: Date.now() };
+    btn.dataset.method = method || "failed";
+    btn.classList.remove("copied", "copy-failed");
+    btn.classList.add(method ? "copied" : "copy-failed");
+    btn.textContent = method ? "Copied ✓" : "Copy failed";
+    setStatus(method ? `Copied ${text} — players type this to join` : `Could not copy; the join address is ${text}`);
+    clearTimeout(btn._copyTimer);
+    btn._copyTimer = setTimeout(() => {
+      btn.textContent = idleLabel;
+      btn.classList.remove("copied", "copy-failed");
+    }, 1600);
+    return method;
+  }
+
+  const btnCopyJoin = document.getElementById("btn-copy-join");
+  function updateCopyJoinButton() {
+    if (!btnCopyJoin) return;
+    const first = joinAddresses()[0];
+    btnCopyJoin.hidden = !first;
+    if (first) btnCopyJoin.title = `Copy ${first.join} — the address players type to join`;
+  }
+  if (btnCopyJoin) {
+    btnCopyJoin.addEventListener("click", () => {
+      const first = joinAddresses()[0];
+      if (first) copyWithFeedback(btnCopyJoin, first.join, "Copy join IP");
+    });
+  }
+
+  let hostingSig = "";
   function renderPlayersDialog() {
     const h = players.hosting || {};
     const host = document.getElementById("players-hosting");
-    if (h.enabled) {
-      const addrs = (h.addresses || []).map((a) => `<code>${a}:${h.port}</code>`).join(" or ");
-      host.innerHTML = `Players connect to ${addrs || `<code>this-computer:${h.port}</code>`}` +
-        `<div class="muted">Same computer: <code>127.0.0.1:${h.port}</code>. Windows may ask to allow GM Session on private networks — allow it.</div>`;
-    } else {
-      host.textContent = h.error ? `Player hosting is off: ${h.error}` : "Player hosting is off (start GM Session normally to enable it).";
+    const sig = JSON.stringify(h);
+    if (sig !== hostingSig || !host.childElementCount) {
+      hostingSig = sig;
+      host.innerHTML = "";
+      if (h.enabled) {
+        const addrs = joinAddresses();
+        const head = document.createElement("div");
+        head.textContent = addrs.length > 1 ? "Players connect to one of these addresses:" : "Players connect to:";
+        host.appendChild(head);
+        const ul = document.createElement("ul");
+        ul.className = "join-addrs";
+        addrs.forEach((a, i) => {
+          const li = document.createElement("li");
+          const code = document.createElement("code");
+          code.textContent = a.join;
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "copy-btn";
+          btn.textContent = "Copy";
+          btn.dataset.join = a.join;
+          btn.title = `Copy ${a.join}`;
+          btn.addEventListener("click", () => copyWithFeedback(btn, a.join, "Copy"));
+          li.append(code, btn);
+          if (i === 0 && addrs.length > 1) {
+            const best = document.createElement("span");
+            best.className = "addr-best";
+            best.textContent = "most likely";
+            li.appendChild(best);
+          }
+          const note = document.createElement("span");
+          note.className = "addr-note";
+          note.textContent = [a.iface, a.kind === "virtual" ? "virtual adapter" : a.kind === "other" ? "not a private LAN range" : ""]
+            .filter(Boolean)
+            .join(" · ");
+          li.appendChild(note);
+          ul.appendChild(li);
+        });
+        if (!addrs.length) {
+          const li = document.createElement("li");
+          li.textContent = `No network address found — players on this computer use 127.0.0.1:${h.port}`;
+          ul.appendChild(li);
+        }
+        host.appendChild(ul);
+        const hint = document.createElement("div");
+        hint.className = "muted";
+        hint.innerHTML = `Same computer: <code>127.0.0.1:${h.port}</code>. Windows may ask to allow GM Session on private networks — allow it.`;
+        host.appendChild(hint);
+      } else {
+        host.textContent = h.error ? `Player hosting is off: ${h.error}` : "Player hosting is off (start GM Session normally to enable it).";
+      }
     }
     const code = document.getElementById("join-code");
     if (document.activeElement !== code) code.value = players.join_code || "";
