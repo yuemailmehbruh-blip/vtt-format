@@ -205,6 +205,8 @@ class SyncClient:
 
     def disconnect(self) -> None:
         with self.store.lock:
+            if self.store.cfg.get("gm"):
+                self.store.cfg["last_gm"] = self.store.cfg["gm"]  # join form default
             self.store.cfg["gm"] = ""
             self.store.save_config()
         self.status.update({"state": "not-configured", "last_error": None})
