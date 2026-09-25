@@ -335,7 +335,15 @@
     .org-row.folder .ficon { font-size: 0.85rem; }
     .org-row.folder .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .org-row.folder .fcount { font-size: 0.68rem; color: var(--muted); font-weight: 400; }
-    .org-row.selected { box-shadow: inset 0 0 0 1px rgba(110, 168, 254, 0.45); border-radius: 6px; }
+    .org-row.selected, .org-row.selected:hover { background: rgba(110, 168, 254, 0.2) !important; border-color: var(--accent) !important; box-shadow: inset 3px 0 0 var(--accent); border-radius: 6px; color: var(--text); }
+    .org-row.folder { border: 1px solid transparent; }
+    #confirm-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; max-width: 420px; }
+    #confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+    #confirm-dialog h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+    #confirm-dialog p { margin: 0 0 0.9rem; font-size: 0.85rem; color: var(--muted); line-height: 1.4; }
+    #confirm-dialog .actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+    #confirm-dialog button { padding: 0.35rem 0.8rem; border-radius: 5px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); cursor: pointer; }
+    #confirm-dialog button.danger { border-color: #e06c75; color: #ff8a93; }
     .org-row.drop-before::before, .org-row.drop-after::after { content: ""; position: absolute; left: 0; right: 0; height: 2px; background: var(--accent); }
     .org-row.drop-before::before { top: -2px; }
     .org-row.drop-after::after { bottom: -2px; }
@@ -487,7 +495,7 @@
       <label><input type="checkbox" id="toggle-nametags" checked /> Nametags</label>
     </div>
     <span id="status"></span>
-    <span class="hint" id="header-hint">Click token to select · Delete removes token/layer · Double-click token for sheet · Drag actors onto map · Wheel zoom</span>
+    <span class="hint" id="header-hint">Click token to select · Delete removes token/layer (or the selected sidebar item) · Double-click a token or character for its sheet · Drag characters onto map · Wheel zoom</span>
   </header>
   <div id="layout">
     <aside id="library">
@@ -571,6 +579,15 @@
       </div>
     </div>
   </div>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <h3 id="confirm-title">Delete?</h3>
+    <p id="confirm-message"></p>
+    <div class="actions">
+      <button type="button" id="confirm-cancel">Cancel</button>
+      <button type="button" class="danger" id="confirm-ok">Delete</button>
+    </div>
+  </dialog>
 
   <dialog id="layer-scale-dialog">
     <h3>Scale layer (tiles)</h3>

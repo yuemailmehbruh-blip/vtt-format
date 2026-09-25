@@ -1580,6 +1580,18 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
+        for prefix, panel in (("/api/actor/", "actors"), ("/api/map/", "maps"), ("/api/scene/", "scenes")):
+            if path.startswith(prefix) and "/" not in path[len(prefix):].strip("/"):
+                eid = path[len(prefix):].strip("/")
+                try:
+                    out = cm.delete_entity(self.campaign_root, panel, eid)
+                except cm.OrgError as exc:
+                    code = 404 if "not found" in str(exc) else 400
+                    self._send_json(code, {"error": str(exc)})
+                    return
+                self._send_json(200, out)
+                return
+
         if path.startswith("/api/mechanics/"):
             name = path[len("/api/mechanics/") :].strip("/")
             if "/" in name or not safe_mechanic_name(name):

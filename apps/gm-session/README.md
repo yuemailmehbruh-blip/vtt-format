@@ -229,6 +229,14 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
 
+## 0.6.20
+
+- **Select, then act** — single click selects any sidebar row (map, character, scene, folder) with a clear highlight (accent fill + left bar); one selection at a time across the three panels. **Double-click a character to open its sheet**, double-click a scene to open it; maps and folders keep double-click / F2 rename. Folders collapse from their caret/icon (or Enter); Enter also opens the selected character/scene.
+- **Delete key** — deletes the selected sidebar item. Characters, maps and scenes ask first in an in-app dialog (no browser popup) that says what will happen; folders delete immediately and their contents move up one level (as before). Delete is ignored while typing, and it follows the region you last clicked: after clicking the map it removes the selected token/layer as before; after clicking the sidebar it acts on the sidebar selection.
+- **Deletes go to the campaign trash** — files are moved, never hard-deleted, to `state/trash/<time>-<kind>-<id>/files/<original path>` with a `manifest.yaml` (what moved, side effects, how to restore). Deleting a *character* moves its actor + sheet files and removes its tokens from every scene (saved in the manifest per scene) and closes its sheet window; deleting a *map* sets `map: null` on scenes that used it (they keep grid, walls, tokens); deleting a *scene* moves it with its per-scene state (tokens, view settings, …) and the map view switches to the first remaining scene, or an empty "No scene" state. `DELETE /api/actor|map|scene/<id>`.
+- **Character rename moved to the sheet** — sheet → **Appearance → Name** (Enter or Rename). Same effect as 0.6.19: id unchanged; name, `fields.name` (if it matched), derived token names/labels on every scene, the sheet window title and the sidebar all update live. Characters are no longer renamed from the sidebar (F2 there points you to the sheet).
+- **Tests** — `tests/sidebar-delete.py` (trash layout, byte-identical preservation, token removal on every scene, map detach keeps grid, scene state moved, 404/traversal).
+
 ## 0.6.19
 
 - **Three sidebar panels** — the GM window's sidebar is now **Maps**, **Characters** and **Scenes**, each with its own header (caret / title click collapses or expands it). Panel collapse is a GM UI pref saved in `state/ui.json` (`sidebarCollapsed`), so it survives restarts. The Maps panel also holds the existing layer tools as **Scene map layers** (the image layers of the map the current scene uses).

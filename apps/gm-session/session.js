@@ -823,6 +823,7 @@
   }
 
   async function persistTokens() {
+    if (!sceneId) return;
     try {
       const res = await fetch(`/api/tokens/${encodeURIComponent(sceneId)}`, {
         method: "PUT",
@@ -870,6 +871,7 @@
   }
 
   async function persistUiPrefs() {
+    if (!sceneId) return;
     try {
       await fetch(`/api/ui/${encodeURIComponent(sceneId)}`, {
         method: "PUT",
@@ -901,6 +903,10 @@
   }
 
   function placeToken(actor, worldX, worldY) {
+    if (!scene || !sceneId) {
+      setStatus("Open or create a scene first");
+      return;
+    }
     const [x, y] = maybeSnap(worldX, worldY);
     const name = actor.name || actor.id;
     let size = Number(
@@ -1189,11 +1195,30 @@
     for (const p of ["maps", "actors", "scenes"]) renderPanel(p);
   }
 
+  // One sidebar selection at a time (across panels): Delete / Enter act on it.
   function selectRow(panel, ref) {
-    orgSelected[panel] = ref;
-    for (const el of PANEL_LIST_EL[panel].querySelectorAll(".org-row")) {
-      el.classList.toggle("selected", el.dataset.ref === ref);
+    for (const p of Object.keys(orgSelected)) orgSelected[p] = p === panel ? ref : null;
+    for (const [p, listEl] of Object.entries(PANEL_LIST_EL)) {
+      for (const el of listEl.querySelectorAll(".org-row")) {
+        el.classList.toggle("selected", p === panel && el.dataset.ref === ref);
+        el.setAttribute("aria-selected", p === panel && el.dataset.ref === ref ? "true" : "false");
+      }
     }
+    focusRegion = "sidebar";
+  }
+
+  function sidebarSelection() {
+    for (const p of Object.keys(orgSelected)) {
+      const ref = orgSelected[p];
+      if (!ref) continue;
+      const hit = OT.find(p, org[p] || [], ref);
+      if (hit) return { panel: p, ref, node: hit.node };
+    }
+    return null;
+  }
+
+  function toggleFolder(panel, node) {
+    saveOrgPanel(panel, OT.setCollapsed(panel, org[panel], node.folder, !node.collapsed));
   }
 
   function activateRow(panel, node) {
@@ -1215,24 +1240,20 @@
 
   function wireRow(panel, row, node) {
     const ref = row.dataset.ref;
+    // 0.6.20: single click selects only. Folder caret/icon toggles collapse.
+    // Double-click: character → sheet, scene → open, map/folder → rename.
     row.addEventListener("click", (e) => {
       if (orgRenaming) return;
       selectRow(panel, ref);
-      if (e.detail > 1) return;
-      // short delay so a double-click (rename) does not also open/toggle
-      if (orgClickTimer) clearTimeout(orgClickTimer);
-      orgClickTimer = setTimeout(() => {
-        orgClickTimer = null;
-        activateRow(panel, node);
-      }, 230);
+      if (OT.isFolder(node) && e.detail === 1 && e.target.closest(".org-fcaret, .ficon")) {
+        toggleFolder(panel, node);
+      }
     });
     row.addEventListener("dblclick", (e) => {
       e.preventDefault();
-      if (orgClickTimer) {
-        clearTimeout(orgClickTimer);
-        orgClickTimer = null;
-      }
-      startRename(panel, ref);
+      if (orgRenaming || e.target.closest(".org-fcaret, .ficon")) return;
+      if (panel === "actors" || panel === "scenes") activateRow(panel, node);
+      else startRename(panel, ref);
     });
     row.addEventListener("keydown", (e) => {
       if (orgRenaming) return;
@@ -1345,6 +1366,11 @@
     if (!hit) return;
     const node = hit.node;
     const isF = OT.isFolder(node);
+    if (panel === "actors" && !isF) {
+      // 0.6.20: characters are renamed in their sheet (Appearance → Name)
+      setStatus("Rename a character in its sheet: double-click it → Appearance → Name");
+      return;
+    }
     const id = isF ? node.folder : node[OT.ITEM_KEY[panel]];
     const current = isF ? node.name : entityName(panel, id);
     const labelEl = row.querySelector(".oname");
@@ -1559,6 +1585,139 @@
     }
   }
 
+  // --- 0.6.20 delete (Delete key / context menu) ---------------------------
+  // Files go to state/trash/<time>-<kind>-<id>/ on the server (recoverable).
+  const confirmDlg = document.getElementById("confirm-dialog");
+  function confirmInApp(title, message, okLabel = "Delete") {
+    if (!confirmDlg || typeof confirmDlg.showModal !== "function") {
+      return Promise.resolve(window.confirm(`${title}\n\n${message}`));
+    }
+    confirmDlg.querySelector("#confirm-title").textContent = title;
+    confirmDlg.querySelector("#confirm-message").textContent = message;
+    const ok = confirmDlg.querySelector("#confirm-ok");
+    ok.textContent = okLabel;
+    return new Promise((resolve) => {
+      const done = (v) => {
+        confirmDlg.removeEventListener("close", onClose);
+        ok.removeEventListener("click", onOk);
+        resolve(v);
+      };
+      const onOk = () => {
+        confirmDlg.close("ok");
+      };
+      const onClose = () => done(confirmDlg.returnValue === "ok");
+      confirmDlg.returnValue = "";
+      ok.addEventListener("click", onOk);
+      confirmDlg.addEventListener("close", onClose);
+      confirmDlg.showModal();
+      confirmDlg.querySelector("#confirm-cancel").focus();
+    });
+  }
+  const confirmCancel = document.getElementById("confirm-cancel");
+  if (confirmCancel) confirmCancel.addEventListener("click", () => confirmDlg.close("cancel"));
+
+  function deleteMessage(panel, id) {
+    const name = entityName(panel, id);
+    if (panel === "actors") {
+      const n = tokens.filter((t) => t.actor_id === id).length;
+      return [`Delete character “${name}”?`, `Its sheet is moved to the campaign trash (state/trash) and all of its tokens are removed from every scene${n ? ` (${n} on this scene)` : ""}.`];
+    }
+    if (panel === "maps") {
+      const m = entityById("maps", id);
+      const used = (m && m.used_by) || [];
+      return [`Delete map “${name}”?`, `The map is moved to the campaign trash. ${used.length ? `Scenes using it (${used.map((s) => entityName("scenes", s)).join(", ")}) keep their tokens and walls but will have no map.` : "No scene uses it."}`];
+    }
+    return [`Delete scene “${name}”?`, `The scene, its tokens and its view settings are moved to the campaign trash. Its map is kept.`];
+  }
+
+  async function deleteSidebarItem(panel, node) {
+    if (OT.isFolder(node)) {
+      await saveOrgPanel(panel, OT.deleteFolder(panel, org[panel], node.folder));
+      orgSelected[panel] = null;
+      setStatus(`Deleted folder “${node.name}” — its contents moved up one level`);
+      return;
+    }
+    const id = node[OT.ITEM_KEY[panel]];
+    const [title, msg] = deleteMessage(panel, id);
+    if (!(await confirmInApp(title, msg))) return;
+    const kind = OT.ITEM_KEY[panel];
+    if (panel === "actors" && saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      await persistTokens();
+    }
+    let data = {};
+    try {
+      const res = await fetch(`/api/${kind}/${encodeURIComponent(id)}`, { method: "DELETE" });
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStatus(`Delete failed: ${data.error || res.status}`);
+        return;
+      }
+    } catch (err) {
+      setStatus(`Delete error: ${err}`);
+      return;
+    }
+    orgSelected[panel] = null;
+    const api = window.pywebview && window.pywebview.api;
+    if (panel === "actors") {
+      tokens = tokens.filter((t) => t.actor_id !== id);
+      if (selectedActorId === id) selectedActorId = null;
+      if (api && typeof api.actor_deleted === "function") Promise.resolve(api.actor_deleted(id)).catch(() => {});
+    }
+    await loadLibrary();
+    if (panel === "scenes" && id === sceneId) {
+      await openFallbackScene();
+    } else if (panel === "maps" && scene && scene.map_info && scene.map_info.id === id) {
+      await loadScene(sceneId, { fit: false });
+    } else {
+      draw();
+    }
+    setStatus(`Deleted ${kind} “${data.id}” → ${data.trash} (recoverable)`);
+  }
+
+  /** First scene in sidebar order, or the empty state when none remain. */
+  async function openFallbackScene() {
+    const ids = OT.itemIds("scenes", org.scenes || []);
+    if (ids.length) {
+      await loadScene(ids[0]);
+    } else {
+      showEmptyScene();
+    }
+  }
+
+  function showEmptyScene() {
+    sceneId = null;
+    scene = null;
+    tokens = [];
+    mapLayers = [];
+    editingLayerId = null;
+    selectedTokenId = null;
+    nameEl.textContent = "No scene";
+    metaEl.textContent = "";
+    const url = new URL(location.href);
+    url.searchParams.delete("scene");
+    history.replaceState(null, "", url);
+    renderLibrarySelection();
+    renderMapLayersList();
+    draw();
+    setStatus("No scenes — create one with Scenes → + Scene");
+  }
+
+  // Which region the GM last interacted with decides what Delete targets.
+  let focusRegion = "map";
+  document.getElementById("library").addEventListener("pointerdown", () => {
+    focusRegion = "sidebar";
+  });
+  document.getElementById("library").addEventListener("focusin", () => {
+    focusRegion = "sidebar";
+  });
+  viewport.addEventListener("pointerdown", () => {
+    focusRegion = "map";
+    const ae = document.activeElement;
+    if (ae && ae.closest && ae.closest("#library") && typeof ae.blur === "function") ae.blur();
+  });
+
   const orgMenuEl = document.getElementById("org-menu");
   function closeOrgMenu() {
     if (orgMenuEl) orgMenuEl.hidden = true;
@@ -1578,7 +1737,7 @@
     };
     const sep = () => orgMenuEl.appendChild(document.createElement("hr"));
     const ref = OT.refOf(panel, node);
-    add("Rename  (F2)", () => startRename(panel, ref));
+    if (!(panel === "actors" && !OT.isFolder(node))) add("Rename  (F2)", () => startRename(panel, ref));
     if (OT.isFolder(node)) {
       add(node.collapsed ? "Expand folder" : "Collapse folder", () =>
         saveOrgPanel(panel, OT.setCollapsed(panel, org[panel], node.folder, !node.collapsed))
@@ -1586,13 +1745,10 @@
       add("New folder inside", () => newFolder(panel, node.folder));
       add(`New ${PANEL_LABEL[panel]} here`, () => newItem(panel, node.folder));
       sep();
-      add("Delete folder (keeps contents)", () => {
-        if (!confirm(`Delete folder “${node.name}”? Its contents move up one level; nothing is deleted.`)) return;
-        saveOrgPanel(panel, OT.deleteFolder(panel, org[panel], node.folder));
-      });
+      add("Delete folder (keeps contents)  (Del)", () => deleteSidebarItem(panel, node));
     } else {
       const id = node[OT.ITEM_KEY[panel]];
-      if (panel === "actors") add("Open sheet", () => openSheet(id));
+      if (panel === "actors") add("Open sheet (double-click)", () => openSheet(id));
       if (panel === "scenes") add("Open scene", () => loadScene(id).catch((err) => setStatus(String(err))));
       if (panel === "maps") {
         add("Use in current scene", () => useMapInCurrentScene(id));
@@ -1606,6 +1762,7 @@
         const moved = OT.move(panel, org[panel], ref, null, "after");
         if (moved) saveOrgPanel(panel, moved);
       });
+      add(`Delete ${PANEL_LABEL[panel]}…  (Del)`, () => deleteSidebarItem(panel, node));
     }
     sep();
     add("New folder (top level)", () => newFolder(panel, null));
@@ -1633,6 +1790,37 @@
     const file = mapFileInput.files && mapFileInput.files[0];
     if (file) createMapFromFile(file);
   });
+
+  // 0.6.20: character renamed in its sheet (Appearance → Name). Server already
+  // rewrote derived token names/labels; mirror that in memory so a pending token
+  // save cannot write the old labels back.
+  async function onActorRenamed(actorId, name) {
+    const old = entityName("actors", actorId);
+    if (!name || old === name) {
+      await loadLibrary();
+      return;
+    }
+    for (const t of tokens) {
+      if (t.actor_id !== actorId) continue;
+      if (t.name === old || !t.name) t.name = name;
+      if (t.label === initials(old) || !t.label) t.label = initials(name);
+    }
+    await loadLibrary();
+    draw();
+    setStatus(`Renamed “${old}” → “${name}” (from its sheet)`);
+  }
+  window.__gmActorRenamed = (id, name) => {
+    onActorRenamed(id, name).catch(() => {});
+  };
+  if (typeof BroadcastChannel !== "undefined") {
+    try {
+      const rc = new BroadcastChannel("gm-session-rename");
+      rc.onmessage = (ev) => {
+        const d = ev && ev.data;
+        if (d && d.kind === "actor" && !(window.pywebview && window.pywebview.api)) onActorRenamed(d.id, d.name);
+      };
+    } catch (_) {}
+  }
 
   async function loadLibrary() {
     const res = await fetch("/api/library");
@@ -2597,6 +2785,10 @@
 
   async function addMapLayerFromFile(file) {
     if (!file) return;
+    if (!scene || !sceneId) {
+      setStatus("Open or create a scene first");
+      return;
+    }
     try {
       const { layer, statusExtra } = await importMapImage(file, new Set(mapLayers.map((l) => l.id)));
       const id = layer.id;
@@ -2855,7 +3047,7 @@
       const hint = document.getElementById("header-hint");
       if (hint) {
         hint.textContent =
-          "Click token to select · Delete removes token/layer · Double-click token for sheet · Drag actors onto map · Wheel zoom";
+          "Click token to select · Delete removes token/layer (or the selected sidebar item) · Double-click a token or character for its sheet · Drag characters onto map · Wheel zoom";
       }
     }
   }
@@ -3416,7 +3608,7 @@
     const hint = document.getElementById("header-hint");
     if (hint) {
       hint.textContent =
-        "Click token to select · Delete removes token/layer · Double-click token for sheet · Drag actors onto map · Wheel zoom";
+        "Click token to select · Delete removes token/layer (or the selected sidebar item) · Double-click a token or character for its sheet · Drag characters onto map · Wheel zoom";
     }
     setStatus(`Removed token · ${tokens.length} remaining`);
     return true;
@@ -3434,8 +3626,15 @@
     if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) {
       return;
     }
-    if (e.target && e.target.closest && e.target.closest(".org-row")) {
-      return; // sidebar rows: Delete must not remove the selected token/layer
+    if (confirmDlg && confirmDlg.open) return;
+    if (focusRegion === "sidebar") {
+      // sidebar owns Delete: never touches the map's token/layer selection
+      const sel = sidebarSelection();
+      if (sel && !orgRenaming) {
+        e.preventDefault();
+        deleteSidebarItem(sel.panel, sel.node);
+      }
+      return;
     }
     if (selectedTokenId) {
       e.preventDefault();
@@ -3456,7 +3655,9 @@
     resize();
     await loadPanelPrefs();
     await loadLibrary();
-    await loadScene(sceneId);
+    const known = (library && library.scenes) || [];
+    if (sceneId && known.some((s) => s.id === sceneId)) await loadScene(sceneId);
+    else await openFallbackScene();
   }
 
   boot().catch((err) => {

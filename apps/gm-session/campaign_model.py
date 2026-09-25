@@ -650,3 +650,108 @@ def rename_entity(root: Path, panel: str, eid: str, name: str) -> dict:
                     result["tokens_updated"] += changed
     _dump_yaml(p, doc)
     return result
+
+
+# ------------------------------------------------------------ delete (to trash)
+
+def _trash_dir(root: Path, kind: str, eid: str) -> Path:
+    import time
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    base = root / "state" / "trash" / f"{stamp}-{kind}-{eid}"
+    d, n = base, 2
+    while d.exists():
+        d = base.with_name(f"{base.name}-{n}")
+        n += 1
+    d.mkdir(parents=True)
+    return d
+
+
+def _move_to_trash(root: Path, trash: Path, path: Path, moved: list) -> None:
+    if not path.is_file():
+        return
+    rel = path.relative_to(root)
+    dest = trash / "files" / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(path), str(dest))
+    moved.append(str(rel).replace("\\", "/"))
+
+
+def delete_entity(root: Path, panel: str, eid: str) -> dict:
+    """Delete a map / actor / scene by moving its files into
+    ``state/trash/<time>-<kind>-<id>/files/<original relative path>`` (never
+    hard-deleted) plus a ``manifest.yaml`` describing side effects so it can be
+    restored by hand:
+
+    * actor: actor yaml + sheet doc; its tokens are removed from every scene
+      (saved in the manifest with their scene ids).
+    * map: map yaml; scenes that used it get ``map: null`` (keeping the map's grid).
+    * scene: scene yaml + per-scene state (tokens, ui, fog, combat, ...).
+    """
+    import json
+
+    if panel not in PANELS:
+        raise OrgError(f"unknown panel: {panel}")
+    if not isinstance(eid, str) or not ENTITY_ID_RE.match(eid):
+        raise OrgError("invalid id")
+    kind = ITEM_KEY[panel]
+    path = {"maps": map_path, "actors": actor_path, "scenes": scene_path}[panel](root, eid)
+    doc = _load_yaml(path)
+    if not path.is_file():
+        raise OrgError(f"{kind} not found: {eid}")
+    trash = _trash_dir(root, kind, eid)
+    moved: list[str] = []
+    manifest: dict = {
+        "kind": kind,
+        "id": eid,
+        "name": (doc or {}).get("name") if isinstance(doc, dict) else None,
+        "restore": "Move files/<path> back to <campaign>/<path>; see side_effects.",
+        "side_effects": {},
+    }
+    if panel == "actors":
+        removed = []
+        tok_dir = root / "state" / "tokens"
+        if tok_dir.is_dir():
+            for tp in sorted(tok_dir.glob("*.json")):
+                try:
+                    data = json.loads(tp.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if not isinstance(data, dict) or not isinstance(data.get("tokens"), list):
+                    continue
+                keep = [t for t in data["tokens"] if not (isinstance(t, dict) and t.get("actor_id") == eid)]
+                gone = [t for t in data["tokens"] if isinstance(t, dict) and t.get("actor_id") == eid]
+                if gone:
+                    removed.append({"scene": tp.stem, "tokens": gone})
+                    data["tokens"] = keep
+                    tp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        manifest["side_effects"]["removed_tokens"] = removed
+        _move_to_trash(root, trash, path, moved)
+        sheet_doc = (doc or {}).get("sheet_doc") if isinstance(doc, dict) else None
+        cands = {root / "world" / "actors" / f"{eid}.sheet.txt"}
+        if isinstance(sheet_doc, str) and sheet_doc.startswith("world/actors/") and ".." not in sheet_doc:
+            cands.add(root / sheet_doc)
+        for c in sorted(cands):
+            _move_to_trash(root, trash, c, moved)
+    elif panel == "maps":
+        detached = []
+        for sid in entity_ids(root, "scenes"):
+            sc = _load_yaml(scene_path(root, sid))
+            if isinstance(sc, dict) and sc.get("map") == eid:
+                set_scene_map(root, sid, None)
+                detached.append(sid)
+        manifest["side_effects"]["scenes_detached"] = detached
+        _move_to_trash(root, trash, path, moved)
+    else:
+        _move_to_trash(root, trash, path, moved)
+        state = root / "state"
+        for sub in sorted(p for p in state.iterdir() if p.is_dir() and p.name not in ("trash", "migrations")) if state.is_dir() else []:
+            for ext in (".json", ".yaml", ".jsonl", ".txt"):
+                _move_to_trash(root, trash, sub / f"{eid}{ext}", moved)
+    manifest["moved"] = moved
+    _dump_yaml(trash / "manifest.yaml", manifest)
+    # organization reconciles automatically (unknown ids are dropped on load)
+    org = load_organization(root)
+    save_organization(root, org)
+    return {"ok": True, "panel": panel, "id": eid, "trash": str(trash.relative_to(root)).replace("\\", "/"),
+            "moved": moved, "side_effects": manifest["side_effects"]}

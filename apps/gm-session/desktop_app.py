@@ -287,6 +287,18 @@ class DesktopApi:
                 pass
         return f"notified:{notified}"
 
+    def actor_deleted(self, actor_id: str) -> str:
+        """Map → close the deleted character's sheet window (file is in trash)."""
+        actor_id = (actor_id or "").strip()
+        win = self._sheets.pop(actor_id, None)
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+            return "closed"
+        return "none"
+
     def actor_renamed(self, actor_id: str, name: str = "") -> str:
         """Map → all windows: actor display name changed (id unchanged).
 

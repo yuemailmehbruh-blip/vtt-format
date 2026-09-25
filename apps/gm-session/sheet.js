@@ -970,6 +970,8 @@
     if (!actorId || id !== actorId || !name) return;
     titleEl.textContent = name;
     document.title = `${name} · Sheet`;
+    actorName = name;
+    if (actorNameEl && document.activeElement !== actorNameEl) actorNameEl.value = name;
   }
   window.__gmActorRenamed = applyActorRename;
   if (typeof BroadcastChannel !== "undefined") {
@@ -1000,6 +1002,8 @@
     const data = await res.json();
     document.title = `${data.name || actorId} · Sheet`;
     titleEl.textContent = data.name || actorId;
+    actorName = data.name || actorId;
+    if (actorNameEl) actorNameEl.value = actorName;
     sheetId =
       data.sheet_id != null && String(data.sheet_id).trim()
         ? String(data.sheet_id).trim()
@@ -1098,6 +1102,70 @@
     setAppearanceStatus("Appearance saved · map tokens updated");
     notifyMap(actorId, appearance);
   }
+
+  // --- 0.6.20 character name (Appearance → Name) ---
+  // Same propagation as the old sidebar rename: server updates actor name,
+  // fields.name (if it matched) and derived token names/labels on every scene;
+  // the map and this window's title follow.
+  let actorName = "";
+  const actorNameEl = document.getElementById("actor-name");
+  const btnActorRename = document.getElementById("btn-actor-rename");
+  async function renameActor() {
+    if (!actorId || !actorNameEl) return;
+    const next = actorNameEl.value.trim();
+    if (!next) {
+      actorNameEl.value = actorName;
+      setAppearanceStatus("Name cannot be empty");
+      return;
+    }
+    if (next === actorName) return;
+    setAppearanceStatus("Renaming…");
+    const res = await fetch("/api/organization/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "actor", panel: "actors", id: actorId, name: next }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setAppearanceStatus(data.error || `Rename failed (${res.status})`);
+      actorNameEl.value = actorName;
+      return;
+    }
+    const old = actorName;
+    actorName = data.name || next;
+    actorNameEl.value = actorName;
+    if (actorFields && (actorFields.name === old || actorFields.name == null || actorFields.name === "")) {
+      actorFields.name = actorName;
+      renderVisual(false);
+    }
+    applyActorRename(actorId, actorName);
+    const api = window.pywebview && window.pywebview.api;
+    if (api && typeof api.actor_renamed === "function") {
+      Promise.resolve(api.actor_renamed(actorId, actorName)).catch(() => {});
+    } else if (typeof BroadcastChannel !== "undefined") {
+      try {
+        const ch = new BroadcastChannel("gm-session-rename");
+        ch.postMessage({ kind: "actor", id: actorId, name: actorName });
+        ch.close();
+      } catch (_) {}
+    }
+    setAppearanceStatus(
+      `Renamed “${old}” → “${actorName}”` +
+        (data.tokens_updated ? ` · ${data.tokens_updated} token label(s) updated` : "")
+    );
+  }
+  if (actorNameEl) {
+    actorNameEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        renameActor();
+      } else if (e.key === "Escape") {
+        actorNameEl.value = actorName;
+      }
+    });
+    actorNameEl.addEventListener("change", () => renameActor());
+  }
+  if (btnActorRename) btnActorRename.addEventListener("click", () => renameActor());
 
   // --- Token graphic + auras (Appearance tab; per actor) ---
 
