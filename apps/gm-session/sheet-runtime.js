@@ -2,6 +2,7 @@
  * Shared sheet automation runtime (session sheet + optional tooling).
  * Closed formulas + named-function DAG evaluation (entry / roll / send_to_chat / field / op / const).
  * Logic ops: == != < > <= >= and or not if; entryValue option for toggle 0/1.
+ * Round op: one input, node.mode up (ceil) | down (floor) | nearest (floor(x+0.5), default).
  * Reachability: forward BFS from entry, then close under incoming ancestors before Kahn topo.
  * Templates: entry names with [x] match function_id prefix+ID+suffix or prefix+[ID]+suffix;
  * reachable subgraph is deep-cloned and [x] substituted before eval.
@@ -13,7 +14,8 @@
 
   /**
    * Closed formula language: identifiers, numbers, + - * /, comparisons,
-   * parentheses, floor(...), if(a,b,c), and(a,b), or(a,b), not(a).
+   * parentheses, floor(...), ceil(...), round(...), if(a,b,c), and(a,b), or(a,b), not(a).
+   * round(x) = Math.floor(x + 0.5) (half rounds up: 2.5 → 3, -2.5 → -2).
    * Precedence: primary/unary → * / → + − → comparisons (== != < > <= >=).
    * and/or/not/if are call-forms only (not infix).
    * @param {string} expr
@@ -95,6 +97,14 @@
         if (ident === "floor") {
           const [v] = parseArgList(1);
           return Math.floor(v);
+        }
+        if (ident === "ceil") {
+          const [v] = parseArgList(1);
+          return Math.ceil(v);
+        }
+        if (ident === "round") {
+          const [v] = parseArgList(1);
+          return roundNearest(v);
         }
         if (ident === "if") {
           const [c, t, e] = parseArgList(3);
@@ -185,6 +195,38 @@
     return result;
   }
 
+  /** Nearest whole number; exact .5 rounds up (toward +∞): 2.5 → 3, -2.5 → -2. */
+  function roundNearest(v) {
+    return Math.floor(v + 0.5);
+  }
+
+  const ROUND_MODES = ["up", "down", "nearest"];
+
+  /** Round node mode: "up" (ceil) | "down" (floor) | "nearest" (default). */
+  function roundMode(node) {
+    const m = node && node.mode != null ? String(node.mode).trim().toLowerCase() : "";
+    return ROUND_MODES.includes(m) ? m : "nearest";
+  }
+
+  /** Apply a round node's mode to a number. */
+  function applyRound(mode, v) {
+    let r;
+    if (mode === "up") r = Math.ceil(v);
+    else if (mode === "down") r = Math.floor(v);
+    else r = roundNearest(v);
+    return r === 0 ? 0 : r; // normalize -0 (e.g. ceil(-0.5)) to 0
+  }
+
+  /** Closed-formula function name for a round mode. */
+  function roundFormulaFn(mode) {
+    return mode === "up" ? "ceil" : mode === "down" ? "floor" : "round";
+  }
+
+  /** Human label for a round mode (node label / chat arithmetic). */
+  function roundLabel(mode) {
+    return mode === "up" ? "round↑" : mode === "down" ? "round↓" : "round";
+  }
+
   function rollDie(sides) {
     const n = Math.max(2, Math.floor(Number(sides) || 20));
     return 1 + Math.floor(Math.random() * n);
@@ -194,7 +236,7 @@
     if (!node) return 0;
     if (node.kind === "op") {
       const op = node.op;
-      if (op === "floor" || op === "not") return 1;
+      if (op === "floor" || op === "not" || op === "round") return 1;
       if (op === "if") return 3;
       return 2;
     }
@@ -503,7 +545,7 @@
 
     /**
      * Active arithmetic path for chat detail (not the full logic tree).
-     * if → taken branch only; compare/and/or/not → bare 1/0; + - * / floor expand.
+     * if → taken branch only; compare/and/or/not → bare 1/0; + - * / floor round expand.
      */
     function formatArithmetic(nodeId, parentOp) {
       if (!nodeId) return "0";
@@ -528,6 +570,9 @@
         const op = n.op;
         if (op === "floor") {
           return `floor(${formatArithmetic(inFrom(nodeId, 0), "floor")})`;
+        }
+        if (op === "round") {
+          return `${roundLabel(roundMode(n))}(${formatArithmetic(inFrom(nodeId, 0), "round")})`;
         }
         // Logic/compare: never dump the condition tree into arithmetic detail
         if (
@@ -593,6 +638,9 @@
           const op = n.op;
           if (op === "floor") {
             out = Math.floor(inputVal(id, 0));
+          } else if (op === "round") {
+            out = applyRound(roundMode(n), inputVal(id, 0));
+            if (!Number.isFinite(out)) out = 0;
           } else if (op === "not") {
             out = isTruthyNum(inputVal(id, 0)) ? 0 : 1;
           } else if (op === "if") {
@@ -830,6 +878,10 @@
           if (ins.length < 1) throw new Error(`${op} needs one input`);
           const a = portFrom(0, 0);
           out = `${op}(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)})`;
+        } else if (op === "round") {
+          if (ins.length < 1) throw new Error("round needs one input");
+          const a = portFrom(0, 0);
+          out = `${roundFormulaFn(roundMode(n))}(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)})`;
         } else if (op === "if") {
           if (ins.length < 3) throw new Error("if needs three inputs (cond, then, else)");
           const c = portFrom(0, 0);
@@ -1189,6 +1241,10 @@
           if (ins.length < 1) throw new Error(`${op} needs one input`);
           const a = portFrom(0, 0);
           out = `${op}(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)})`;
+        } else if (op === "round") {
+          if (ins.length < 1) throw new Error("round needs one input");
+          const a = portFrom(0, 0);
+          out = `${roundFormulaFn(roundMode(n))}(${exprOfOn(byIdLocal, incomingLocal, a.from, memo, visiting)})`;
         } else if (op === "if") {
           if (ins.length < 3) throw new Error("if needs three inputs (cond, then, else)");
           const c = portFrom(0, 0);
@@ -1452,6 +1508,12 @@
 
   const api = {
     evalClosedFormula,
+    roundNearest,
+    roundMode,
+    applyRound,
+    roundFormulaFn,
+    roundLabel,
+    ROUND_MODES,
     rollDie,
     arityOf,
     evaluateNamedFunction,

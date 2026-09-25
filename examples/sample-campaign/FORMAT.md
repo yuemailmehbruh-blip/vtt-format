@@ -50,7 +50,7 @@ graph:                               # optional; automation + named functions
       kind: field|const|op|roll|entry
       # field: name + role source|output
       # const: value
-      # op: +|-|*|/|floor|==|!=|<|>|<=|>=|and|or|not|if
+      # op: +|-|+=|-=|*|/|floor|round|==|!=|<|>|<=|>=|and|or|not|if  (round: mode up|down|nearest)
       # roll: sides (default 20) — runtime sample
       # entry: name (function_id entry point)
       x: number
@@ -61,7 +61,7 @@ graph:                               # optional; automation + named functions
     - { id, name, nodeIds: [string], x, y, w?, h? }
 ```
 
-**Closed formulas:** only named fields and a fixed operator set (e.g. `floor`, `+`, `-`, `*`, `/`, comparisons `== != < > <= >=`, call-forms `if(a,b,c)` / `and` / `or` / `not`, parentheses). No function imports, no I/O. Truthiness: nonzero finite → true; 0/NaN/nonfinite → false.
+**Closed formulas:** only named fields and a fixed operator set (e.g. `floor`, `ceil`, `round` (= floor(x+0.5)), `+`, `-`, `*`, `/`, comparisons `== != < > <= >=`, call-forms `if(a,b,c)` / `and` / `or` / `not`, parentheses). No function imports, no I/O. Truthiness: nonzero finite → true; 0/NaN/nonfinite → false.
 
 **Actors** (`world/actors/*.yaml`) reference `sheet: <id>` and may only set keys under `fields` that exist on that sheet.
 
@@ -87,7 +87,7 @@ Shape (v1):
 
 **Compile** writes/updates `build/sheets/<sheetId>.yaml` (fields + closed formulas + `layout` + `graph`; permissions stub preserved). Session sheets load layout widgets and run named functions from `graph` entry nodes.
 
-Closed formula language (field-output graph → string): field names, number literals, `+` `-` `*` `/`, comparisons (`==` `!=` `<` `>` `<=` `>=`), parentheses, `floor(…)`, and call-forms `if(…)` / `and(…)` / `or(…)` / `not(…)`. Precedence: unary → `*` `/` → `+` `-` → comparisons; `and`/`or`/`not`/`if` are functions only. **Roll** / **entry** nodes are runtime-only (button functions) and must not feed formula field outputs. Cycles are rejected.
+Closed formula language (field-output graph → string): field names, number literals, `+` `-` `*` `/`, comparisons (`==` `!=` `<` `>` `<=` `>=`), parentheses, `floor(…)`, `ceil(…)`, `round(…)` (nearest, .5 up = `floor(x + 0.5)`), and call-forms `if(…)` / `and(…)` / `or(…)` / `not(…)`. Precedence: unary → `*` `/` → `+` `-` → comparisons; `and`/`or`/`not`/`if` are functions only. **Roll** / **entry** nodes are runtime-only (button functions) and must not feed formula field outputs. Cycles are rejected.
 
 **Toggle proficiency pattern:** layout button `mode: toggle` + `function_id: atk_prof` flips actor field `atk_prof` between 0 and 1 (no graph entry→output required for the toggle itself). Skill formulas use `if(atk_prof, PB, 0)` or `atk_prof * PB`; expertise: `if(expertise, PB*2, if(prof, PB, 0))`. Trigger buttons still run named automations via `evaluateNamedFunction`.
 

@@ -274,7 +274,7 @@
     if (!node) return 0;
     if (node.kind === "op") {
       const op = node.op;
-      if (op === "floor" || op === "not") return 1;
+      if (op === "floor" || op === "not" || op === "round") return 1;
       if (op === "if") return 3;
       return 2;
     }
@@ -1189,6 +1189,7 @@
     if (n.kind === "const") return String(n.value);
     if (n.kind === "op") {
       if (n.op === "floor") return "floor";
+      if (n.op === "round") return roundNodeLabel(n);
       if (n.op === "if") return "if";
       if (n.op === "and") return "and";
       if (n.op === "or") return "or";
@@ -1203,6 +1204,17 @@
       return n.label ? String(n.label) : "chat";
     }
     return n.kind;
+  }
+
+  function roundNodeMode(n) {
+    if (RT && typeof RT.roundMode === "function") return RT.roundMode(n);
+    const m = n && n.mode != null ? String(n.mode).trim().toLowerCase() : "";
+    return m === "up" || m === "down" || m === "nearest" ? m : "nearest";
+  }
+
+  function roundNodeLabel(n) {
+    const m = roundNodeMode(n);
+    return m === "up" ? "round↑" : m === "down" ? "round↓" : "round";
   }
 
   function nodeSub(n) {
@@ -1222,6 +1234,10 @@
       )
         return "compare";
       if (op === "+=" || op === "-=") return "adjust";
+      if (op === "round") {
+        const m = roundNodeMode(n);
+        return m === "up" ? "up · ceil" : m === "down" ? "down · floor" : "nearest · .5 up";
+      }
       return "op";
     }
     if (n.kind === "roll") return "roll";
@@ -1859,7 +1875,7 @@
       const op = n.op;
       let portHint = "";
       if (op === "if") portHint = " · ports: cond, then, else";
-      else if (op === "not" || op === "floor") portHint = " · port: a";
+      else if (op === "not" || op === "floor" || op === "round") portHint = " · port: a";
       else if (
         op === "and" ||
         op === "or" ||
@@ -1878,6 +1894,14 @@
       )
         portHint = " · ports: a, b";
       body += `<span class="hint">Op: ${esc(op)}${portHint}</span>`;
+      if (op === "round") {
+        const rm = roundNodeMode(n);
+        body += `<label>Mode <select id="g-round-mode">
+        <option value="up"${rm === "up" ? " selected" : ""}>Up (ceil)</option>
+        <option value="down"${rm === "down" ? " selected" : ""}>Down (floor)</option>
+        <option value="nearest"${rm === "nearest" ? " selected" : ""}>Nearest (.5 rounds up)</option>
+      </select></label>`;
+      }
     } else if (n.kind === "roll") {
       body += `<label>Sides <input type="number" id="g-sides" min="2" value="${esc(String(n.sides != null ? n.sides : 20))}" style="width:4rem" /></label>`;
       body += `<span class="hint">runtime roll 1..sides</span>`;
@@ -1904,6 +1928,16 @@
     const ge = document.getElementById("g-entry-name");
     const gchat = document.getElementById("g-chat-label");
     const garith = document.getElementById("g-chat-arith");
+    const grm = document.getElementById("g-round-mode");
+    if (grm) {
+      grm.addEventListener("change", () => {
+        n.mode = roundNodeMode({ mode: grm.value });
+        // Refresh live number preview: recompile formulas so display widgets update now
+        const rc = compileGraph(doc.graph);
+        if (!rc.error) applyFormulasToFields(rc.formulas);
+        renderAll();
+      });
+    }
     if (gf) {
       gf.addEventListener("change", () => {
         const id = gf.value.trim();
@@ -1969,6 +2003,7 @@
       n.value = 0;
     } else if (kind === "op") {
       n.op = op || "+";
+      if (n.op === "round") n.mode = "nearest";
     } else if (kind === "roll") {
       n.sides = 20;
     } else if (kind === "entry" || kind === "function") {

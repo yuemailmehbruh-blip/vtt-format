@@ -229,6 +229,13 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
 
+## 0.6.17
+
+- **Round op** — new one-input `round` node in the Automations palette (next to `floor`). Selecting it shows a **Mode** dropdown in the props bar (same `<select>` pattern as a Field's Role): **Up (ceil)**, **Down (floor)**, **Nearest (.5 rounds up)**. Stored as `mode: up|down|nearest` on the node (missing/unknown → `nearest`, so old sheets load unchanged). Node title shows `round↑` / `round↓` / `round`.
+- **Nearest** is `Math.floor(x + 0.5)`: 2.5 → 3, -2.5 → -2, -2.6 → -3.
+- **Closed formulas** gain `ceil(x)` and `round(x)`; compile emits `ceil(…)` / `floor(…)` / `round(…)` per mode, so formula fields, `[x]` formula macros, and the builder/sheet live previews all evaluate it. Send-arithmetic-to-chat shows `round↑(…)`, `round↓(…)`, `round(…)`.
+- **Tests** — `tests/round-op.mjs` (all modes × positives/negatives/.5/integers, macro, downstream op, chat text, legacy default).
+
 ## 0.6.16
 
 - **Dual-value boxes** — when a widget has distinct input/output IDs with an output formula, the sheet shows **only** the resolved display value until you click it; then a base number editor appears (bound to `input_id`, prefilled with `baseVal`, never the failed display `0`). Blur/Enter saves via `saveFields` and returns to output-only.
