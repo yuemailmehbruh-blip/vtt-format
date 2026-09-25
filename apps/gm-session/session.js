@@ -916,6 +916,8 @@
           continue;
         }
         const d = await res.json();
+        // this window is the authority on which scene players see
+        if ((d.scene_id || null) !== (sceneId || null)) reportActiveScene();
         if (rev !== null && d.map_rev !== rev && d.scene_id === sceneId) await gmRefreshTokens();
         rev = d.map_rev;
       } catch (_) {
@@ -3450,7 +3452,11 @@
     setStatus(`Selected “${token.name || token.id}” · ${size} tile(s) across`);
     const hint = document.getElementById("header-hint");
     if (hint) {
-      hint.textContent = `Selected: ${token.name || token.id} · Delete to remove · Double-click for sheet · Drag to move`;
+      hint.textContent = PLAYER
+        ? canMoveToken(token)
+          ? `Selected: ${token.name || token.id} (yours) · Drag to move · Double-click for its sheet`
+          : `Selected: ${token.name || token.id} · only the GM or its owner can move it`
+        : `Selected: ${token.name || token.id} · Delete to remove · Double-click for sheet · Drag to move`;
     }
     draw();
   }
@@ -3462,8 +3468,9 @@
     if (updateHint) {
       const hint = document.getElementById("header-hint");
       if (hint) {
-        hint.textContent =
-          "Click token to select · Delete removes token/layer (or the selected sidebar item) · Double-click a token or character for its sheet · Drag characters onto map · Wheel zoom";
+        hint.textContent = PLAYER
+          ? "Drag empty map to pan · Wheel to zoom · Drag your own tokens (dashed outline) · Double-click your character for its sheet"
+          : "Click token to select · Delete removes token/layer (or the selected sidebar item) · Double-click a token or character for its sheet · Drag characters onto map · Wheel zoom";
       }
     }
   }
