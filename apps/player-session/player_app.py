@@ -32,6 +32,10 @@ def main() -> None:
     client = SyncClient(store)
     if args.gm and args.name:
         client.configure(args.gm, args.name, args.join_code)
+    elif not args.headless:
+        # 0.7.1: the window app always starts at the Join window (last address and
+        # name stay as the form defaults) — decided before the sync loop starts.
+        client.disconnect()
     elif store.cfg.get("gm") and store.cfg.get("name"):
         client.status["state"] = "connecting"
     srv, base = create_local_server(store, client, args.port)
@@ -52,9 +56,6 @@ def main() -> None:
         print("pywebview not installed; open the URL above in a browser", file=sys.stderr)
         threading.Event().wait()
         return
-    if not args.gm:
-        # 0.7.1: always start at the join window (name/address remembered for the form)
-        client.disconnect()
     api = PlayerWindows(webview, base, client)
     if client.status.get("state") in ("connecting", "connected"):
         api._main = webview.create_window(f"GM Session Player {app_version()}", base + "/index.html", js_api=api,

@@ -263,6 +263,8 @@ class SyncClient:
     def sync_once(self) -> bool:
         before = (self.status.get("state"), tuple(self.store.list_sheet_sig()))
         ok = self._sync_once_inner()
+        if not self.store.cfg.get("gm"):
+            self.status.update({"state": "not-configured", "last_error": None})  # left mid-round
         if (self.status.get("state"), tuple(self.store.list_sheet_sig())) != before:
             self._bump()  # connection state or sheet list changed → UI refresh
         return ok
