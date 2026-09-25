@@ -1732,5 +1732,54 @@
     });
   }
 
+  // --- 0.7.0: player mode (GM Session Player) + live value refresh ----------
+  // ?mode=player: only the Sheet tab (fields, automations, rolls, notes) — the
+  // Mechanics/Appearance tabs are GM tools. Both apps poll /api/sheet/<id>/rev
+  // every 2 s and pull in values changed elsewhere (player sync, other windows).
+  const PLAYER_MODE = params.get("mode") === "player";
+  if (PLAYER_MODE) {
+    document.body.classList.add("player-mode");
+    for (const btn of document.querySelectorAll(".tabs button")) {
+      if (btn.dataset.tab !== "sheet") btn.hidden = true;
+    }
+  }
+  let lastRev = null;
+  let notesDirty = false;
+  textEl.addEventListener("input", () => {
+    notesDirty = true;
+  });
+  document.getElementById("save").addEventListener("click", () => {
+    notesDirty = false;
+  });
+  function isEditing() {
+    const ae = document.activeElement;
+    return !!(ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae !== textEl);
+  }
+  async function refreshValues() {
+    if (!actorId) return;
+    const r = await fetch(`/api/sheet/${encodeURIComponent(actorId)}/rev`);
+    if (!r.ok) return;
+    const { rev } = await r.json();
+    if (lastRev === null) {
+      lastRev = rev;
+      return;
+    }
+    if (rev === lastRev || isEditing()) return; // retry next tick while typing
+    const res = await fetch(`/api/sheet/${encodeURIComponent(actorId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    lastRev = rev;
+    if (data.fields && typeof data.fields === "object") actorFields = data.fields;
+    if (!notesDirty && document.activeElement !== textEl) textEl.value = data.text || "";
+    if (data.name && data.name !== actorName) applyActorRename(actorId, data.name);
+    renderVisual(false);
+    if (PLAYER_MODE && typeof data.pending === "number") {
+      setStatus(data.pending ? `${data.pending} change(s) waiting to sync` : "Synced");
+    }
+  }
+  setInterval(() => {
+    refreshValues().catch(() => {});
+  }, 2000);
+
   load().catch((err) => setStatus(String(err)));
 })();

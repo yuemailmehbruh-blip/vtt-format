@@ -253,6 +253,8 @@ def _asset_is_setup(name: str) -> bool:
     lower = n.lower()
     if lower == SETUP_ASSET_NAME.lower():
         return True
+    if "player" in lower:
+        return False  # 0.7.0+: GM-Session-Player-Setup.exe is the separate player app
     if lower.startswith("gm-session-setup"):
         return True
     if lower.endswith("-setup.exe") or lower.endswith("setup.exe"):

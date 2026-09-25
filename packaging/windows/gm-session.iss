@@ -48,5 +48,14 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
+[UninstallRun]
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""GM Session players (TCP 8766)"""; Flags: runhidden; Check: IsAdmin; RunOnceId: "DelFwRule"
+
 [Run]
+; 0.7.0: players on other computers connect to the GM's player port (TCP 8766).
+; When the installer runs elevated, add an inbound allow rule for that port; otherwise
+; Windows shows its own "allow on private networks" prompt the first time GM Session
+; starts hosting (click Allow). runhidden + no error if netsh fails.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""GM Session players (TCP 8766)"""; Flags: runhidden; Check: IsAdmin
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""GM Session players (TCP 8766)"" dir=in action=allow protocol=TCP localport=8766 profile=private,domain"; Flags: runhidden; Check: IsAdmin; StatusMsg: "Allowing player connections (TCP 8766) in Windows Firewall..."
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

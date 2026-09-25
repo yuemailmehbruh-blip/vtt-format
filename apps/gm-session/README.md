@@ -229,6 +229,19 @@ See `packaging/windows/` (PyInstaller + Inno Setup + pywebview). Entry point: `d
 - **Field id text box** — builder display/graph props use a single text input for field id (no example dropdown); new widgets/nodes start with empty field.
 - **GET `/api/sheet/{actor}`** also returns `sheet_id`, actor `fields`, schema fields/formulas, and `layout.widgets` (build yaml, editor-scratch fallback).
 
+## 0.7.0 — GM Session Player
+
+- **New app: GM Session Player** (`apps/player-session/`, installer `GM-Session-Player-Setup.exe`, own install dir + Start menu entry, same version). Players enter the GM's address (`host:port`) and a display name, receive the characters the GM assigns them, and edit them with the same sheet renderer/runtime as the GM (buttons, automations and rolls run locally). Sheets are stored in `%LOCALAPPDATA%\GM Session Player` so they open and edit offline.
+- **GM hosting** — GM Session now also listens for players on `0.0.0.0:8766` (a separate listener that only serves `/player/api/*`; the GM UI/API stays on loopback `127.0.0.1:8765`). Flags: `--player-port`, `--player-host`, `--no-players`. The installer adds an inbound firewall rule for TCP 8766 when run elevated; otherwise Windows asks once ("allow on private networks" → Allow).
+- **Players button** (top bar) — shows who is online and the last sync time, the address players connect to, an optional **join code**, and **Forget** per player.
+- **Assign to player…** (character right-click menu) — tick known players; assigned characters show a 👤 badge with the player names. Per player: **Send full sheet…** (confirm) replaces that player's copy with yours. Assignments persist in `world/players.yaml`.
+- **Sync every 2 s, delta-based** — each side keeps a per-sheet change log of field-level changes `{key, value, HLC stamp, origin}`; each round sends only unacknowledged entries and acks trim the logs. Same-field conflicts: the newer edit by hybrid logical clock wins (not wall-clock). Synced: every sheet field value and the notes text (both ways), the character name (GM → player). Not synced: appearance/token image, the sheet layout itself (sent read-only to the player and refreshed when it changes), rolls/chat.
+- **Offline** — player edits queue in the local log (also across restarts) and go across on the next successful sync.
+- **Full Sync** — player app: **Full Sync → GM** (confirm) overwrites the GM copy of that sheet; GM: **Send full sheet…** overwrites the player copy.
+- **Security boundary** — players authenticate with a per-player secret issued at join (only its SHA-256 is stored); every request is checked against the assignment list; only `fields.*` and `notes` are player-writable; malformed input is rejected as a whole (400), unassigned sheets 403, bodies over 1 MB 413. GM endpoints are not served on the player port at all. Traffic is plain HTTP on your LAN (no TLS).
+- **GM sheet window** refreshes live (2 s) when a player changes a value.
+- **Tests** — `tests/sync-core.py` (clock, log, merge, conflicts both orders, offline queue, ack trimming, full sync both ways), `tests/player-integration.py` (real GM server + real player process over HTTP), `tests/player-boundary.py` (403/401/404/400/413 boundary).
+
 ## 0.6.20
 
 - **Select, then act** — single click selects any sidebar row (map, character, scene, folder) with a clear highlight (accent fill + left bar); one selection at a time across the three panels. **Double-click a character to open its sheet**, double-click a scene to open it; maps and folders keep double-click / F2 rename. Folders collapse from their caret/icon (or Enter); Enter also opens the selected character/scene.

@@ -92,3 +92,12 @@ python apps/gm-session/serve.py
 - Windowed build (`console=False`) — no console flash on Windows.
 - Hidden imports cover pywebview’s Edge/WebView2 (Edge Chromium) backend.
 - Prefer the installer-copied `campaign\` folder next to the exe for day-to-day edits.
+
+## GM Session Player (0.7.0+)
+
+`build.ps1` also builds the player app from `gm-session-player.spec` (entry `apps/player-session/player_app.py`, bundles the shared sheet renderer + `sync_core.py`) and compiles `gm-session-player.iss` → `output/GM-Session-Player-Setup.exe`, with the same `/DMyAppVersion` from `apps/gm-session/VERSION`.
+
+- Installs to `%LOCALAPPDATA%\Programs\GM Session Player` (per-user), Start menu entry **GM Session Player**; AppId `{C41B7D2E-6A3F-4F0C-8E5B-GMSESSPLAYER1}`.
+- Player data (player id, GM address, per-campaign secret, sheets + change logs) lives in `%LOCALAPPDATA%\GM Session Player`, never in the install dir.
+- Release order: create the release with `GM-Session-Setup.exe` first, then `gh release upload` the player asset (GM auto-update picks the exact GM asset name; 0.7.0+ also ignores any asset containing "player").
+- GM installer: when run elevated it adds the inbound firewall rule "GM Session players (TCP 8766)" (private/domain profiles) and removes it on uninstall; per-user (non-elevated) installs rely on the Windows prompt instead.

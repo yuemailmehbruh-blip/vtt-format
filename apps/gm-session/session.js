@@ -1119,6 +1119,14 @@
         flag.textContent = "sheet";
         row.appendChild(flag);
       }
+      const owners = assignedNames(id);
+      if (owners.length) {
+        const b = document.createElement("span");
+        b.className = "assign-badge";
+        b.textContent = `👤 ${owners.join(", ")}`;
+        b.title = `Assigned to ${owners.join(", ")} (GM Session Player)`;
+        row.appendChild(b);
+      }
     } else if (panel === "scenes") {
       const sc = entityById("scenes", id) || { id, name: id };
       row.className = "org-row scene-item";
@@ -1718,6 +1726,159 @@
     if (ae && ae.closest && ae.closest("#library") && typeof ae.blur === "function") ae.blur();
   });
 
+  // --- 0.7.0 players (GM Session Player) ------------------------------------
+  // GM-only endpoints on this loopback server; players talk to the separate
+  // player listener (/player/api/*). Status polled every 3 s.
+  let players = { players: [], assignments: {}, hosting: {} };
+  let playersSig = "";
+  const btnPlayers = document.getElementById("btn-players");
+  const playersDlg = document.getElementById("players-dialog");
+  const assignDlg = document.getElementById("assign-dialog");
+
+  function playerName(pid) {
+    const p = (players.players || []).find((x) => x.id === pid);
+    return p ? p.name : pid.slice(0, 6);
+  }
+  function assignedNames(actorId) {
+    return ((players.assignments || {})[actorId] || []).map(playerName);
+  }
+  function fmtClock(t) {
+    return t ? new Date(t * 1000).toLocaleTimeString() : "never";
+  }
+
+  async function pollPlayers() {
+    try {
+      const res = await fetch("/api/players");
+      if (!res.ok) return;
+      players = await res.json();
+    } catch (_) {
+      return;
+    }
+    const list = players.players || [];
+    const online = list.filter((p) => p.online).length;
+    const last = Math.max(0, ...list.map((p) => p.last_sync || 0));
+    if (btnPlayers) {
+      btnPlayers.textContent = list.length
+        ? `Players: ${online}/${list.length} online · last sync ${fmtClock(last || null)}`
+        : "Players";
+      btnPlayers.classList.toggle("online", online > 0);
+    }
+    const sig = JSON.stringify([players.assignments, list.map((p) => [p.id, p.name])]);
+    if (sig !== playersSig) {
+      playersSig = sig;
+      if (!orgRenaming) renderPanel("actors");
+    }
+    if (playersDlg && playersDlg.open) renderPlayersDialog();
+  }
+
+  function renderPlayersDialog() {
+    const h = players.hosting || {};
+    const host = document.getElementById("players-hosting");
+    if (h.enabled) {
+      const addrs = (h.addresses || []).map((a) => `<code>${a}:${h.port}</code>`).join(" or ");
+      host.innerHTML = `Players connect to ${addrs || `<code>this-computer:${h.port}</code>`}` +
+        `<div class="muted">Same computer: <code>127.0.0.1:${h.port}</code>. Windows may ask to allow GM Session on private networks — allow it.</div>`;
+    } else {
+      host.textContent = h.error ? `Player hosting is off: ${h.error}` : "Player hosting is off (start GM Session normally to enable it).";
+    }
+    const code = document.getElementById("join-code");
+    if (document.activeElement !== code) code.value = players.join_code || "";
+    const rows = document.getElementById("players-rows");
+    rows.innerHTML = "";
+    for (const p of players.players || []) {
+      const tr = document.createElement("tr");
+      const chars = (p.sheets || []).map((a) => entityName("actors", a)).join(", ") || "—";
+      tr.innerHTML = `<td></td><td><span class="${p.online ? "dot-on" : "dot-off"}"></span>${p.online ? "online" : "offline"}</td><td>${fmtClock(p.last_sync)}</td><td></td><td><button type="button">Forget</button></td>`;
+      tr.children[0].textContent = p.name;
+      tr.children[3].textContent = chars;
+      tr.querySelector("button").addEventListener("click", async () => {
+        if (!(await confirmInApp(`Forget player “${p.name}”?`, "They lose their character assignments here and must join again (their app keeps its local copies).", "Forget"))) return;
+        await fetch(`/api/players/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+        pollPlayers();
+      });
+      rows.appendChild(tr);
+    }
+    document.getElementById("players-empty").hidden = (players.players || []).length > 0;
+  }
+
+  if (btnPlayers) {
+    btnPlayers.addEventListener("click", async () => {
+      await pollPlayers();
+      renderPlayersDialog();
+      playersDlg.showModal();
+    });
+    document.getElementById("players-close").addEventListener("click", () => playersDlg.close());
+    document.getElementById("join-code-save").addEventListener("click", async () => {
+      const res = await fetch("/api/players/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ join_code: document.getElementById("join-code").value }),
+      });
+      setStatus(res.ok ? "Join code saved" : "Join code not saved");
+      pollPlayers();
+    });
+  }
+
+  async function openAssignDialog(actorId) {
+    await pollPlayers();
+    const name = entityName("actors", actorId);
+    document.getElementById("assign-title").textContent = `Assign “${name}” to players`;
+    const list = document.getElementById("assign-list");
+    list.innerHTML = "";
+    const current = new Set((players.assignments || {})[actorId] || []);
+    if (!(players.players || []).length) {
+      list.innerHTML = `<p class="muted">No players have joined yet. Open <b>Players</b> (top bar) for the address players connect to.</p>`;
+    }
+    for (const p of players.players || []) {
+      const row = document.createElement("div");
+      row.className = "assign-row";
+      row.innerHTML = `<label><input type="checkbox" /> <span></span> <span class="muted"></span></label><button type="button" title="Replace this player's copy with yours on their next sync">Send full sheet…</button>`;
+      const cb = row.querySelector("input");
+      cb.checked = current.has(p.id);
+      cb.dataset.pid = p.id;
+      row.querySelector("label span").textContent = p.name;
+      row.querySelector("label .muted").textContent = p.online ? "online" : "offline";
+      const full = row.querySelector("button");
+      full.disabled = !current.has(p.id);
+      full.addEventListener("click", async () => {
+        const ok = await confirmInApp(
+          `Send full sheet to ${p.name}?`,
+          `Your copy of “${name}” replaces ${p.name}'s copy on their next sync, including any edits they have not sent yet.`,
+          "Overwrite player copy"
+        );
+        if (!ok) return;
+        const res = await fetch("/api/players/fullsync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ actor: actorId, player: p.id }),
+        });
+        const data = await res.json().catch(() => ({}));
+        setStatus(res.ok ? `Full sheet queued for ${p.name} (${data.note || "next sync"})` : `Full sync failed: ${data.error || res.status}`);
+      });
+      list.appendChild(row);
+    }
+    assignDlg.dataset.actor = actorId;
+    assignDlg.showModal();
+  }
+  if (assignDlg) {
+    document.getElementById("assign-cancel").addEventListener("click", () => assignDlg.close());
+    document.getElementById("assign-save").addEventListener("click", async () => {
+      const actorId = assignDlg.dataset.actor;
+      const pids = [...assignDlg.querySelectorAll("input[type=checkbox]")].filter((c) => c.checked).map((c) => c.dataset.pid);
+      const res = await fetch("/api/players/assign", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actor: actorId, players: pids }),
+      });
+      const data = await res.json().catch(() => ({}));
+      assignDlg.close();
+      setStatus(res.ok ? `“${entityName("actors", actorId)}” → ${pids.length ? pids.map(playerName).join(", ") : "no players"}` : `Assign failed: ${data.error || res.status}`);
+      playersSig = "";
+      pollPlayers();
+    });
+  }
+  setInterval(pollPlayers, 3000);
+
   const orgMenuEl = document.getElementById("org-menu");
   function closeOrgMenu() {
     if (orgMenuEl) orgMenuEl.hidden = true;
@@ -1748,7 +1909,10 @@
       add("Delete folder (keeps contents)  (Del)", () => deleteSidebarItem(panel, node));
     } else {
       const id = node[OT.ITEM_KEY[panel]];
-      if (panel === "actors") add("Open sheet (double-click)", () => openSheet(id));
+      if (panel === "actors") {
+        add("Open sheet (double-click)", () => openSheet(id));
+        add("Assign to player…", () => openAssignDialog(id));
+      }
       if (panel === "scenes") add("Open scene", () => loadScene(id).catch((err) => setStatus(String(err))));
       if (panel === "maps") {
         add("Use in current scene", () => useMapInCurrentScene(id));
@@ -3626,7 +3790,7 @@
     if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) {
       return;
     }
-    if (confirmDlg && confirmDlg.open) return;
+    if (document.querySelector("dialog[open]")) return;
     if (focusRegion === "sidebar") {
       // sidebar owns Delete: never touches the map's token/layer selection
       const sel = sidebarSelection();
@@ -3654,6 +3818,7 @@
     layout.classList.add("no-sheet");
     resize();
     await loadPanelPrefs();
+    await pollPlayers();
     await loadLibrary();
     const known = (library && library.scenes) || [];
     if (sceneId && known.some((s) => s.id === sceneId)) await loadScene(sceneId);

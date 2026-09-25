@@ -337,6 +337,28 @@
     .org-row.folder .fcount { font-size: 0.68rem; color: var(--muted); font-weight: 400; }
     .org-row.selected, .org-row.selected:hover { background: rgba(110, 168, 254, 0.2) !important; border-color: var(--accent) !important; box-shadow: inset 3px 0 0 var(--accent); border-radius: 6px; color: var(--text); }
     .org-row.folder { border: 1px solid transparent; }
+    .players-chip { font-size: 0.75rem; padding: 0.15rem 0.6rem; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); cursor: pointer; }
+    .players-chip.online { color: var(--ok); border-color: rgba(125, 222, 165, 0.45); }
+    .gm-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; min-width: 420px; max-width: 640px; }
+    .gm-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+    .gm-dialog h3 { margin: 0 0 0.6rem; font-size: 1rem; }
+    .gm-dialog .muted, .gm-dialog .muted * { color: var(--muted); font-size: 0.8rem; }
+    .gm-dialog .actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.8rem; }
+    .gm-dialog button { padding: 0.32rem 0.7rem; border-radius: 5px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); cursor: pointer; font-size: 0.8rem; }
+    .gm-dialog button.primary { border-color: var(--accent); color: var(--accent); }
+    .gm-dialog input[type=text] { flex: 1; padding: 0.3rem 0.45rem; border-radius: 5px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+    .pd-hosting { font-size: 0.85rem; margin-bottom: 0.6rem; padding: 0.5rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); }
+    .pd-hosting code { color: var(--accent); font-size: 0.95rem; }
+    .pd-row label { font-size: 0.8rem; display: block; margin-bottom: 0.25rem; }
+    .pd-inline { display: flex; gap: 0.4rem; }
+    .pd-table { width: 100%; border-collapse: collapse; margin-top: 0.7rem; font-size: 0.8rem; }
+    .pd-table th { text-align: left; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); padding: 0.25rem 0.3rem; }
+    .pd-table td { padding: 0.3rem; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .dot-on, .dot-off { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.3rem; }
+    .dot-on { background: var(--ok); } .dot-off { background: #59627a; }
+    .assign-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.2rem; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.85rem; }
+    .assign-row label { flex: 1; display: flex; align-items: center; gap: 0.45rem; cursor: pointer; }
+    .lib-item .assign-badge { font-size: 0.66rem; color: #c9a8ff; border: 1px solid rgba(201, 168, 255, 0.35); padding: 0.05rem 0.3rem; border-radius: 4px; flex-shrink: 0; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #confirm-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; max-width: 420px; }
     #confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
     #confirm-dialog h3 { margin: 0 0 0.5rem; font-size: 1rem; }
@@ -484,6 +506,7 @@
   <header>
     <h1 id="scene-name">Loading…</h1>
     <span class="badge">GM Session (offline)</span>
+    <button type="button" id="btn-players" class="players-chip" title="Players: address to join, join code, who is connected">Players</button>
     <span class="meta" id="scene-meta"></span>
     <div class="toggles" title="Grid visibility, snap, and nametags are independent">
       <label><input type="checkbox" id="toggle-grid" checked /> Grid</label>
@@ -579,6 +602,25 @@
       </div>
     </div>
   </div>
+
+  <dialog id="players-dialog" class="gm-dialog" aria-labelledby="players-title">
+    <h3 id="players-title">Players</h3>
+    <div id="players-hosting" class="pd-hosting"></div>
+    <div class="pd-row">
+      <label for="join-code">Join code <span class="muted">(optional — players must type it to join)</span></label>
+      <div class="pd-inline"><input type="text" id="join-code" maxlength="64" autocomplete="off" placeholder="none" /><button type="button" id="join-code-save">Save</button></div>
+    </div>
+    <table class="pd-table"><thead><tr><th>Player</th><th>Status</th><th>Last sync</th><th>Characters</th><th></th></tr></thead><tbody id="players-rows"></tbody></table>
+    <p class="muted" id="players-empty">No players yet. On each player's computer: install GM Session Player, enter the address above and a name, press Connect.</p>
+    <div class="actions"><button type="button" id="players-close">Close</button></div>
+  </dialog>
+
+  <dialog id="assign-dialog" class="gm-dialog" aria-labelledby="assign-title">
+    <h3 id="assign-title">Assign to player</h3>
+    <p class="muted">Assigned players receive this character's sheet in GM Session Player and can edit its fields and notes. Changes sync both ways every 2 seconds.</p>
+    <div id="assign-list"></div>
+    <div class="actions"><button type="button" id="assign-cancel">Cancel</button><button type="button" class="primary" id="assign-save">Save</button></div>
+  </dialog>
 
   <dialog id="confirm-dialog" aria-labelledby="confirm-title">
     <h3 id="confirm-title">Delete?</h3>

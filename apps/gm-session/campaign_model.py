@@ -733,6 +733,7 @@ def delete_entity(root: Path, panel: str, eid: str) -> dict:
             cands.add(root / sheet_doc)
         for c in sorted(cands):
             _move_to_trash(root, trash, c, moved)
+        _move_to_trash(root, trash, root / "state" / "sync" / f"{eid}.json", moved)
     elif panel == "maps":
         detached = []
         for sid in entity_ids(root, "scenes"):
@@ -755,3 +756,16 @@ def delete_entity(root: Path, panel: str, eid: str) -> dict:
     save_organization(root, org)
     return {"ok": True, "panel": panel, "id": eid, "trash": str(trash.relative_to(root)).replace("\\", "/"),
             "moved": moved, "side_effects": manifest["side_effects"]}
+
+
+def actor_rev(root: Path, actor_id: str) -> str:
+    """Cheap change token for an actor's sheet values (yaml + notes file stats).
+    Sheet windows poll it to pick up edits made elsewhere (player sync, other windows)."""
+    parts = []
+    for p in (actor_path(root, actor_id), root / "world" / "actors" / f"{actor_id}.sheet.txt"):
+        try:
+            st = p.stat()
+            parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+        except OSError:
+            parts.append("-")
+    return "|".join(parts)

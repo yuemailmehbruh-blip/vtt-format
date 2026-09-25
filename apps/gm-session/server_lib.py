@@ -13,6 +13,8 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import campaign_model as cm
+import player_host as ph
+import sync_core as sc
 
 try:
     import yaml
@@ -458,6 +460,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, m)
             return
+        if path == "/api/players":
+            self._send_json(200, self.player_hub.gm_status())
+            return
         if path == "/api/migration":
             self._send_json(200, getattr(type(self), "migration_report", {}) or {})
             return
@@ -533,62 +538,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, cm.resolve_scene(self.campaign_root, scene))
             return
 
-        if path.startswith("/api/sheet/"):
-            actor_id = path[len("/api/sheet/") :].strip("/")
+        if path.startswith("/api/sheet/") and path.endswith("/rev"):
+            actor_id = path[len("/api/sheet/") : -len("/rev")].strip("/")
             if not _safe_segment(actor_id):
                 self._send_json(400, {"error": "invalid actor id"})
                 return
-            actor_path = self.campaign_root / "world" / "actors" / f"{actor_id}.yaml"
-            if not actor_path.is_file():
-                self._send_json(404, {"error": f"actor not found: {actor_id}"})
-                return
-            actor = yaml.safe_load(actor_path.read_text(encoding="utf-8")) or {}
-            if not isinstance(actor, dict):
-                actor = {}
-            sheet_rel = actor.get("sheet_doc") or f"world/actors/{actor_id}.sheet.txt"
-            sheet_path = self._resolve_under_campaign(sheet_rel)
-            sheet_text = ""
-            if sheet_path is not None and sheet_path.is_file():
-                sheet_text = sheet_path.read_text(encoding="utf-8")
-            appearance = actor.get("appearance") if isinstance(actor.get("appearance"), dict) else {}
-            size_tiles = appearance.get("size_tiles", 1)
-            try:
-                size_tiles = float(size_tiles)
-            except (TypeError, ValueError):
-                size_tiles = 1.0
-            if size_tiles <= 0:
-                size_tiles = 1.0
-            appearance = {**appearance, "size_tiles": size_tiles}
-            sheet_id = str(actor.get("sheet") or actor.get("sheet_id") or "").strip()
-            schema_fields: dict = {}
-            layout_widgets: list = []
-            schema_graph: dict = {"nodes": [], "edges": [], "collapsed": []}
-            schema_source = None
-            if sheet_id and _safe_segment(sheet_id):
-                schema_fields, layout_widgets, schema_graph, schema_source = (
-                    self._load_sheet_schema(sheet_id)
-                )
-            actor_fields = (
-                actor.get("fields") if isinstance(actor.get("fields"), dict) else {}
-            )
-            self._send_json(
-                200,
-                {
-                    "actor_id": actor_id,
-                    "name": actor.get("name") or actor_id,
-                    "path": sheet_rel,
-                    "text": sheet_text,
-                    "appearance": appearance,
-                    "sheet_id": sheet_id or None,
-                    "fields": actor_fields,
-                    "schema": {
-                        "fields": schema_fields,
-                        "source": schema_source,
-                    },
-                    "layout": {"widgets": layout_widgets},
-                    "graph": schema_graph,
-                },
-            )
+            self._send_json(200, {"rev": cm.actor_rev(self.campaign_root, actor_id)})
+            return
+
+        if path.startswith("/api/sheet/"):
+            actor_id = path[len("/api/sheet/") :].strip("/")
+            status, payload = self.sheet_payload(actor_id)
+            self._send_json(status, payload)
             return
 
         if path.startswith("/api/tokens/"):
@@ -890,6 +851,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "scene": scene_id, "map": scene.get("map")})
             return
 
+        if path in ("/api/players/assign", "/api/players/settings"):
+            body = self._json_object_or_400()
+            if body is None:
+                return
+            try:
+                if path.endswith("assign"):
+                    got = self.player_hub.gm_assign(body.get("actor"), body.get("players"))
+                    self._send_json(200, {"ok": True, "actor": body.get("actor"), "players": got})
+                else:
+                    self.player_hub.gm_set_join_code(body.get("join_code"))
+                    self._send_json(200, {"ok": True})
+            except sc.SyncError as exc:
+                self._send_json(400, {"error": str(exc)})
+            return
+
         if path.startswith("/api/organization/") and path != "/api/organization/rename":
             panel = path[len("/api/organization/") :].strip("/")
             body = self._json_object_or_400()
@@ -1119,6 +1095,18 @@ class Handler(BaseHTTPRequestHandler):
             self._api_post_asset()
             return
 
+        if path == "/api/players/fullsync":
+            body = self._json_object_or_400()
+            if body is None:
+                return
+            try:
+                fid = self.player_hub.gm_full_to_player(str(body.get("actor") or ""), str(body.get("player") or ""))
+            except sc.SyncError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, {"ok": True, "full_id": fid, "note": "sent on the player's next sync (every 2 s while connected)"})
+            return
+
         if path in ("/api/actors", "/api/scenes", "/api/maps", "/api/organization/rename"):
             body = self._json_object_or_400()
             if body is None:
@@ -1217,6 +1205,58 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send_json(200, {"hash": digest, "name": name, "bytes": len(raw)})
 
+
+    def sheet_payload(self, actor_id: str) -> tuple[int, dict]:
+        """GET /api/sheet/<id> body (also the player sheet bundle source)."""
+        if not _safe_segment(actor_id):
+            return 400, {"error": "invalid actor id"}
+        actor_path = self.campaign_root / "world" / "actors" / f"{actor_id}.yaml"
+        if not actor_path.is_file():
+            return 404, {"error": f"actor not found: {actor_id}"}
+        actor = yaml.safe_load(actor_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(actor, dict):
+            actor = {}
+        sheet_rel = actor.get("sheet_doc") or f"world/actors/{actor_id}.sheet.txt"
+        sheet_path = self._resolve_under_campaign(sheet_rel)
+        sheet_text = ""
+        if sheet_path is not None and sheet_path.is_file():
+            sheet_text = sheet_path.read_text(encoding="utf-8")
+        appearance = actor.get("appearance") if isinstance(actor.get("appearance"), dict) else {}
+        size_tiles = appearance.get("size_tiles", 1)
+        try:
+            size_tiles = float(size_tiles)
+        except (TypeError, ValueError):
+            size_tiles = 1.0
+        if size_tiles <= 0:
+            size_tiles = 1.0
+        appearance = {**appearance, "size_tiles": size_tiles}
+        sheet_id = str(actor.get("sheet") or actor.get("sheet_id") or "").strip()
+        schema_fields: dict = {}
+        layout_widgets: list = []
+        schema_graph: dict = {"nodes": [], "edges": [], "collapsed": []}
+        schema_source = None
+        if sheet_id and _safe_segment(sheet_id):
+            schema_fields, layout_widgets, schema_graph, schema_source = (
+                self._load_sheet_schema(sheet_id)
+            )
+        actor_fields = (
+            actor.get("fields") if isinstance(actor.get("fields"), dict) else {}
+        )
+        return 200, {
+                "actor_id": actor_id,
+                "name": actor.get("name") or actor_id,
+                "path": sheet_rel,
+                "text": sheet_text,
+                "appearance": appearance,
+                "sheet_id": sheet_id or None,
+                "fields": actor_fields,
+                "schema": {
+                    "fields": schema_fields,
+                    "source": schema_source,
+                },
+                "layout": {"widgets": layout_widgets},
+                "graph": schema_graph,
+            }
 
     def _load_sheet_schema(self, sheet_id: str):
         """Return (schema_fields, layout_widgets, graph, source) from build yaml or editor-scratch."""
@@ -1580,6 +1620,16 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
+        if path.startswith("/api/players/"):
+            pid = path[len("/api/players/"):].strip("/")
+            try:
+                self.player_hub.gm_forget(pid)
+            except LookupError as exc:
+                self._send_json(404, {"error": str(exc)})
+                return
+            self._send_json(200, {"ok": True})
+            return
+
         for prefix, panel in (("/api/actor/", "actors"), ("/api/map/", "maps"), ("/api/scene/", "scenes")):
             if path.startswith(prefix) and "/" not in path[len(prefix):].strip("/"):
                 eid = path[len(prefix):].strip("/")
@@ -1857,6 +1907,8 @@ def create_server(
     *,
     app_dir: Path | None = None,
     quiet: bool = False,
+    player_host: str | None = None,
+    player_port: int | None = None,
 ) -> tuple[ThreadingHTTPServer, str]:
     """Bind and return (server, base_url). Does not serve_forever."""
     campaign = campaign.resolve()
@@ -1870,6 +1922,17 @@ def create_server(
     Handler.quiet = quiet
     # 0.6.19 load-time migration (idempotent, backs up rewritten scenes)
     Handler.migration_report = cm.migrate_campaign(campaign)
+    # 0.7.0 player session: hub always (GM endpoints); LAN listener only when asked.
+    hub = ph.PlayerHub(campaign, sheet_payload=lambda aid: Handler.__new__(Handler).sheet_payload(aid))
+    Handler.player_hub = hub
+    Handler.player_server = None
+    if player_port is not None:
+        version = "0.0.0"
+        try:
+            version = (Handler.app_dir / "VERSION").read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        Handler.player_server = ph.start_player_listener(hub, player_host or "0.0.0.0", player_port, version, quiet=quiet)
 
     server = ThreadingHTTPServer((host, port), Handler)
     # If port was 0, pick the assigned one

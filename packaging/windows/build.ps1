@@ -1,4 +1,4 @@
-# Build GM Session for Windows: PyInstaller onedir + optional Inno Setup installer.
+# Build GM Session + GM Session Player for Windows: PyInstaller onedir x2 + Inno Setup installers.
 # Run:  powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
 
 $ErrorActionPreference = "Stop"
@@ -56,6 +56,19 @@ if (-not (Test-Path (Join-Path $AppDist "GM Session.exe"))) {
     throw "PyInstaller did not produce dist\GM Session\GM Session.exe"
 }
 
+# 0.7.0: second app, GM Session Player (same VERSION)
+Write-Host "==> Running PyInstaller (gm-session-player.spec)"
+$PrevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $Python -m PyInstaller --noconfirm "gm-session-player.spec" 2>&1 | ForEach-Object { "$_" }
+$PyiExit = $LASTEXITCODE
+$ErrorActionPreference = $PrevEAP
+if ($PyiExit -ne 0) { throw "PyInstaller (player) failed (exit $PyiExit)" }
+$PlayerDist = Join-Path $Dist "GM Session Player"
+if (-not (Test-Path (Join-Path $PlayerDist "GM Session Player.exe"))) {
+    throw "PyInstaller did not produce dist\GM Session Player\GM Session Player.exe"
+}
+
 $StagingCampaign = Join-Path $ScriptDir "staging-campaign"
 if (Test-Path $StagingCampaign) { Remove-Item -Recurse -Force $StagingCampaign }
 
@@ -106,6 +119,15 @@ if ($Iscc) {
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
     & $Iscc "/DMyAppVersion=$AppVersion" "gm-session.iss"
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit $LASTEXITCODE)" }
+    & $Iscc "/DMyAppVersion=$AppVersion" "gm-session-player.iss"
+    if ($LASTEXITCODE -ne 0) { throw "ISCC (player) failed (exit $LASTEXITCODE)" }
+    $PlayerSetupPath = Join-Path $OutputDir "GM-Session-Player-Setup.exe"
+    if (Test-Path $PlayerSetupPath) {
+        Write-Host "Player installer:"
+        Write-Host "  $PlayerSetupPath"
+    } else {
+        throw "ISCC finished but GM-Session-Player-Setup.exe was not found in output/"
+    }
     $SetupPath = Join-Path $OutputDir "GM-Session-Setup.exe"
     if (Test-Path $SetupPath) {
         Write-Host ""
@@ -133,7 +155,8 @@ if ($SetupPath -and (Test-Path $SetupPath)) {
     Write-Host "Ship: $SetupPath"
     Write-Host ""
     Write-Host "Publish a GitHub Release (auto-update downloads this asset):"
-    Write-Host "  gh release create $VersionTag `"$SetupPath`" --title `"GM Session $VersionTag`" --notes `"Desktop app with pywebview sheets + auto-update.`""
+    Write-Host "  gh release create $VersionTag `"$SetupPath`" --title `"GM Session $VersionTag`" --notes `"...`""
+    Write-Host "  gh release upload $VersionTag `"$PlayerSetupPath`"   # upload the GM asset first"
 } else {
     Write-Host "Ship (folder): $AppDist"
     Write-Host "After building GM-Session-Setup.exe, publish with:"

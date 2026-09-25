@@ -39,6 +39,10 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+# 0.7.0: players (GM Session Player) connect here over the LAN. Separate port and
+# handler from the GM UI server above, which stays loopback-only.
+DEFAULT_PLAYER_HOST = "0.0.0.0"
+DEFAULT_PLAYER_PORT = 8766
 DEFAULT_SCENE = "docks"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -430,6 +434,8 @@ def run_desktop(
     port: int = DEFAULT_PORT,
     scene: str = DEFAULT_SCENE,
     skip_update: bool = False,
+    player_host: str = DEFAULT_PLAYER_HOST,
+    player_port: int | None = DEFAULT_PLAYER_PORT,
 ) -> None:
     ensure_campaign_beside_exe()
 
@@ -450,6 +456,8 @@ def run_desktop(
             port=port,
             app_dir=app_dir,
             quiet=True,
+            player_host=player_host,
+            player_port=player_port,
         )
     except OSError as exc:
         _show_error(f"Could not start server on {host}:{port}\n{exc}")
@@ -524,6 +532,9 @@ def main() -> None:
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--scene", default=DEFAULT_SCENE)
+    parser.add_argument("--player-host", default=DEFAULT_PLAYER_HOST, help="bind address for player connections")
+    parser.add_argument("--player-port", type=int, default=DEFAULT_PLAYER_PORT, help="player port (0 = pick one)")
+    parser.add_argument("--no-players", action="store_true", help="do not listen for player connections")
     parser.add_argument(
         "--skip-update",
         action="store_true",
@@ -542,6 +553,8 @@ def main() -> None:
         port=args.port,
         scene=args.scene,
         skip_update=args.skip_update,
+        player_host=args.player_host,
+        player_port=None if args.no_players else args.player_port,
     )
 
 

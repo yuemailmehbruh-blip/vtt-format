@@ -44,6 +44,8 @@ a = Analysis(
         "yaml",
         "campaign_model",
         "server_lib",
+        "player_host",
+        "sync_core",
         "webview",
         "webview.platforms.edgechromium",
         "webview.platforms.winforms",

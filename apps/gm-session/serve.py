@@ -19,6 +19,8 @@ def main() -> None:
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--player-host", default="0.0.0.0", help="player listener bind address")
+    parser.add_argument("--player-port", type=int, default=None, help="enable the player listener on this port (e.g. 8766)")
     parser.add_argument(
         "--scene",
         default="docks",
@@ -36,12 +38,16 @@ def main() -> None:
         port=args.port,
         app_dir=default_app_dir(),
         quiet=False,
+        player_host=args.player_host,
+        player_port=args.player_port,
     )
     url = f"{base}/?scene={args.scene}"
     print("GM Session (offline)")
     print(f"Campaign: {campaign}")
     print(f"Open:     {url}")
     print("Tokens persist under state/tokens/<scene>.json")
+    if args.player_port is not None:
+        print(f"Players:  {args.player_host}:{args.player_port} (/player/api/*)")
     print("Ctrl+C to stop.")
     try:
         server.serve_forever()

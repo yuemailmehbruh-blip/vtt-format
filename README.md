@@ -69,9 +69,24 @@ Double-click install on Windows 10/11 (no system browser):
 1. On a Windows build machine, run `packaging/windows/build.ps1` (needs Python + pywebview; Inno Setup 6 for the Setup.exe).
 2. Transfer `packaging/windows/output/GM-Session-Setup.exe` to the target PC.
 3. Double-click **GM-Session-Setup.exe**, then launch **GM Session** from the Start Menu.
-4. Publish for auto-update: `gh release create v0.5.0 packaging/windows/output/GM-Session-Setup.exe`
+4. Publish for auto-update: `gh release create vX.Y.Z packaging/windows/output/GM-Session-Setup.exe`, then `gh release upload vX.Y.Z packaging/windows/output/GM-Session-Player-Setup.exe` (0.7.0+: `build.ps1` builds both installers).
 
 The installer places an editable `campaign\` folder next to the app (sample campaign). See `packaging/windows/README.md` for details.
+
+## GM Session Player (0.7.0) — how to host / join
+
+**Host (GM):**
+1. Install and start **GM Session** as usual. It now also listens for players on port **8766** of every network interface (the GM window itself stays local-only).
+2. Click **Players** in the top bar. It shows the address players type, e.g. `192.168.1.20:8766`. Optionally set a **join code**.
+3. Windows Firewall: the installer adds an allow rule for TCP 8766 when it runs as administrator. Otherwise Windows asks the first time GM Session starts — choose **Allow** on private networks. Players must be on the same network (or you forward the port yourself; the traffic is unencrypted HTTP, so do that only on networks you trust).
+4. When a player has joined, right-click a character → **Assign to player…**, tick the player, **Save**. The character gets a 👤 badge.
+
+**Join (player):**
+1. Install **GM-Session-Player-Setup.exe** (Start menu → **GM Session Player**).
+2. Enter the GM's address (`host:port`; the port defaults to 8766), your name and the join code if the GM set one, then **Connect**.
+3. Your assigned sheets appear on the left. Edits save on your computer and go to the GM every 2 seconds; if the GM is offline they wait and go across on reconnect. **Full Sync → GM** replaces the GM's copy with yours (asks first).
+
+Same computer (testing): connect the player app to `127.0.0.1:8766`.
 
 ## How to add an asset
 

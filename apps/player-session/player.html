@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>GM Session Player</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg: #0f131a; --panel: #1a2130; --panel-2: #141a25; --border: #2a3346; --text: #e6eaf2; --muted: #9aa3b5; --accent: #6ea8fe; --ok: #7ddea5; --warn: #f0c36b; --bad: #ff8a93; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, "Segoe UI", sans-serif; }
+    header { display: flex; align-items: center; gap: 0.8rem; padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); background: var(--panel-2); height: 48px; }
+    header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+    .chip { font-size: 0.75rem; padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+    .chip.connected { color: var(--ok); border-color: rgba(125, 222, 165, 0.45); }
+    .chip.offline, .chip.connecting { color: var(--warn); border-color: rgba(240, 195, 107, 0.45); }
+    .chip.error { color: var(--bad); border-color: rgba(255, 138, 147, 0.45); }
+    #last-sync, #gm-label { font-size: 0.78rem; color: var(--muted); }
+    .spacer { flex: 1; }
+    #layout { display: grid; grid-template-columns: 280px 1fr; height: calc(100% - 48px); }
+    aside { border-right: 1px solid var(--border); background: var(--panel-2); padding: 0.8rem; overflow: auto; }
+    aside h2 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0.2rem 0 0.5rem; }
+    label { display: block; font-size: 0.75rem; color: var(--muted); margin: 0.45rem 0 0.2rem; }
+    input { width: 100%; padding: 0.4rem 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }
+    button { padding: 0.38rem 0.75rem; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; font: inherit; font-size: 0.85rem; }
+    button:hover { border-color: var(--accent); }
+    button.primary { border-color: var(--accent); color: var(--accent); }
+    .row { display: flex; gap: 0.4rem; margin-top: 0.6rem; flex-wrap: wrap; }
+    .box { border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.7rem; margin-bottom: 0.8rem; background: var(--panel-2); }
+    #err { color: var(--bad); font-size: 0.78rem; margin-top: 0.4rem; min-height: 1em; white-space: pre-wrap; }
+    .sheet-item { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 0.55rem; border-radius: 6px; border: 1px solid transparent; background: var(--panel); margin-bottom: 0.3rem; cursor: pointer; }
+    .sheet-item.active { border-color: var(--accent); background: rgba(110, 168, 254, 0.14); }
+    .sheet-item .n { flex: 1; }
+    .sheet-item .p { font-size: 0.7rem; color: var(--warn); }
+    .sheet-item .p.ok { color: var(--ok); }
+    #empty { color: var(--muted); font-size: 0.82rem; }
+    main { position: relative; }
+    main iframe { border: 0; width: 100%; height: 100%; background: var(--bg); }
+    [hidden] { display: none !important; }
+    #placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); padding: 2rem; text-align: center; }
+    dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; max-width: 440px; }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+    dialog p { color: var(--muted); font-size: 0.86rem; }
+    .small { font-size: 0.74rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>GM Session Player</h1>
+    <span id="status-chip" class="chip">Not connected</span>
+    <span id="last-sync">Last sync: never</span>
+    <span class="spacer"></span>
+    <span id="gm-label"></span>
+  </header>
+  <div id="layout">
+    <aside>
+      <div class="box" id="connect-box">
+        <h2>Connect to your GM</h2>
+        <label for="gm">GM address (host:port)</label>
+        <input id="gm" placeholder="192.168.1.20:8766" autocomplete="off" />
+        <label for="name">Your display name</label>
+        <input id="name" placeholder="e.g. Alice" autocomplete="off" />
+        <label for="code">Join code (if your GM set one)</label>
+        <input id="code" autocomplete="off" />
+        <div class="row">
+          <button type="button" class="primary" id="btn-connect">Connect</button>
+          <button type="button" id="btn-disconnect">Disconnect</button>
+          <button type="button" id="btn-sync-now" title="Sync right now instead of waiting for the next 2-second tick">Sync now</button>
+        </div>
+        <div id="err"></div>
+        <div class="small" id="who"></div>
+      </div>
+      <h2>Your sheets</h2>
+      <div id="sheets"></div>
+      <div id="empty">No sheets yet. Once you are connected, your GM assigns characters to you from their Characters list.</div>
+      <div class="row">
+        <button type="button" id="btn-full" disabled title="Send this whole sheet to the GM, replacing the GM's copy">Full Sync → GM</button>
+      </div>
+      <p class="small">Edits are saved on this computer and sent to the GM every 2 seconds. If the GM is unreachable they wait and go across when you reconnect.</p>
+    </aside>
+    <main>
+      <div id="placeholder">Pick a sheet on the left.</div>
+      <iframe id="sheet-frame" title="Character sheet" hidden></iframe>
+    </main>
+  </div>
+  <dialog id="confirm">
+    <h3 id="confirm-title">Full Sync?</h3>
+    <p id="confirm-msg"></p>
+    <div class="row" style="justify-content:flex-end">
+      <button type="button" id="confirm-cancel">Cancel</button>
+      <button type="button" class="primary" id="confirm-ok">Overwrite GM copy</button>
+    </div>
+  </dialog>
+  <script src="/player.js"></script>
+</body>
+</html>
