@@ -323,6 +323,41 @@
     }
     button.primary:hover { filter: brightness(1.08); }
     #status, #appearance-status, #mechanics-status { color: var(--muted); font-size: 0.8rem; }
+    .row-btns { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+    .row-btns button, .aura-row button, #crop-dialog button {
+      border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+      color: var(--text); padding: 0.3rem 0.65rem; cursor: pointer; font: inherit;
+    }
+    .row-btns button:hover, .aura-row button:hover, #crop-dialog button:hover { border-color: var(--accent); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    #token-preview { width: 72px; height: 72px; border-radius: 8px; background: #0d1017; border: 1px solid var(--border); }
+    .graphic-row { display: flex; gap: 0.75rem; align-items: center; }
+    #token-image-file { display: none; }
+    .aura-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+      padding: 0.45rem 0.55rem; border: 1px solid var(--border); border-radius: 8px;
+      margin-bottom: 0.4rem; background: var(--bg);
+    }
+    .aura-row .aura-name { font-weight: 600; min-width: 5.5rem; }
+    .aura-row code { color: var(--muted); font-size: 0.72rem; }
+    .aura-row input[type="number"] { width: 4.2rem; padding: 0.2rem 0.3rem; border-radius: 5px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+    .aura-row input[type="color"] { width: 2.2rem; height: 1.6rem; padding: 0; border: 1px solid var(--border); background: none; }
+    .aura-row input[type="range"] { width: 6.5rem; }
+    .aura-row label { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.78rem; color: var(--muted); }
+    #crop-dialog {
+      border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+      color: var(--text); padding: 0.85rem; max-width: 96vw;
+    }
+    #crop-dialog::backdrop { background: rgba(0,0,0,0.55); }
+    #crop-dialog h3 { margin: 0 0 0.5rem; font-size: 0.9rem; }
+    #crop-canvas { display: block; background: #0b0e14; border-radius: 8px; cursor: grab; touch-action: none; }
+    #crop-canvas.dragging { cursor: grabbing; }
+    .crop-tools { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.55rem; }
+    .crop-tools .grp { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
+    .crop-tools .grp > span { font-size: 0.72rem; color: var(--muted); min-width: 3.4rem; }
+    .crop-tools input[type="number"] { width: 4.2rem; padding: 0.2rem 0.3rem; border-radius: 5px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+    .crop-actions { display: flex; justify-content: flex-end; gap: 0.4rem; margin-top: 0.65rem; }
+    #crop-dialog button.primary { border-color: #3d6cb0; background: #2a4a7a; }
   </style>
 </head>
 <body>
@@ -381,13 +416,26 @@
           <span class="hint">Circle diameter in map tiles. Default 1.</span>
         </div>
       </div>
-      <div class="section stub">
+      <div class="section" id="section-graphic">
         <h3>Token graphic</h3>
-        <p class="coming">Coming soon</p>
+        <div class="graphic-row">
+          <canvas id="token-preview" width="72" height="72" title="Token preview"></canvas>
+          <div class="row-btns">
+            <button type="button" id="btn-token-import">Import image</button>
+            <button type="button" id="btn-token-edit-crop" disabled>Edit crop</button>
+            <button type="button" id="btn-token-remove-image" disabled>Remove image</button>
+          </div>
+        </div>
+        <input type="file" id="token-image-file" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif" />
+        <p class="coming" id="token-image-info" style="margin:0.4rem 0 0;font-size:0.72rem;color:var(--muted)">No image — white circle token.</p>
       </div>
-      <div class="section stub">
+      <div class="section" id="section-auras">
         <h3>Auras / emanations</h3>
-        <p class="coming">Coming soon</p>
+        <div id="aura-list"></div>
+        <div class="row-btns">
+          <button type="button" id="btn-aura-add">Add emanation</button>
+          <span class="hint" style="font-size:0.72rem;color:var(--muted)">Up to 3. Radius = sheet field <code>AURAn_RADIUS</code>, grid squares from the token's edge.</span>
+        </div>
       </div>
     </div>
     <div class="actions">
@@ -396,6 +444,41 @@
     </div>
   </div>
 
+  <dialog id="crop-dialog">
+    <h3 id="crop-title">Crop token image</h3>
+    <canvas id="crop-canvas" width="420" height="420"></canvas>
+    <div class="crop-tools">
+      <div class="grp"><span>Snap</span>
+        <button type="button" data-snap="center">Center</button>
+        <button type="button" data-snap="left">Left</button>
+        <button type="button" data-snap="right">Right</button>
+        <button type="button" data-snap="top">Top</button>
+        <button type="button" data-snap="bottom">Bottom</button>
+      </div>
+      <div class="grp"><span>Zoom</span>
+        <button type="button" id="crop-zoom-out" title="Zoom out">−</button>
+        <button type="button" id="crop-zoom-in" title="Zoom in">+</button>
+        <button type="button" id="crop-fit" title="Cover the frame, centered">Fit</button>
+      </div>
+      <div class="grp" title="Same Scale / Flip / Rotate as map layers"><span>Scale</span>
+        <label style="font-size:0.72rem;color:var(--muted)">H <input type="number" id="crop-scale-w" min="0.05" step="0.05" /></label>
+        <label style="font-size:0.72rem;color:var(--muted)">V <input type="number" id="crop-scale-h" min="0.05" step="0.05" /></label>
+        <span style="min-width:0">tiles</span>
+        <button type="button" id="crop-scale-apply">Apply</button>
+        <button type="button" id="crop-flip-h" title="Mirror horizontally">Flip H</button>
+        <button type="button" id="crop-flip-v" title="Mirror vertically">Flip V</button>
+        <button type="button" id="crop-rotate" title="Rotate 90° clockwise">Rotate</button>
+      </div>
+    </div>
+    <div class="crop-actions">
+      <span id="crop-status" style="flex:1;font-size:0.75rem;color:var(--muted)">Drag to pan · wheel to zoom</span>
+      <button type="button" id="crop-cancel">Cancel</button>
+      <button type="button" class="primary" id="crop-save">Save</button>
+    </div>
+  </dialog>
+
+  <script src="/image-xform.js"></script>
+  <script src="/token-auras.js"></script>
   <script src="/sheet-runtime.js"></script>
   <script src="/sheet.js"></script>
 </body>

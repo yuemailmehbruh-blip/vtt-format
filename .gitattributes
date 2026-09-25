@@ -1,0 +1,2 @@
+# Bundled sheet template snapshots must stay byte-identical (CRLF from Windows)
+apps/gm-session/defaults/* -text

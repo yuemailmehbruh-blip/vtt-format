@@ -330,8 +330,13 @@
     }
     const data = await res.json();
     doc = normalizeDoc(data);
-    // Seed sample automation if graph empty but STR/STR_mod exist or sheet is player
-    if ((!doc.graph.nodes || !doc.graph.nodes.length) && (doc.sheet_id === "player" || doc.fields.STR)) {
+    // New sheets start from the bundled default template (_source "template");
+    // the legacy STR→STR_mod sample is only a fallback when no template is bundled.
+    if (
+      data._source !== "template" &&
+      (!doc.graph.nodes || !doc.graph.nodes.length) &&
+      (doc.sheet_id === "player" || doc.fields.STR)
+    ) {
       seedStrModGraph();
     }
     selectedWidgetId = null;

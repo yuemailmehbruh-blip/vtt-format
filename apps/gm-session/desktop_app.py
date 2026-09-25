@@ -99,7 +99,7 @@ def _actor_title(campaign_root: Path, actor_id: str) -> str:
 
 
 class DesktopApi:
-    """JS bridge: open_sheet, open_rolls, open_sheet_builder, appearance_saved, session_roll, check_update."""
+    """JS bridge: open_sheet, open_rolls, open_sheet_builder, appearance_saved, aura_fields_changed, session_roll, check_update."""
 
     def __init__(self, base_url: str, campaign_root: Path) -> None:
         self.base_url = base_url.rstrip("/")
@@ -255,6 +255,29 @@ class DesktopApi:
             f"window.__gmSessionApplyAppearance({payload_actor}, {payload_app})"
         )
         # Prefer the main window (first); also try all in case ordering differs.
+        notified = 0
+        for win in list(webview.windows):
+            try:
+                win.evaluate_js(js)
+                notified += 1
+            except Exception:  # noqa: BLE001
+                pass
+        return f"notified:{notified}"
+
+    def aura_fields_changed(self, actor_id: str, fields=None) -> str:
+        """Sheet → map: AURA1..3_RADIUS changed (field edit, automation, formula)."""
+        actor_id = (actor_id or "").strip()
+        if not actor_id:
+            return "error: missing actor_id"
+        if not isinstance(fields, dict):
+            try:
+                fields = dict(fields or {})
+            except Exception:  # noqa: BLE001
+                fields = {}
+        js = (
+            "window.__gmSessionApplyAuraFields && "
+            f"window.__gmSessionApplyAuraFields({json.dumps(actor_id)}, {json.dumps(fields)})"
+        )
         notified = 0
         for win in list(webview.windows):
             try:

@@ -66,6 +66,11 @@
   let lastY = 0;
   let saveTimer = null;
 
+  const IX = window.ImageXform;
+  const TA = window.TokenAuras;
+  /** Live AURA*_RADIUS values per actor (from library, then sheet broadcasts). */
+  const actorAuraFields = new Map();
+
   const HANDLE_HALF = 5;
   const HANDLE_NAMES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 
@@ -329,18 +334,8 @@
       ctx.save();
       ctx.globalAlpha = 1;
       ctx.imageSmoothingEnabled = false;
-      if (rot || fx || fy) {
-        // AABB is layer.w×h; after 90/270 the content box is the swapped size.
-        const odd = rot === 90 || rot === 270;
-        const cw = (odd ? sh : sw);
-        const ch = (odd ? sw : sh);
-        ctx.translate(sx + sw / 2, sy + sh / 2);
-        if (rot) ctx.rotate((rot * Math.PI) / 180);
-        ctx.scale(fx ? -1 : 1, fy ? -1 : 1);
-        ctx.drawImage(img, -cw / 2, -ch / 2, cw, ch);
-      } else {
-        ctx.drawImage(img, sx, sy, sw, sh);
-      }
+      // Shared with token image crops (image-xform.js)
+      IX.drawTransformed(ctx, img, sx, sy, sw, sh, rot, fx, fy);
       ctx.restore();
     }
   }
@@ -424,6 +419,59 @@
     return tokenRadiusWorld(t) * scale;
   }
 
+  function actorById(actorId) {
+    if (!library || !Array.isArray(library.actors)) return null;
+    return library.actors.find((a) => a.id === actorId) || null;
+  }
+
+  function actorAppearance(actorId) {
+    const a = actorById(actorId);
+    return (a && a.appearance) || {};
+  }
+
+  /** Cached image for an asset hash; kicks off a load + redraw when missing. */
+  function tokenImage(hash) {
+    if (!hash) return null;
+    const img = imageCache.get(hash);
+    if (img) return img;
+    if (!tokenImage.pending.has(hash)) {
+      tokenImage.pending.add(hash);
+      loadImageByHash(hash).then(() => {
+        tokenImage.pending.delete(hash);
+        draw();
+      });
+    }
+    return null;
+  }
+  tokenImage.pending = new Set();
+
+  /** Rings (world units) the renderer draws for a token — test hook reads this. */
+  function tokenAuraRings(t) {
+    const app = actorAppearance(t.actor_id);
+    return TA.auraRings(app.auras, actorAuraFields.get(t.actor_id) || {}, tokenSizeTiles(t), gridSize);
+  }
+
+  // --- Layer 2.5: auras beneath tokens ---
+  function drawAuras() {
+    ctx.save();
+    for (const t of tokens) {
+      const rings = tokenAuraRings(t);
+      if (!rings.length) continue;
+      const [cx, cy] = worldToScreen(t.x, t.y);
+      for (const ring of rings) {
+        const r = ring.radiusWorld * scale;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = TA.rgba(ring.color, ring.opacity);
+        ctx.fill();
+        ctx.strokeStyle = TA.rgba(ring.color, Math.min(1, ring.opacity * 1.8 + 0.15));
+        ctx.lineWidth = Math.max(1.5, 2 * Math.min(scale, 1.5));
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   function drawTokens() {
     ctx.save();
     for (const t of tokens) {
@@ -439,20 +487,39 @@
         ctx.stroke();
       }
 
+      const imgDef = actorAppearance(t.actor_id).image;
+      const crop = imgDef && IX.normalizeCrop(imgDef.crop);
+      const img = crop ? tokenImage(imgDef.asset) : null;
+
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.fillStyle = "#ffffff";
       ctx.fill();
+      if (img) {
+        // Cropped image clipped to the token frame (crop in frame units)
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.clip();
+        const rect = IX.cropScreenRect(crop, cx - r, cy - r, r * 2);
+        ctx.imageSmoothingEnabled = true;
+        IX.drawTransformed(ctx, img, rect.x, rect.y, rect.w, rect.h, crop.rotation, crop.flipX, crop.flipY);
+        ctx.restore();
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      }
       ctx.strokeStyle = selected ? "#6ea8fe" : "rgba(20, 24, 36, 0.85)";
       ctx.lineWidth = Math.max(1.5, 2 * Math.min(scale, 1.5));
       ctx.stroke();
 
-      const label = t.label || initials(t.name);
-      ctx.fillStyle = "#1a1f2c";
-      ctx.font = `bold ${Math.max(10, r * 0.7)}px system-ui, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(label, cx, cy);
+      if (!img) {
+        const label = t.label || initials(t.name);
+        ctx.fillStyle = "#1a1f2c";
+        ctx.font = `bold ${Math.max(10, r * 0.7)}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, cx, cy);
+      }
 
       if (showNametags) {
         ctx.font = `${Math.max(10, 11 * Math.min(scale, 1.3))}px system-ui, sans-serif`;
@@ -474,7 +541,7 @@
 
   /**
    * Fixed draw order (YAML layer types do not control z-order):
-   * 1 map images → 2 grid (if on) → 3 tokens → 4 overlay additions stub →
+   * 1 map images → 2 grid (if on) → 2.5 auras → 3 tokens → 4 overlay additions stub →
    * 5 layer edit chrome (selection/handles; edit UI only)
    */
   function draw() {
@@ -484,6 +551,7 @@
 
     drawMapImages();
     drawGrid();
+    drawAuras();
     drawTokens();
     drawOverlayAdditions();
     drawLayerEditChrome();
@@ -983,7 +1051,11 @@
       return;
     }
     library = await res.json();
+    for (const a of library.actors || []) {
+      if (a && a.aura_fields) actorAuraFields.set(a.id, TA.pickAuraFields(a.aura_fields));
+    }
     renderLibrary();
+    draw();
   }
 
 
@@ -2025,10 +2097,12 @@
   function applyScaleDialog() {
     const layer = requireEditingLayer();
     if (!layer) return;
-    const tw = Math.max(0.5, Number(scaleTilesW && scaleTilesW.value) || 0);
-    const th = Math.max(0.5, Number(scaleTilesH && scaleTilesH.value) || 0);
-    layer.w = tw * gridSize;
-    layer.h = th * gridSize;
+    const { tw, th } = IX.scaleToTiles(
+      layer,
+      scaleTilesW && scaleTilesW.value,
+      scaleTilesH && scaleTilesH.value,
+      gridSize
+    );
     if (snapLayers) snapLayerOnRelease(layer);
     draw();
     renderMapLayersList();
@@ -2043,8 +2117,7 @@
   function toggleLayerFlip(axis) {
     const layer = requireEditingLayer();
     if (!layer) return;
-    if (axis === "h") layer.flipX = !layer.flipX;
-    else layer.flipY = !layer.flipY;
+    IX.toggleFlip(layer, axis);
     draw();
     persistSceneLayers();
     setStatus(
@@ -2055,16 +2128,9 @@
   function rotateLayerCw() {
     const layer = requireEditingLayer();
     if (!layer) return;
-    const prev = layerRotation(layer);
-    const next = (prev + 90) % 360;
-    // Keep axis-aligned bounds: swap w/h on odd 90° steps.
-    const w = Number(layer.w) || 0;
-    const h = Number(layer.h) || 0;
-    if (w > 0 && h > 0) {
-      layer.w = h;
-      layer.h = w;
-    }
-    layer.rotation = next;
+    // Keep axis-aligned bounds: swap w/h on odd 90° steps (top-left kept).
+    IX.rotateCw(layer);
+    const next = layer.rotation;
     if (snapLayers) snapLayerOnRelease(layer);
     draw();
     renderMapLayersList();
@@ -2179,8 +2245,26 @@
     }
   }
 
+  /** Sheet broadcast of AURA*_RADIUS (field edit, automation, formula) → live map. */
+  function applyAuraFields(actorId, fields) {
+    if (!actorId || !fields) return;
+    actorAuraFields.set(actorId, { ...(actorAuraFields.get(actorId) || {}), ...TA.pickAuraFields(fields) });
+    draw();
+  }
+
   function applyAppearanceToTokens(actorId, appearance) {
     if (!actorId) return;
+    // Image + auras are per actor: update the library cache the renderer reads.
+    const cached = actorById(actorId);
+    if (cached && appearance) {
+      const next = { ...(cached.appearance || {}) };
+      if ("image" in appearance) {
+        if (appearance.image) next.image = appearance.image;
+        else delete next.image;
+      }
+      if ("auras" in appearance) next.auras = TA.normalizeAuras(appearance.auras);
+      cached.appearance = next;
+    }
     let size = Number(appearance && appearance.size_tiles);
     if (!(size > 0)) size = 1;
     let changed = 0;
@@ -2213,6 +2297,20 @@
   window.__gmSessionApplyAppearance = function (actorId, appearance) {
     applyAppearanceToTokens(actorId, appearance || {});
   };
+  window.__gmSessionApplyAuraFields = function (actorId, fields) {
+    applyAuraFields(actorId, fields || {});
+  };
+  /** Test/debug hook: what the renderer will draw for each token. */
+  window.__gmSessionDebug = {
+    tokens: () => tokens,
+    auraRings: (tokenId) => {
+      const t = tokens.find((x) => x.id === tokenId);
+      return t ? tokenAuraRings(t) : [];
+    },
+    gridSize: () => gridSize,
+    scale: () => scale,
+    worldToScreen: (x, y) => worldToScreen(x, y),
+  };
 
   try {
     if (typeof BroadcastChannel !== "undefined") {
@@ -2220,6 +2318,10 @@
       appearanceCh.onmessage = (ev) => {
         const data = ev && ev.data;
         if (!data || !data.actor_id) return;
+        if (data.aura_fields) {
+          applyAuraFields(data.actor_id, data.aura_fields);
+          return;
+        }
         applyAppearanceToTokens(data.actor_id, data.appearance || {});
       };
     }

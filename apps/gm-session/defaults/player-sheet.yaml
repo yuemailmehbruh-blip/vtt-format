@@ -1,0 +1,831 @@
+# Player Character sheet — declarative fields + closed formulas.
+# Compiled from editor-scratch/sheets/player.builder.json (sheet builder).
+id: player
+name: Player Character
+permissions:
+  notes: player_visible / player_editable / gm_only; formula fields are read-only
+    except recomputation
+fields:
+  name:
+    type: string
+    visibility: player_visible
+    editable: player_editable
+    default: ''
+  hp_current:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+  hp_max:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+  STR:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+  DEX:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+  CON:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+  INT:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+  WIS:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+  CHA:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+  STR_mod:
+    type: integer
+    visibility: player_visible
+    editable: false
+    formula: floor((STR - 10) / 2)
+    notes: Closed formula over STR; recomputed when STR changes.
+  AC:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 10
+  notes:
+    type: text
+    visibility: player_visible
+    editable: player_editable
+    default: ''
+  STAT_PHYS_STR_base:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 0
+  STAT_PHYS_STR_final:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: round((STAT_PHYS_STR_base * (if(Enh_Toggle, (CastingGrade * 0.2), 0)
+      + 1)))
+  STAT_PHYS_CON_final:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: round((STAT_PHYS_CON_base * (if(Enh_Toggle, (CastingGrade * 0.2), 0)
+      + 1)))
+  STAT_PHYS_DEX_final:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: round((STAT_PHYS_DEX_base * (if(Enh_Toggle, (CastingGrade * 0.2), 0)
+      + 1)))
+  STAT_PHYS_DEX_base:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 0
+  STAT_PHYS_CON_base:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 0
+  STAT_PHYS_STR_mod:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: floor((STAT_PHYS_STR_final / 2))
+  STAT_PHYS_DEX_mod:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: floor((STAT_PHYS_DEX_final / 2))
+  blah:
+    type: integer
+    visibility: player_visible
+    editable: true
+    default: 0
+  STAT_PHYS_CON_mod:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: floor((STAT_PHYS_CON_final / 2))
+  STAT_MENT_INT_base:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 0
+  STAT_MENT_INT_final:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: STAT_MENT_INT_base
+  STAT_MENT_WIS_base:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 0
+  STAT_MENT_WIS_final:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: STAT_MENT_WIS_base
+  STAT_MENT_CHA_base:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 0
+  STAT_MENT_CHA_final:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: STAT_MENT_CHA_base
+  STAT_MENT_INT_mod:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: floor((STAT_MENT_INT_final / 2))
+  STAT_MENT_WIS_mod:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: floor((STAT_MENT_WIS_final / 2))
+  STAT_MENT_CHA_mod:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: floor((STAT_MENT_CHA_final / 2))
+  ENH_Toggle:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 0
+  Enh_Toggle:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 0
+  Level:
+    type: integer
+    visibility: player_visible
+    editable: player_editable
+    default: 0
+  CastingGrade:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: ceil((Level / 2))
+  Proficiency:
+    type: integer
+    visibility: player_visible
+    editable: false
+    default: 0
+    formula: floor(((Level / 2) + 4))
+layout:
+  widgets:
+  - id: w_str
+    shape: box
+    field: STAT_PHYS_STR_base
+    x: 42.239999999999995
+    y: 52.440000000000005
+    w: 72
+    h: 56
+    uid: w_muh1xh5b_1
+    input_id: STAT_PHYS_STR_base
+    output_id: STAT_PHYS_STR_final
+    label: Strength
+  - id: ''
+    shape: circle
+    field: ''
+    x: 156.64000000000001
+    y: 42.72000000000001
+    w: 64
+    h: 64
+    uid: w_str_mod
+    input_id: ''
+    output_id: STAT_PHYS_STR_mod
+    label: Strength Mod
+  - id: w_hp
+    shape: box
+    field: hp_current
+    x: 153.27999999999997
+    y: -101.56
+    w: 72
+    h: 56
+    uid: w_muh1xh5b_2
+    input_id: hp_current
+    output_id: hp_current
+    label: w_hp
+  - id: w_attack
+    shape: button
+    label: Unarmed
+    mode: trigger
+    function_id: attack_unarmed
+    x: 260
+    y: 40
+    w: 88
+    h: 44
+  - uid: w_muh1xnpl_3
+    label: Level
+    input_id: Level
+    output_id: Level
+    field: Level
+    shape: box
+    x: 42
+    y: -108.44312500000001
+    w: 72
+    h: 56
+  - uid: w_muh1yuzk_4
+    label: Dexterity
+    input_id: STAT_PHYS_DEX_base
+    output_id: STAT_PHYS_DEX_final
+    field: STAT_PHYS_DEX_base
+    shape: box
+    x: 41.44000000000001
+    y: 131.51687499999997
+    w: 72
+    h: 56
+  - uid: w_muh1ywd8_5
+    label: Constitution
+    input_id: STAT_PHYS_CON_base
+    output_id: STAT_PHYS_CON_final
+    field: STAT_PHYS_CON_base
+    shape: box
+    x: 41.800000000000004
+    y: 209.75687499999998
+    w: 72
+    h: 56
+  - uid: w_muh22xg5_8
+    label: Dexterity Mod
+    input_id: ''
+    output_id: STAT_PHYS_DEX_mod
+    field: ''
+    shape: circle
+    x: 156.60000000000002
+    y: 124.83687499999999
+    w: 64
+    h: 64
+  - uid: w_muh22z3v_9
+    label: Constitution Mod
+    input_id: ''
+    output_id: STAT_PHYS_CON_mod
+    field: ''
+    shape: circle
+    x: 154.35999999999999
+    y: 209.956875
+    w: 64
+    h: 64
+  - uid: w_muh24j0z_a
+    label: Intelligence
+    input_id: STAT_MENT_INT_base
+    output_id: STAT_MENT_INT_final
+    field: STAT_MENT_INT_base
+    shape: box
+    x: 41.24000000000001
+    y: 289.476875
+    w: 72
+    h: 56
+  - uid: w_muh258f4_b
+    label: Wisdom
+    input_id: STAT_MENT_WIS_base
+    output_id: STAT_MENT_WIS_final
+    field: STAT_MENT_WIS_base
+    shape: box
+    x: 42.360000000000014
+    y: 380.19687500000003
+    w: 72
+    h: 56
+  - uid: w_muh25qlp_c
+    label: Charisma
+    input_id: STAT_MENT_CHA_base
+    output_id: STAT_MENT_CHA_final
+    field: STAT_MENT_CHA_base
+    shape: box
+    x: 43.48000000000002
+    y: 459.716875
+    w: 72
+    h: 56
+  - uid: w_muh26gbb_d
+    label: Intelligence Mod
+    input_id: ''
+    output_id: STAT_MENT_INT_mod
+    field: ''
+    shape: circle
+    x: 154.36
+    y: 290.596875
+    w: 64
+    h: 64
+  - uid: w_muh26hla_e
+    label: Wisdom Mod
+    input_id: ''
+    output_id: STAT_MENT_WIS_mod
+    field: ''
+    shape: circle
+    x: 152.12000000000003
+    y: 373.47687500000006
+    w: 64
+    h: 64
+  - uid: w_muh26ioq_f
+    label: Charisma Mod
+    input_id: ''
+    output_id: STAT_MENT_CHA_mod
+    field: ''
+    shape: circle
+    x: 153.24
+    y: 456.356875
+    w: 64
+    h: 64
+  - id: w_muh2d35w_11
+    shape: button
+    label: Enhancement
+    mode: toggle
+    function_id: Enh_Toggle
+    x: 263.96000000000004
+    y: 131.956875
+    w: 88
+    h: 44
+  - id: w_muh33wo2_2
+    shape: button
+    label: Unarmed Proficiency
+    mode: toggle
+    function_id: unarmed_Prof
+    x: 388.5654649896516
+    y: 38.468904424333736
+    w: 88
+    h: 44
+graph:
+  nodes:
+  - id: n_attack_entry
+    kind: entry
+    name: attack_[x]
+    x: 152.36569723552685
+    y: 233.49632965431078
+  - id: n_attack_roll
+    kind: roll
+    sides: 20
+    x: 315.9184893664098
+    y: 264.2554046491046
+  - id: n_attack_chat
+    kind: send_to_chat
+    label: ''
+    x: 615.7517782304249
+    y: 298.9801124531445
+    include_arithmetic: true
+  - id: n_muh28g0i_g
+    kind: field
+    x: 3.8908436708570946
+    y: -205.8497708883919
+    field: STAT_[x]_final
+    role: source
+  - id: n_muh28phh_i
+    kind: op
+    x: 152.72795984300404
+    y: -173.51666556254702
+    op: /
+  - id: n_muh28uec_j
+    kind: op
+    x: 299.3382274048
+    y: -174.14590551200007
+    op: round
+    mode: down
+  - id: n_muh293an_k
+    kind: field
+    x: 450.8996121600002
+    y: -173.23719808160007
+    field: STAT_[x]_mod
+    role: output
+  - id: n_muh2a3t6_p
+    kind: const
+    x: 6.1507257809633415
+    y: -141.45703592419494
+    value: 2
+  - id: n_muh2b25i_s
+    kind: field
+    x: 482.6236092605583
+    y: -32.52384905967561
+    field: STAT_PHYS_[x]_base
+    role: source
+  - id: n_muh2bdi3_t
+    kind: op
+    x: 638.0614836658062
+    y: -1.9573380509292875
+    op: '*'
+  - id: n_muh2bgh0_u
+    kind: op
+    x: 312.6398726220743
+    y: -7.899918158800972
+    op: if
+  - id: n_muh2bvp1_v
+    kind: op
+    x: 482.85094462207434
+    y: 23.73291384119902
+    op: +
+  - id: n_muh2bzq3_w
+    kind: const
+    x: 312.85465662207434
+    y: 60.941553841199024
+    value: 1
+  - id: n_muh2cg0l_z
+    kind: field
+    x: 145.084171056685
+    y: -52.518150850075344
+    field: Enh_Toggle
+    role: source
+  - id: n_muh2efzz_12
+    kind: field
+    x: 5.138314155089375
+    y: -347.8146970826034
+    field: Level
+    role: source
+  - id: n_muh2eo4n_13
+    kind: const
+    x: 3.4999244244983743
+    y: 32.75986731021615
+    value: 0.2
+  - id: n_muh2etpw_14
+    kind: op
+    x: 145.97840593668502
+    y: 3.9535970099245645
+    op: '*'
+  - id: n_muh2fnwp_18
+    kind: const
+    x: 143.78814151400283
+    y: 59.74877315026626
+    value: 0
+  - id: n_muh2h2p3_1a
+    kind: op
+    x: 282.18886855135736
+    y: -321.61260173793875
+    op: round
+    mode: up
+  - id: n_muh2hc48_1d
+    kind: op
+    x: 139.9040685513576
+    y: -320.3582017379387
+    op: /
+  - id: n_muh2hjcl_1g
+    kind: const
+    x: 6.982468551357471
+    y: -295.5285017379387
+    value: 2
+  - id: n_muh2hxve_1k
+    kind: op
+    x: 803.9872213427172
+    y: -3.24655973319355
+    op: round
+    mode: nearest
+  - id: n_muh2i41f_1m
+    kind: field
+    x: 957.2673735449915
+    y: -4.872976504672295
+    field: STAT_PHYS_[x]_final
+    role: output
+  - id: n_muh2jg41_1p
+    kind: field
+    x: 421.3570597176995
+    y: -320.9800601796141
+    field: CastingGrade
+    role: output
+  - id: n_muh2p9in_1s
+    kind: field
+    x: 5.348746147108841
+    y: -22.14984161367491
+    field: CastingGrade
+    role: source
+  - id: n_muh2rvrr_1
+    kind: field
+    x: 3.4861545041101607
+    y: 148.6225217407155
+    field: STAT_MENT_[x]_base
+    role: source
+  - id: n_muh2s9od_2
+    kind: field
+    x: 159.03175450411015
+    y: 149.8769217407155
+    field: STAT_MENT_[x]_final
+    role: output
+  - id: n_muh32pim_1
+    kind: field
+    x: 153.57877529041298
+    y: 290.74840785288194
+    field: '[x]_Prof'
+    role: source
+  - id: n_muh35zyz_3
+    kind: op
+    x: 318.8134756756691
+    y: 336.98890183701684
+    op: if
+  - id: n_muh36u7r_5
+    kind: field
+    x: 649.9859684183824
+    y: 540.003586614009
+    field: Proficiency
+    role: output
+  - id: n_muh36wb2_6
+    kind: field
+    x: 1.0970282989250393
+    y: 482.91525996131736
+    field: Level
+    role: source
+  - id: n_muh37b77_7
+    kind: const
+    x: 0.43272848791146146
+    y: 535.3773386561681
+    value: 2
+  - id: n_muh37jz2_9
+    kind: const
+    x: 177.7536208999737
+    y: 567.8017304115166
+    value: 4
+  - id: n_muh37pw9_a
+    kind: op
+    x: 178.7668831423283
+    y: 511.9100268010093
+    op: /
+  - id: n_muh37t6g_b
+    kind: op
+    x: 342.40873528260283
+    y: 539.9370187467641
+    op: +
+  - id: n_muh37uqc_c
+    kind: op
+    x: 497.4378583628629
+    y: 540.8869520989715
+    op: round
+    mode: down
+  - id: n_muh39352_k
+    kind: field
+    x: 2.9895016965086825
+    y: 320.7800432559921
+    field: STAT_PHYS_STR_mod
+    role: source
+  - id: n_muh3963c_l
+    kind: field
+    x: 3.701281944322119
+    y: 374.78636955883456
+    field: Proficiency
+    role: source
+  - id: n_muh39kvd_m
+    kind: op
+    x: 153.17513398513836
+    y: 344.89515805191036
+    op: +
+  - id: n_muh39s0e_q
+    kind: field
+    x: 151.7515734895115
+    y: 399.702237133543
+    field: STAT_PHYS_STR_mod
+    role: source
+  - id: n_muh3a1ui_s
+    kind: op
+    x: 463.51132203178526
+    y: 299.3412221918521
+    op: +
+  edges:
+  - id: e_attack
+    from: n_attack_entry
+    to: n_attack_roll
+    toPort: 0
+  - id: e_muh29hy3_l
+    from: n_muh28g0i_g
+    to: n_muh28phh_i
+    toPort: 0
+  - id: e_muh29kz9_n
+    from: n_muh28phh_i
+    to: n_muh28uec_j
+    toPort: 0
+  - id: e_muh29mgf_o
+    from: n_muh28uec_j
+    to: n_muh293an_k
+    toPort: 0
+  - id: e_muh2a7ye_q
+    from: n_muh2a3t6_p
+    to: n_muh28phh_i
+    toPort: 1
+  - id: e_muh2c1rn_x
+    from: n_muh2bzq3_w
+    to: n_muh2bvp1_v
+    toPort: 1
+  - id: e_muh2ccca_y
+    from: n_muh2bgh0_u
+    to: n_muh2bvp1_v
+    toPort: 0
+  - id: e_muh2ci0p_10
+    from: n_muh2cg0l_z
+    to: n_muh2bgh0_u
+    toPort: 0
+  - id: e_muh2exor_16
+    from: n_muh2eo4n_13
+    to: n_muh2etpw_14
+    toPort: 1
+  - id: e_muh2fm28_17
+    from: n_muh2etpw_14
+    to: n_muh2bgh0_u
+    toPort: 1
+  - id: e_muh2fqhr_19
+    from: n_muh2fnwp_18
+    to: n_muh2bgh0_u
+    toPort: 2
+  - id: e_muh2hdyc_1e
+    from: n_muh2hc48_1d
+    to: n_muh2h2p3_1a
+    toPort: 0
+  - id: e_muh2hfo2_1f
+    from: n_muh2efzz_12
+    to: n_muh2hc48_1d
+    toPort: 0
+  - id: e_muh2hlwq_1h
+    from: n_muh2hjcl_1g
+    to: n_muh2hc48_1d
+    toPort: 1
+  - id: e_muh2hu6i_1i
+    from: n_muh2b25i_s
+    to: n_muh2bdi3_t
+    toPort: 0
+  - id: e_muh2hv1k_1j
+    from: n_muh2bvp1_v
+    to: n_muh2bdi3_t
+    toPort: 1
+  - id: e_muh2hzrx_1l
+    from: n_muh2bdi3_t
+    to: n_muh2hxve_1k
+    toPort: 0
+  - id: e_muh2i79s_1n
+    from: n_muh2hxve_1k
+    to: n_muh2i41f_1m
+    toPort: 0
+  - id: e_muh2jkio_1q
+    from: n_muh2h2p3_1a
+    to: n_muh2jg41_1p
+    toPort: 0
+  - id: e_muh2pcfh_1t
+    from: n_muh2p9in_1s
+    to: n_muh2etpw_14
+    toPort: 0
+  - id: e_muh2scls_3
+    from: n_muh2rvrr_1
+    to: n_muh2s9od_2
+    toPort: 0
+  - id: e_muh3627x_4
+    from: n_muh32pim_1
+    to: n_muh35zyz_3
+    toPort: 0
+  - id: e_muh380gs_d
+    from: n_muh36wb2_6
+    to: n_muh37pw9_a
+    toPort: 0
+  - id: e_muh3817u_e
+    from: n_muh37b77_7
+    to: n_muh37pw9_a
+    toPort: 1
+  - id: e_muh388fo_f
+    from: n_muh37pw9_a
+    to: n_muh37t6g_b
+    toPort: 0
+  - id: e_muh389db_g
+    from: n_muh37jz2_9
+    to: n_muh37t6g_b
+    toPort: 1
+  - id: e_muh38bgi_h
+    from: n_muh37t6g_b
+    to: n_muh37uqc_c
+    toPort: 0
+  - id: e_muh38fj1_i
+    from: n_muh37uqc_c
+    to: n_muh36u7r_5
+    toPort: 0
+  - id: e_muh39ncm_n
+    from: n_muh39352_k
+    to: n_muh39kvd_m
+    toPort: 0
+  - id: e_muh39o0t_o
+    from: n_muh3963c_l
+    to: n_muh39kvd_m
+    toPort: 1
+  - id: e_muh39p0u_p
+    from: n_muh39kvd_m
+    to: n_muh35zyz_3
+    toPort: 1
+  - id: e_muh39w64_r
+    from: n_muh39s0e_q
+    to: n_muh35zyz_3
+    toPort: 2
+  - id: e_muh3a4a8_t
+    from: n_attack_roll
+    to: n_muh3a1ui_s
+    toPort: 0
+  - id: e_muh3a56j_u
+    from: n_muh35zyz_3
+    to: n_muh3a1ui_s
+    toPort: 1
+  - id: e_muh3a8rk_v
+    from: n_muh3a1ui_s
+    to: n_attack_chat
+    toPort: 0
+  collapsed:
+  - id: c_muh2aohw_r
+    name: StatMod
+    nodeIds:
+    - n_muh28g0i_g
+    - n_muh2a3t6_p
+    - n_muh28phh_i
+    - n_muh28uec_j
+    - n_muh293an_k
+    x: -12.109156329142877
+    y: -221.8497708883919
+    w: 599.0087684891431
+    h: 148.39273496419696
+  - id: c_muh2p4qu_1r
+    name: Casting Grade
+    nodeIds:
+    - n_muh2efzz_12
+    - n_muh2hjcl_1g
+    - n_muh2hc48_1d
+    - n_muh2h2p3_1a
+    - n_muh2jg41_1p
+    x: -10.861685844910653
+    y: -363.8146970826034
+    w: 568.2187455626101
+    h: 136.2861953446647
+  - id: c_muh2pov4_1u
+    name: Enhancement
+    nodeIds:
+    - n_muh2p9in_1s
+    - n_muh2eo4n_13
+    - n_muh2cg0l_z
+    - n_muh2etpw_14
+    - n_muh2fnwp_18
+    - n_muh2bgh0_u
+    - n_muh2bzq3_w
+    - n_muh2b25i_s
+    - n_muh2bvp1_v
+    - n_muh2bdi3_t
+    - n_muh2hxve_1k
+    - n_muh2i41f_1m
+    x: -12.500075575501626
+    y: -68.51815085007534
+    w: 1105.7674491204932
+    h: 197.4597046912744
+  - id: c_muh2sr94_4
+    name: Mentals
+    nodeIds:
+    - n_muh2rvrr_1
+    - n_muh2s9od_2
+    x: -12.51384549588984
+    y: 132.6225217407155
+    w: 307.5455999999999
+    h: 85.25439999999998
+  - id: c_muh38xn6_j
+    name: ProfMod
+    nodeIds:
+    - n_muh36wb2_6
+    - n_muh37b77_7
+    - n_muh37pw9_a
+    - n_muh37jz2_9
+    - n_muh37t6g_b
+    - n_muh37uqc_c
+    - n_muh36u7r_5
+    x: -15.567271512088553
+    y: 466.91525996131725
+    w: 801.5532399304709
+    h: 168.88647045019923
+  - id: c_muh3ebf6_1
+    name: STR_Attack
+    nodeIds:
+    - n_attack_chat
+    - n_muh3a1ui_s
+    - n_attack_roll
+    - n_muh35zyz_3
+    - n_attack_entry
+    - n_muh32pim_1
+    - n_muh39kvd_m
+    - n_muh39s0e_q
+    - n_muh39352_k
+    - n_muh3963c_l
+    x: -13.010498303491318
+    y: 217.49632965431078
+    w: 764.7622765339162
+    h: 250.20590747923222

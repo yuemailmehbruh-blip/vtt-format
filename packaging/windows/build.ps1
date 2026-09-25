@@ -10,6 +10,13 @@ Set-Location $ScriptDir
 Write-Host "==> Repo: $RepoRoot"
 Write-Host "==> Working dir: $ScriptDir"
 
+# App version from apps/gm-session/VERSION (passed to Inno Setup -> installed-apps list)
+$VersionFile = Join-Path $RepoRoot "apps\gm-session\VERSION"
+if (-not (Test-Path $VersionFile)) { throw "Missing $VersionFile" }
+$AppVersion = (Get-Content -Raw $VersionFile).Trim()
+if (-not $AppVersion) { throw "Empty VERSION file" }
+Write-Host "==> Version: $AppVersion"
+
 $Venv = Join-Path $ScriptDir ".venv"
 $Python = Join-Path $Venv "Scripts\python.exe"
 $Pip = Join-Path $Venv "Scripts\pip.exe"
@@ -20,8 +27,16 @@ if (-not (Test-Path $Python)) {
 }
 
 Write-Host "==> Installing PyInstaller + PyYAML + pywebview"
-& $Pip install --upgrade pip 2>$null | Out-Null
-& $Pip install "pyinstaller>=6.0" "pyyaml>=6.0" "pywebview>=5.0"
+# pip writes warnings/notices to stderr; with ErrorActionPreference=Stop that aborts the
+# build in Windows PowerShell. Relax it around pip and check exit codes explicitly.
+$PrevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $Python -m pip install --upgrade pip 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Warning "pip self-upgrade failed (exit $LASTEXITCODE); continuing" }
+& $Python -m pip install "pyinstaller>=6.0" "pyyaml>=6.0" "pywebview>=5.0" 2>&1 | ForEach-Object { "$_" }
+$PipExit = $LASTEXITCODE
+$ErrorActionPreference = $PrevEAP
+if ($PipExit -ne 0) { throw "pip install failed (exit $PipExit)" }
 
 $Dist = Join-Path $ScriptDir "dist"
 $Build = Join-Path $ScriptDir "build"
@@ -29,7 +44,12 @@ if (Test-Path $Dist) { Remove-Item -Recurse -Force $Dist }
 if (Test-Path $Build) { Remove-Item -Recurse -Force $Build }
 
 Write-Host "==> Running PyInstaller (gm-session.spec)"
-& $Python -m PyInstaller --noconfirm --clean "gm-session.spec"
+$PrevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $Python -m PyInstaller --noconfirm --clean "gm-session.spec" 2>&1 | ForEach-Object { "$_" }
+$PyiExit = $LASTEXITCODE
+$ErrorActionPreference = $PrevEAP
+if ($PyiExit -ne 0) { throw "PyInstaller failed (exit $PyiExit)" }
 
 $AppDist = Join-Path $Dist "GM Session"
 if (-not (Test-Path (Join-Path $AppDist "GM Session.exe"))) {
@@ -84,7 +104,8 @@ if ($Iscc) {
     Write-Host "==> Running Inno Setup: $Iscc"
     $OutputDir = Join-Path $ScriptDir "output"
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
-    & $Iscc "gm-session.iss"
+    & $Iscc "/DMyAppVersion=$AppVersion" "gm-session.iss"
+    if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit $LASTEXITCODE)" }
     $SetupPath = Join-Path $OutputDir "GM-Session-Setup.exe"
     if (Test-Path $SetupPath) {
         Write-Host ""
@@ -100,12 +121,8 @@ if ($Iscc) {
     Write-Host "You can still run the onedir build under dist\GM Session\"
 }
 
-# Read VERSION for release hint
-$VersionFile = Join-Path $RepoRoot "apps\gm-session\VERSION"
-$VersionTag = "0.2.0"
-if (Test-Path $VersionFile) {
-    $VersionTag = (Get-Content -Raw $VersionFile).Trim()
-}
+# Release hint
+$VersionTag = $AppVersion
 if (-not $VersionTag.StartsWith("v")) {
     $VersionTag = "v$VersionTag"
 }

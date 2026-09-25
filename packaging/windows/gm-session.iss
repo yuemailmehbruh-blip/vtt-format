@@ -5,7 +5,10 @@
 ; Build: run packaging\windows\build.ps1 (or ISCC gm-session.iss after pyinstaller)
 
 #define MyAppName "GM Session"
-#define MyAppVersion "0.6.11"
+; build.ps1 passes /DMyAppVersion=<apps/gm-session/VERSION>; fallback only for manual ISCC runs.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0-dev"
+#endif
 #define MyAppPublisher "vtt-format"
 #define MyAppExeName "GM Session.exe"
 
@@ -35,8 +38,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 ; PyInstaller onedir payload
 Source: "dist\GM Session\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Editable sample campaign beside the executable
-Source: "staging-campaign\*"; DestDir: "{app}\campaign"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Editable sample campaign beside the executable. onlyifdoesntexist: an update/reinstall
+; must never overwrite the user's campaign (sheets, actors, scenes, tokens); only missing
+; files are seeded. uninsneveruninstall keeps the campaign if the app is uninstalled.
+Source: "staging-campaign\*"; DestDir: "{app}\campaign"; Flags: onlyifdoesntexist uninsneveruninstall recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

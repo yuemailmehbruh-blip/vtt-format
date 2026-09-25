@@ -23,7 +23,12 @@ ui_datas = [
     (str(APP / "sheet-builder.js"), "gm-session"),
     (str(APP / "sheet-runtime.js"), "gm-session"),
     (str(APP / "infer-grid-from-walls.js"), "gm-session"),
+    (str(APP / "image-xform.js"), "gm-session"),
+    (str(APP / "token-auras.js"), "gm-session"),
     (str(APP / "VERSION"), "gm-session"),
+    # Default template for NEW sheets (server: app_dir / "defaults")
+    (str(APP / "defaults" / "player-sheet.yaml"), "gm-session/defaults"),
+    (str(APP / "defaults" / "player-sheet.builder.json"), "gm-session/defaults"),
 ]
 
 # Bundle sample campaign under sample-campaign/ in the archive (fallback + installer source)

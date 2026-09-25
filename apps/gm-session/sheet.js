@@ -26,6 +26,8 @@
   const visualWrap = document.getElementById("sheet-visual-wrap");
 
   const RT = window.SheetRuntime || null;
+  const IX = window.ImageXform;
+  const TA = window.TokenAuras;
 
   /** @type {any} */
   let appearance = { size_tiles: 1 };
@@ -175,6 +177,13 @@
       if (!(k in values) && !(k in formulas)) values[k] = v;
     }
 
+    // Built-in aura radius fields (AURA1..3_RADIUS) read as 0 until set
+    if (TA) {
+      for (const k of TA.AURA_FIELDS) {
+        if (!(k in values) && !(k in formulas)) values[k] = 0;
+      }
+    }
+
     // Ensure editable bases are seeded even if absent from schema
     for (const k of editableBases) {
       if (k in formulas) delete formulas[k];
@@ -189,6 +198,7 @@
       const fieldKeys = new Set();
       for (const k of Object.keys(schemaFields || {})) fieldKeys.add(k);
       for (const k of Object.keys(actorFields || {})) fieldKeys.add(k);
+      if (TA) for (const k of TA.AURA_FIELDS) fieldKeys.add(k);
       for (const w of widgets || []) {
         const inn = widgetInputId(w);
         const out = widgetOutputId(w);
@@ -223,7 +233,33 @@
       if (!changed) break;
     }
     liveValues = values;
+    publishAuraFields(values);
     return values;
+  }
+
+  /** Push AURA*_RADIUS to the map whenever they change (edit, automation, formula). */
+  let lastAuraJson = "";
+  function publishAuraFields(values) {
+    if (!TA || !actorId) return;
+    const aura = TA.pickAuraFields(values);
+    const json = JSON.stringify(aura);
+    if (json === lastAuraJson) return;
+    lastAuraJson = json;
+    try {
+      if (typeof BroadcastChannel !== "undefined") {
+        const ch = new BroadcastChannel(APPEARANCE_CHANNEL);
+        ch.postMessage({ actor_id: actorId, aura_fields: aura });
+        ch.close();
+      }
+    } catch (_) {}
+    const api =
+      window.pywebview &&
+      window.pywebview.api &&
+      typeof window.pywebview.api.aura_fields_changed === "function"
+        ? window.pywebview.api
+        : null;
+    if (api) Promise.resolve(api.aura_fields_changed(actorId, aura)).catch(() => {});
+    if (typeof renderAuraRadii === "function") renderAuraRadii();
   }
 
   function isFormulaField(fid) {
@@ -960,6 +996,7 @@
     if (!(size > 0)) size = 1;
     appearance.size_tiles = size;
     sizeTilesEl.value = String(size);
+    appearance.auras = TA ? TA.normalizeAuras(appearance.auras) : [];
 
     schemaFields =
       data.schema && data.schema.fields && typeof data.schema.fields === "object"
@@ -988,6 +1025,8 @@
 
     renderVisual(true);
     renderMechanics();
+    renderGraphic();
+    renderAuras();
     if (!widgets.length && (data.text || "").trim()) {
       notesBlock.open = true;
     }
@@ -1040,6 +1079,467 @@
     setAppearanceStatus("Appearance saved · map tokens updated");
     notifyMap(actorId, appearance);
   }
+
+  // --- Token graphic + auras (Appearance tab; per actor) ---
+
+  /** PUT a partial appearance ({image}, {auras}, …); null removes a key. */
+  async function persistAppearance(partial) {
+    if (!actorId) return null;
+    const res = await fetch(`/api/actor/${encodeURIComponent(actorId)}/appearance`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ appearance: partial }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Appearance save failed (${res.status})`);
+    }
+    const data = await res.json();
+    appearance = data.appearance || appearance;
+    appearance.auras = TA.normalizeAuras(appearance.auras);
+    // Include null image explicitly so the map drops a removed image.
+    notifyMap(actorId, { ...appearance, image: appearance.image || null });
+    return appearance;
+  }
+
+  const tokenImgCache = new Map();
+  function loadAssetImage(hash) {
+    if (tokenImgCache.has(hash)) return Promise.resolve(tokenImgCache.get(hash));
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        tokenImgCache.set(hash, img);
+        resolve(img);
+      };
+      img.onerror = () => reject(new Error("Could not load token image"));
+      img.src = `/assets/${hash}`;
+    });
+  }
+
+  function tokenSizeTiles() {
+    const n = Number(appearance && appearance.size_tiles);
+    return n > 0 ? n : 1;
+  }
+
+  /** Draw the token (image clipped to frame, or white circle) into a square frame. */
+  function paintToken(ctx, img, crop, fx, fy, side) {
+    const r = side / 2;
+    const cx = fx + r;
+    const cy = fy + r;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+    if (img && crop) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.clip();
+      const rect = IX.cropScreenRect(crop, fx, fy, side);
+      IX.drawTransformed(ctx, img, rect.x, rect.y, rect.w, rect.h, crop.rotation, crop.flipX, crop.flipY);
+      ctx.restore();
+    }
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(20, 24, 36, 0.85)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  const previewEl = document.getElementById("token-preview");
+  const btnTokenImport = document.getElementById("btn-token-import");
+  const btnTokenEdit = document.getElementById("btn-token-edit-crop");
+  const btnTokenRemove = document.getElementById("btn-token-remove-image");
+  const tokenFileEl = document.getElementById("token-image-file");
+  const tokenInfoEl = document.getElementById("token-image-info");
+
+  function renderGraphic() {
+    const imgDef = appearance && appearance.image;
+    const crop = imgDef && IX.normalizeCrop(imgDef.crop);
+    if (btnTokenEdit) btnTokenEdit.disabled = !crop;
+    if (btnTokenRemove) btnTokenRemove.disabled = !crop;
+    if (tokenInfoEl) {
+      tokenInfoEl.textContent = crop
+        ? `Image: ${imgDef.name || imgDef.asset.slice(0, 12) + "…"} · stored in campaign assets · applies to all tokens of this actor`
+        : "No image — white circle token.";
+    }
+    if (!previewEl) return;
+    const ctx = previewEl.getContext("2d");
+    ctx.clearRect(0, 0, previewEl.width, previewEl.height);
+    if (!crop) {
+      paintToken(ctx, null, null, 6, 6, previewEl.width - 12);
+      return;
+    }
+    loadAssetImage(imgDef.asset)
+      .then((img) => {
+        ctx.clearRect(0, 0, previewEl.width, previewEl.height);
+        paintToken(ctx, img, crop, 6, 6, previewEl.width - 12);
+      })
+      .catch((err) => setAppearanceStatus(String(err)));
+  }
+
+  // Crop window
+  const cropDialog = document.getElementById("crop-dialog");
+  const cropCanvas = document.getElementById("crop-canvas");
+  const cropStatusEl = document.getElementById("crop-status");
+  const cropScaleW = document.getElementById("crop-scale-w");
+  const cropScaleH = document.getElementById("crop-scale-h");
+  /** @type {{ img: HTMLImageElement, asset: string, name: string, crop: any } | null} */
+  let cropSession = null;
+
+  function cropFrame() {
+    const W = cropCanvas.width;
+    const H = cropCanvas.height;
+    const side = Math.max(90, Math.min(300, tokenSizeTiles() * 140));
+    return { fx: (W - side) / 2, fy: (H - side) / 2, side };
+  }
+
+  function syncCropScaleInputs() {
+    if (!cropSession) return;
+    const size = tokenSizeTiles();
+    if (cropScaleW) cropScaleW.value = String(Math.round(cropSession.crop.w * size * 100) / 100);
+    if (cropScaleH) cropScaleH.value = String(Math.round(cropSession.crop.h * size * 100) / 100);
+  }
+
+  function drawCrop() {
+    if (!cropSession || !cropCanvas) return;
+    const ctx = cropCanvas.getContext("2d");
+    const { fx, fy, side } = cropFrame();
+    const { img, crop } = cropSession;
+    ctx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+    // Whole image dimmed, so the part outside the frame stays visible while panning
+    const rect = IX.cropScreenRect(crop, fx, fy, side);
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    IX.drawTransformed(ctx, img, rect.x, rect.y, rect.w, rect.h, crop.rotation, crop.flipX, crop.flipY);
+    ctx.restore();
+    // Token as it will look on the map
+    paintToken(ctx, img, crop, fx, fy, side);
+    // Frame bbox (snap edges)
+    ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = "#6ea8fe";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(fx, fy, side, side);
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(fx + side / 2, fy + side / 2, side / 2, 0, Math.PI * 2);
+    ctx.strokeStyle = "#6ea8fe";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    syncCropScaleInputs();
+  }
+
+  function setCrop(next, msg) {
+    if (!cropSession) return;
+    cropSession.crop = next;
+    drawCrop();
+    if (msg && cropStatusEl) cropStatusEl.textContent = msg;
+  }
+
+  function openCropWindow(img, asset, name, crop) {
+    cropSession = {
+      img,
+      asset,
+      name,
+      crop: IX.normalizeCrop(crop) || IX.defaultCrop(img.naturalWidth, img.naturalHeight),
+    };
+    const size = tokenSizeTiles();
+    document.getElementById("crop-title").textContent =
+      `Crop token image · frame = ${size} tile${size === 1 ? "" : "s"} across (circle)`;
+    if (cropStatusEl) cropStatusEl.textContent = "Drag to pan · wheel to zoom";
+    if (typeof cropDialog.showModal === "function") cropDialog.showModal();
+    else cropDialog.setAttribute("open", "");
+    drawCrop();
+  }
+
+  function closeCropWindow() {
+    cropSession = null;
+    if (typeof cropDialog.close === "function") cropDialog.close();
+    else cropDialog.removeAttribute("open");
+  }
+
+  async function saveCrop() {
+    if (!cropSession) return;
+    const image = {
+      asset: cropSession.asset,
+      name: cropSession.name || undefined,
+      crop: IX.cropToJSON(cropSession.crop),
+    };
+    try {
+      await persistAppearance({ image });
+      closeCropWindow();
+      renderGraphic();
+      setAppearanceStatus("Token image saved · map tokens updated");
+    } catch (err) {
+      if (cropStatusEl) cropStatusEl.textContent = String(err);
+    }
+  }
+
+  async function importTokenImage(file) {
+    if (!file) return;
+    if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type || "") && !/\.(png|jpe?g|webp|gif)$/i.test(file.name || "")) {
+      setAppearanceStatus("Pick a png / jpg / webp / gif image");
+      return;
+    }
+    setAppearanceStatus("Copying image into campaign assets…");
+    const buf = await file.arrayBuffer();
+    const safeName = String(file.name || "token").replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 80);
+    const res = await fetch("/api/assets", {
+      method: "POST",
+      headers: {
+        "Content-Type": file.type || "application/octet-stream",
+        "X-Asset-Name": `tokens/${actorId}/${safeName}`,
+      },
+      body: buf,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Upload failed (${res.status})`);
+    }
+    const data = await res.json();
+    const img = await loadAssetImage(data.hash);
+    setAppearanceStatus("Adjust the crop, then Save");
+    openCropWindow(img, data.hash, file.name || "", null);
+  }
+
+  if (btnTokenImport) {
+    btnTokenImport.addEventListener("click", () => {
+      tokenFileEl.value = "";
+      tokenFileEl.click();
+    });
+  }
+  if (tokenFileEl) {
+    tokenFileEl.addEventListener("change", () => {
+      const f = tokenFileEl.files && tokenFileEl.files[0];
+      importTokenImage(f).catch((err) => setAppearanceStatus(String(err)));
+    });
+  }
+  if (btnTokenEdit) {
+    btnTokenEdit.addEventListener("click", () => {
+      const imgDef = appearance && appearance.image;
+      if (!imgDef) return;
+      loadAssetImage(imgDef.asset)
+        .then((img) => openCropWindow(img, imgDef.asset, imgDef.name || "", imgDef.crop))
+        .catch((err) => setAppearanceStatus(String(err)));
+    });
+  }
+  if (btnTokenRemove) {
+    btnTokenRemove.addEventListener("click", () => {
+      persistAppearance({ image: null })
+        .then(() => {
+          renderGraphic();
+          setAppearanceStatus("Image removed · token is a white circle again");
+        })
+        .catch((err) => setAppearanceStatus(String(err)));
+    });
+  }
+
+  if (cropDialog) {
+    cropDialog.querySelectorAll("button[data-snap]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const where = btn.getAttribute("data-snap");
+        setCrop(IX.snapCrop(cropSession.crop, where), `Snapped ${where}`);
+      });
+    });
+    document.getElementById("crop-zoom-in").addEventListener("click", () =>
+      setCrop(IX.zoomCrop(cropSession.crop, 1.1), "Zoom in")
+    );
+    document.getElementById("crop-zoom-out").addEventListener("click", () =>
+      setCrop(IX.zoomCrop(cropSession.crop, 1 / 1.1), "Zoom out")
+    );
+    document.getElementById("crop-fit").addEventListener("click", () => {
+      const { img, crop } = cropSession;
+      const odd = crop.rotation === 90 || crop.rotation === 270;
+      const fit = odd ? IX.defaultCrop(img.naturalHeight, img.naturalWidth) : IX.defaultCrop(img.naturalWidth, img.naturalHeight);
+      setCrop({ ...fit, flipX: crop.flipX, flipY: crop.flipY, rotation: crop.rotation }, "Fit (cover)");
+    });
+    document.getElementById("crop-scale-apply").addEventListener("click", () => {
+      const c = { ...cropSession.crop };
+      const { tw, th } = IX.scaleToTiles(c, cropScaleW.value, cropScaleH.value, 1 / tokenSizeTiles(), {
+        min: 0.05,
+        keepCenter: true,
+      });
+      setCrop(c, `Scaled to ${tw}×${th} tiles`);
+    });
+    document.getElementById("crop-flip-h").addEventListener("click", () =>
+      setCrop(IX.toggleFlip({ ...cropSession.crop }, "h"), "Flip H")
+    );
+    document.getElementById("crop-flip-v").addEventListener("click", () =>
+      setCrop(IX.toggleFlip({ ...cropSession.crop }, "v"), "Flip V")
+    );
+    document.getElementById("crop-rotate").addEventListener("click", () => {
+      const c = IX.rotateCw({ ...cropSession.crop }, { keepCenter: true });
+      setCrop(c, `Rotated to ${c.rotation}°`);
+    });
+    document.getElementById("crop-cancel").addEventListener("click", closeCropWindow);
+    document.getElementById("crop-save").addEventListener("click", () => {
+      saveCrop();
+    });
+    cropDialog.addEventListener("cancel", () => {
+      cropSession = null;
+    });
+
+    let cropDrag = null;
+    cropCanvas.addEventListener("pointerdown", (e) => {
+      if (!cropSession) return;
+      cropDrag = { x: e.clientX, y: e.clientY, crop: { ...cropSession.crop } };
+      cropCanvas.setPointerCapture(e.pointerId);
+      cropCanvas.classList.add("dragging");
+    });
+    cropCanvas.addEventListener("pointermove", (e) => {
+      if (!cropDrag || !cropSession) return;
+      const { side } = cropFrame();
+      const k = cropCanvas.width / cropCanvas.getBoundingClientRect().width || 1;
+      setCrop(IX.panCrop(cropDrag.crop, ((e.clientX - cropDrag.x) * k) / side, ((e.clientY - cropDrag.y) * k) / side));
+    });
+    const endDrag = () => {
+      cropDrag = null;
+      cropCanvas.classList.remove("dragging");
+    };
+    cropCanvas.addEventListener("pointerup", endDrag);
+    cropCanvas.addEventListener("pointercancel", endDrag);
+    cropCanvas.addEventListener(
+      "wheel",
+      (e) => {
+        if (!cropSession) return;
+        e.preventDefault();
+        const { fx, fy, side } = cropFrame();
+        const rect = cropCanvas.getBoundingClientRect();
+        const k = cropCanvas.width / rect.width || 1;
+        const px = ((e.clientX - rect.left) * k - fx) / side;
+        const py = ((e.clientY - rect.top) * k - fy) / side;
+        setCrop(IX.zoomCrop(cropSession.crop, e.deltaY < 0 ? 1.1 : 1 / 1.1, px, py));
+      },
+      { passive: false }
+    );
+  }
+
+  // Auras
+  const auraListEl = document.getElementById("aura-list");
+  const btnAuraAdd = document.getElementById("btn-aura-add");
+  let auraSaveTimer = null;
+
+  function scheduleAuraSave() {
+    clearTimeout(auraSaveTimer);
+    auraSaveTimer = setTimeout(() => {
+      persistAppearance({ auras: appearance.auras })
+        .then(() => setAppearanceStatus("Auras saved · map updated"))
+        .catch((err) => setAppearanceStatus(String(err)));
+    }, 150);
+  }
+
+  /** Live (pre-save) map preview for slider drags. */
+  function previewAurasOnMap() {
+    notifyMap(actorId, { ...appearance });
+  }
+
+  function auraRadiusValue(slot) {
+    const k = TA.auraField(slot);
+    const v = liveValues[k] != null ? liveValues[k] : actorFields[k];
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function renderAuraRadii() {
+    if (!auraListEl) return;
+    auraListEl.querySelectorAll("input[data-aura-radius]").forEach((inp) => {
+      if (document.activeElement === inp) return;
+      inp.value = String(auraRadiusValue(Number(inp.getAttribute("data-aura-radius"))));
+    });
+  }
+
+  function renderAuras() {
+    if (!auraListEl || !TA) return;
+    const list = TA.normalizeAuras(appearance.auras);
+    appearance.auras = list;
+    auraListEl.innerHTML = "";
+    for (const a of list) {
+      const field = TA.auraField(a.slot);
+      const formula = isFormulaField(field);
+      const row = document.createElement("div");
+      row.className = "aura-row";
+      row.dataset.slot = String(a.slot);
+      row.innerHTML = `
+        <label title="Show this emanation"><input type="checkbox" data-k="enabled" ${a.enabled ? "checked" : ""}/> On</label>
+        <span class="aura-name">Emanation ${a.slot}</span>
+        <label title="${esc(field)} — grid squares beyond the token edge">Radius
+          <input type="number" min="0" step="1" data-aura-radius="${a.slot}" value="${esc(String(auraRadiusValue(a.slot)))}" ${formula ? "disabled" : ""}/>
+          <code>${esc(field)}</code></label>
+        <label>Color <input type="color" data-k="color" value="${esc(a.color)}"/></label>
+        <label>Opacity <input type="range" min="0" max="100" step="1" data-k="opacity" value="${Math.round(a.opacity * 100)}"/>
+          <span class="op-val">${Math.round(a.opacity * 100)}%</span></label>
+        <button type="button" data-k="remove">Remove</button>`;
+      const cur = () => appearance.auras.find((x) => x.slot === a.slot);
+      row.querySelector('[data-k="enabled"]').addEventListener("change", (e) => {
+        cur().enabled = !!e.target.checked;
+        previewAurasOnMap();
+        scheduleAuraSave();
+      });
+      row.querySelector('[data-k="color"]').addEventListener("input", (e) => {
+        cur().color = e.target.value;
+        previewAurasOnMap();
+        scheduleAuraSave();
+      });
+      const op = row.querySelector('[data-k="opacity"]');
+      op.addEventListener("input", () => {
+        cur().opacity = Math.min(1, Math.max(0, Number(op.value) / 100));
+        row.querySelector(".op-val").textContent = `${op.value}%`;
+        previewAurasOnMap();
+        scheduleAuraSave();
+      });
+      row.querySelector('[data-k="remove"]').addEventListener("click", () => {
+        appearance.auras = TA.removeAura(appearance.auras, a.slot);
+        renderAuras();
+        previewAurasOnMap();
+        scheduleAuraSave();
+      });
+      const rad = row.querySelector("input[data-aura-radius]");
+      rad.addEventListener("change", () => {
+        const n = Number(rad.value);
+        if (!Number.isFinite(n) || n < 0) {
+          setAppearanceStatus("Radius must be a number ≥ 0");
+          return;
+        }
+        // Same field the sheet/automations use
+        actorFields[field] = n;
+        saveFields({ [field]: n })
+          .then(() => {
+            recomputeLive();
+            renderVisual(false);
+            setAppearanceStatus(`Saved ${field}=${n}`);
+          })
+          .catch((err) => setAppearanceStatus(String(err)));
+      });
+      auraListEl.appendChild(row);
+    }
+    if (btnAuraAdd) {
+      btnAuraAdd.disabled = !TA.canAddAura(list);
+      btnAuraAdd.title = btnAuraAdd.disabled ? "Maximum 3 emanations" : "Add emanation";
+    }
+  }
+
+  if (btnAuraAdd) {
+    btnAuraAdd.addEventListener("click", () => {
+      const next = TA.addAura(appearance.auras);
+      if (!next) {
+        setAppearanceStatus("Maximum 3 emanations");
+        renderAuras();
+        return;
+      }
+      appearance.auras = next;
+      renderAuras();
+      previewAurasOnMap();
+      scheduleAuraSave();
+    });
+  }
+
+  window.__sheetDebug = {
+    crop: () => (cropSession ? { ...cropSession.crop } : null),
+    appearance: () => appearance,
+    liveValues: () => liveValues,
+    runNamedFunction: (id) => runNamedFunction(id),
+  };
 
   // --- Zoom / pan on session sheet ---
   window.addEventListener("keydown", (e) => {

@@ -163,6 +163,177 @@ def entry_names_in_nodes(nodes) -> set[str]:
     return names
 
 
+AURA_MAX = 3
+AURA_FIELDS = ("AURA1_RADIUS", "AURA2_RADIUS", "AURA3_RADIUS")
+AURA_DEFAULT_COLORS = ("#4fc3f7", "#ffb74d", "#ba68c8")
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def sanitize_auras(raw) -> list:
+    """appearance.auras: max 3, unique slots 1..3, color #rrggbb, opacity 0..1, enabled."""
+    if not isinstance(raw, list):
+        return []
+    out: list = []
+    used: set[int] = set()
+    for a in raw:
+        if not isinstance(a, dict):
+            continue
+        try:
+            slot = int(a.get("slot"))
+        except (TypeError, ValueError):
+            slot = 0
+        if slot < 1 or slot > AURA_MAX or slot in used:
+            free = [s for s in range(1, AURA_MAX + 1) if s not in used]
+            if not free:
+                break
+            slot = free[0]
+        used.add(slot)
+        color = str(a.get("color") or "")
+        if not _HEX_COLOR.match(color):
+            color = AURA_DEFAULT_COLORS[slot - 1]
+        try:
+            opacity = float(a.get("opacity", 0.25))
+        except (TypeError, ValueError):
+            opacity = 0.25
+        if opacity != opacity:  # NaN
+            opacity = 0.25
+        opacity = min(1.0, max(0.0, opacity))
+        out.append(
+            {
+                "slot": slot,
+                "color": color.lower(),
+                "opacity": opacity,
+                "enabled": a.get("enabled") is not False,
+            }
+        )
+        if len(out) >= AURA_MAX:
+            break
+    out.sort(key=lambda x: x["slot"])
+    return out
+
+
+def sanitize_token_image(raw):
+    """appearance.image = {asset: <sha256 in world/assets/by-hash>, crop: {x,y,w,h,flipX,flipY,rotation}}."""
+    if not isinstance(raw, dict):
+        return None
+    asset = str(raw.get("asset") or "").strip()
+    if not asset or not _safe_segment(asset):
+        return None
+    crop_in = raw.get("crop") if isinstance(raw.get("crop"), dict) else {}
+    try:
+        crop = {
+            "x": float(crop_in.get("x", 0)),
+            "y": float(crop_in.get("y", 0)),
+            "w": float(crop_in.get("w", 1)),
+            "h": float(crop_in.get("h", 1)),
+        }
+    except (TypeError, ValueError):
+        return None
+    if crop["w"] <= 0 or crop["h"] <= 0:
+        return None
+    crop["flipX"] = bool(crop_in.get("flipX"))
+    crop["flipY"] = bool(crop_in.get("flipY"))
+    try:
+        rot = int(round(float(crop_in.get("rotation", 0)) / 90.0)) * 90
+    except (TypeError, ValueError):
+        rot = 0
+    crop["rotation"] = rot % 360
+    out = {"asset": asset, "crop": crop}
+    name = raw.get("name")
+    if isinstance(name, str) and name.strip():
+        out["name"] = name.strip()[:200]
+    return out
+
+
+def library_appearance(appearance: dict, size_tiles: float) -> dict:
+    """Appearance subset the map needs; old saves without image/auras load unchanged."""
+    out: dict = {"size_tiles": size_tiles}
+    img = appearance.get("image") if isinstance(appearance, dict) else None
+    if img is not None:
+        img = sanitize_token_image(img)
+        if img is not None:
+            out["image"] = img
+    auras = appearance.get("auras") if isinstance(appearance, dict) else None
+    if auras is not None:
+        out["auras"] = sanitize_auras(auras)
+    return out
+
+
+def aura_field_values(fields) -> dict:
+    out: dict = {}
+    src = fields if isinstance(fields, dict) else {}
+    for k in AURA_FIELDS:
+        try:
+            v = float(src.get(k, 0) or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        out[k] = v
+    return out
+
+
+DEFAULT_SHEET_TEMPLATE = "player-sheet"
+
+
+def default_sheet_template_paths(app_dir: Path | None = None) -> tuple[Path, Path]:
+    """(yaml, builder.json) of the bundled default sheet template (frozen: _MEIPASS/gm-session/defaults)."""
+    candidates = []
+    if app_dir is not None:
+        candidates.append(Path(app_dir) / "defaults")
+    candidates.append(default_app_dir() / "defaults")
+    candidates.append(Path(__file__).resolve().parent / "defaults")
+    for d in candidates:
+        y = d / f"{DEFAULT_SHEET_TEMPLATE}.yaml"
+        b = d / f"{DEFAULT_SHEET_TEMPLATE}.builder.json"
+        if y.is_file() or b.is_file():
+            return y, b
+    d = candidates[0]
+    return d / f"{DEFAULT_SHEET_TEMPLATE}.yaml", d / f"{DEFAULT_SHEET_TEMPLATE}.builder.json"
+
+
+def load_default_sheet_template(sheet_id: str, app_dir: Path | None = None) -> dict | None:
+    """Builder document for a NEW sheet id (no YAML/scratch yet), from the bundled template.
+
+    Prefers the builder JSON (full layout/graph); falls back to the compiled YAML.
+    Returns None when no template is bundled (caller then returns the empty doc).
+    """
+    ypath, bpath = default_sheet_template_paths(app_dir)
+    doc = None
+    if bpath.is_file():
+        try:
+            data = json.loads(bpath.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            doc = data
+    if doc is None and ypath.is_file():
+        try:
+            data = yaml.safe_load(ypath.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            data = None
+        if isinstance(data, dict):
+            doc = data
+    if doc is None:
+        return None
+    doc = deep_copy_json(doc)
+    template_id = str(doc.get("sheet_id") or doc.get("id") or "")
+    layout = doc.get("layout") if isinstance(doc.get("layout"), dict) else {}
+    g = doc.get("graph") if isinstance(doc.get("graph"), dict) else {}
+    return {
+        "sheet_id": sheet_id,
+        "name": (doc.get("name") or sheet_id) if sheet_id == template_id else sheet_id,
+        "permissions": doc.get("permissions"),
+        "fields": doc.get("fields") if isinstance(doc.get("fields"), dict) else {},
+        "layout": {"widgets": layout.get("widgets") if isinstance(layout.get("widgets"), list) else []},
+        "graph": {
+            "nodes": g.get("nodes") if isinstance(g.get("nodes"), list) else [],
+            "edges": g.get("edges") if isinstance(g.get("edges"), list) else [],
+            "collapsed": g.get("collapsed") if isinstance(g.get("collapsed"), list) else [],
+        },
+        "_source": "template",
+        "_template": DEFAULT_SHEET_TEMPLATE,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     campaign_root: Path = Path(".")
     app_dir: Path = Path(".")
@@ -248,6 +419,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/infer-grid-from-walls.js":
             self._send_file(app / "infer-grid-from-walls.js")
+            return
+        if path == "/image-xform.js":
+            self._send_file(app / "image-xform.js")
+            return
+        if path == "/token-auras.js":
+            self._send_file(app / "token-auras.js")
             return
         if path == "/sheet.html":
             self._send_file(app / "sheet.html")
@@ -809,9 +986,20 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(400, {"error": "size_tiles must be > 0"})
                     return
                 merged["size_tiles"] = size_tiles
-            # Forward-compatible: merge other appearance keys except size_tiles handled above
+            # Forward-compatible: merge other appearance keys except size_tiles handled above.
+            # A null value removes the key (e.g. {"image": null} = Remove image).
             for k, v in appearance_in.items():
                 if k == "size_tiles":
+                    continue
+                if k == "image" and v is not None:
+                    v = sanitize_token_image(v)
+                    if v is None:
+                        self._send_json(400, {"error": "image must be {asset, crop}"})
+                        return
+                elif k == "auras" and v is not None:
+                    v = sanitize_auras(v)
+                if v is None:
+                    merged.pop(k, None)
                     continue
                 merged[k] = v
             if "size_tiles" not in merged:
@@ -1061,6 +1249,10 @@ class Handler(BaseHTTPRequestHandler):
         if seeded is not None:
             self._send_json(200, seeded)
             return
+        template = load_default_sheet_template(sheet_id, self.app_dir)
+        if template is not None:
+            self._send_json(200, template)
+            return
         self._send_json(
             200,
             {
@@ -1248,8 +1440,9 @@ class Handler(BaseHTTPRequestHandler):
                         "sheet_doc": sheet_rel if has_sheet else None,
                         "has_sheet": has_sheet,
                         "token_capable": True,
-                        "appearance": {"size_tiles": size_tiles},
+                        "appearance": library_appearance(appearance, size_tiles),
                         "size_tiles": size_tiles,
+                        "aura_fields": aura_field_values(data.get("fields")),
                     }
                 )
 
