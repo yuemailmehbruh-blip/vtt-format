@@ -25,6 +25,7 @@ ui_datas = [
     (str(APP / "infer-grid-from-walls.js"), "gm-session"),
     (str(APP / "image-xform.js"), "gm-session"),
     (str(APP / "token-auras.js"), "gm-session"),
+    (str(APP / "org-tree.js"), "gm-session"),
     (str(APP / "VERSION"), "gm-session"),
     # Default template for NEW sheets (server: app_dir / "defaults")
     (str(APP / "defaults" / "player-sheet.yaml"), "gm-session/defaults"),
@@ -41,6 +42,8 @@ a = Analysis(
     datas=ui_datas + sample_datas,
     hiddenimports=[
         "yaml",
+        "campaign_model",
+        "server_lib",
         "webview",
         "webview.platforms.edgechromium",
         "webview.platforms.winforms",

@@ -12,6 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import campaign_model as cm
+
 try:
     import yaml
 except ImportError as exc:  # pragma: no cover
@@ -364,6 +366,17 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return json.loads(raw.decode("utf-8"))
 
+    def _json_object_or_400(self):
+        try:
+            body = self._read_json_body()
+        except json.JSONDecodeError:
+            self._send_json(400, {"error": "invalid JSON body"})
+            return None
+        if not isinstance(body, dict):
+            self._send_json(400, {"error": "body must be an object"})
+            return None
+        return body
+
     def _send_file(self, path: Path) -> None:
         if not path.is_file():
             self._send(404, b"Not found\n", "text/plain; charset=utf-8")
@@ -425,6 +438,28 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/token-auras.js":
             self._send_file(app / "token-auras.js")
+            return
+        if path == "/org-tree.js":
+            self._send_file(app / "org-tree.js")
+            return
+
+        if path == "/api/organization":
+            org = cm.load_organization(self.campaign_root)
+            self._send_json(200, org)
+            return
+        if path == "/api/maps":
+            self._send_json(200, {"maps": cm.maps_summary(self.campaign_root)})
+            return
+        if path.startswith("/api/map/"):
+            map_id = path[len("/api/map/") :].strip("/")
+            m = cm.load_map(self.campaign_root, map_id) if _safe_segment(map_id) else None
+            if m is None:
+                self._send_json(404, {"error": f"map not found: {map_id}"})
+                return
+            self._send_json(200, m)
+            return
+        if path == "/api/migration":
+            self._send_json(200, getattr(type(self), "migration_report", {}) or {})
             return
         if path == "/sheet.html":
             self._send_file(app / "sheet.html")
@@ -494,7 +529,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with scene_path.open("r", encoding="utf-8") as fh:
                 scene = yaml.safe_load(fh)
-            self._send_json(200, scene)
+            # Scene → referenced map (grid + image layers); legacy scenes unchanged
+            self._send_json(200, cm.resolve_scene(self.campaign_root, scene))
             return
 
         if path.startswith("/api/sheet/"):
@@ -829,17 +865,42 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(scene, dict):
                 self._send_json(500, {"error": "scene YAML is not a mapping"})
                 return
-            scene["layers"] = cleaned
-            scene_path.write_text(
-                yaml.safe_dump(
-                    scene,
-                    sort_keys=False,
-                    default_flow_style=False,
-                    allow_unicode=True,
-                ),
-                encoding="utf-8",
-            )
-            self._send_json(200, {"ok": True, "scene": scene_id, "layers": cleaned})
+            # Image layers belong to the scene's map (world/maps/<id>.yaml)
+            layers_out = cm.write_scene_layers(self.campaign_root, scene_id, cleaned)
+            self._send_json(200, {"ok": True, "scene": scene_id, "layers": layers_out})
+            return
+
+        if path.startswith("/api/scene/") and path.endswith("/map"):
+            scene_id = path[len("/api/scene/") : -len("/map")].strip("/")
+            if not _safe_segment(scene_id):
+                self._send_json(400, {"error": "invalid scene id"})
+                return
+            body = self._json_object_or_400()
+            if body is None:
+                return
+            map_id = body.get("map")
+            if map_id is not None and not isinstance(map_id, str):
+                self._send_json(400, {"error": "map must be a map id or null"})
+                return
+            try:
+                scene = cm.set_scene_map(self.campaign_root, scene_id, map_id)
+            except cm.OrgError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, {"ok": True, "scene": scene_id, "map": scene.get("map")})
+            return
+
+        if path.startswith("/api/organization/") and path != "/api/organization/rename":
+            panel = path[len("/api/organization/") :].strip("/")
+            body = self._json_object_or_400()
+            if body is None:
+                return
+            try:
+                tree = cm.set_panel_tree(self.campaign_root, panel, body.get("tree"))
+            except cm.OrgError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, {"ok": True, "panel": panel, "tree": tree})
             return
 
         if path == "/api/ui" or path.startswith("/api/ui/"):
@@ -1056,6 +1117,45 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/assets":
             self._api_post_asset()
+            return
+
+        if path in ("/api/actors", "/api/scenes", "/api/maps", "/api/organization/rename"):
+            body = self._json_object_or_400()
+            if body is None:
+                return
+            root = self.campaign_root
+            folder = body.get("folder")
+            if folder is not None and not (isinstance(folder, str) and cm.FOLDER_ID_RE.match(folder)):
+                self._send_json(400, {"error": "invalid folder id"})
+                return
+            try:
+                if path == "/api/actors":
+                    out = {"ok": True, "actor": cm.create_actor(root, body.get("name"), folder)}
+                elif path == "/api/scenes":
+                    map_id = body.get("map")
+                    if map_id is not None and not isinstance(map_id, str):
+                        raise cm.OrgError("map must be a map id or null")
+                    out = {"ok": True, "scene": cm.create_scene(root, body.get("name"), map_id, folder)}
+                elif path == "/api/maps":
+                    out = {
+                        "ok": True,
+                        "map": cm.create_map(root, body.get("name"), body.get("layers") or [], body.get("grid"), folder),
+                    }
+                else:
+                    kind = body.get("kind")
+                    panel = {"map": "maps", "actor": "actors", "scene": "scenes"}.get(kind)
+                    if kind == "folder":
+                        fpanel = body.get("panel")
+                        name = cm.rename_folder(root, fpanel, str(body.get("id") or ""), body.get("name"))
+                        out = {"ok": True, "panel": fpanel, "id": body.get("id"), "name": name}
+                    elif panel:
+                        out = cm.rename_entity(root, panel, body.get("id"), body.get("name"))
+                    else:
+                        raise cm.OrgError("kind must be map, actor, scene or folder")
+            except cm.OrgError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, out)
             return
 
         # Fall through to PUT handlers for any other POSTs that share semantics
@@ -1458,15 +1558,19 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         "id": data.get("id") or path.stem,
                         "name": data.get("name") or path.stem,
+                        "map": data.get("map") if isinstance(data, dict) else None,
                     }
                 )
 
+        org = cm.load_organization(self.campaign_root)
         self._send_json(
             200,
             {
                 "campaign": str(self.campaign_root),
                 "actors": actors,
                 "scenes": scenes,
+                "maps": cm.maps_summary(self.campaign_root),
+                "organization": org,
             },
         )
 
@@ -1752,6 +1856,8 @@ def create_server(
     Handler.campaign_root = campaign
     Handler.app_dir = (app_dir or default_app_dir()).resolve()
     Handler.quiet = quiet
+    # 0.6.19 load-time migration (idempotent, backs up rewritten scenes)
+    Handler.migration_report = cm.migrate_campaign(campaign)
 
     server = ThreadingHTTPServer((host, port), Handler)
     # If port was 0, pick the assigned one

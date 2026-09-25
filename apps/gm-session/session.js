@@ -10,6 +10,9 @@
   const statusEl = document.getElementById("status");
   const actorListEl = document.getElementById("actor-list");
   const sceneListEl = document.getElementById("scene-list");
+  const mapListEl = document.getElementById("map-list");
+  const sceneMapInfoEl = document.getElementById("scene-map-info");
+  const mapFileInput = document.getElementById("map-file");
   const layerListEl = document.getElementById("layer-list");
   const toggleGridEl = document.getElementById("toggle-grid");
   const toggleSnapEl = document.getElementById("toggle-snap");
@@ -961,6 +964,17 @@
     for (const el of actorListEl.querySelectorAll(".lib-item")) {
       el.classList.toggle("active", el.dataset.id === selectedActorId);
     }
+    const curMap = scene && scene.map_info ? scene.map_info.id : null;
+    for (const el of mapListEl.querySelectorAll(".map-item")) {
+      el.classList.toggle("active", el.dataset.id === curMap);
+    }
+    if (sceneMapInfoEl) {
+      sceneMapInfoEl.textContent = !scene
+        ? ""
+        : scene.map_info
+          ? `Scene “${scene.name || sceneId}” uses map “${scene.map_info.name}”. Layer edits change that map.`
+          : `Scene “${scene.name || sceneId}” has no map yet. Add layer creates one; or right-click a map → Use in current scene.`;
+    }
   }
 
   function openSheet(actorId) {
@@ -989,60 +1003,636 @@
     );
   }
 
-  function renderLibrary() {
-    actorListEl.innerHTML = "";
-    sceneListEl.innerHTML = "";
-    if (!library) return;
+  // --- 0.6.19 organization sidebar: Maps / Characters / Scenes panels -------
+  // Folder tree, order and folder collapse live in world/organization.yaml
+  // (server validates). Panel collapse is a GM UI pref in state/ui.json.
 
-    for (const actor of library.actors || []) {
-      const item = document.createElement("div");
-      item.className = "lib-item";
-      item.draggable = true;
-      item.dataset.id = actor.id;
-      item.title = "Drag onto map to place token · Click to open sheet in a pop-out";
-      item.innerHTML = `
+  const OT = window.OrgTree;
+  const PANEL_LIST_EL = { maps: mapListEl, actors: actorListEl, scenes: sceneListEl };
+  const PANEL_LABEL = { maps: "map", actors: "character", scenes: "scene" };
+  let org = { maps: [], actors: [], scenes: [] };
+  let panelCollapsed = { maps: false, actors: false, scenes: false };
+  let orgSelected = { maps: null, actors: null, scenes: null }; // ref strings
+  let orgDrag = null; // { panel, ref }
+  let orgRenaming = false;
+  let orgClickTimer = null;
+
+  function entityById(panel, id) {
+    const list = panel === "maps" ? library?.maps : panel === "actors" ? library?.actors : library?.scenes;
+    return (list || []).find((x) => x.id === id) || null;
+  }
+
+  function entityName(panel, id) {
+    const e = entityById(panel, id);
+    return (e && e.name) || id;
+  }
+
+  function countItems(node) {
+    let n = 0;
+    for (const c of node.children || []) n += OT.isFolder(c) ? countItems(c) : 1;
+    return n;
+  }
+
+  function applyPanelCollapsed() {
+    for (const sec of document.querySelectorAll(".org-panel")) {
+      const p = sec.dataset.panel;
+      sec.classList.toggle("collapsed", !!panelCollapsed[p]);
+      const caret = sec.querySelector(".org-caret");
+      if (caret) caret.setAttribute("aria-expanded", panelCollapsed[p] ? "false" : "true");
+    }
+  }
+
+  async function loadPanelPrefs() {
+    try {
+      const res = await fetch("/api/ui");
+      if (res.ok) {
+        const data = await res.json();
+        const sc = data && data.sidebarCollapsed;
+        if (sc && typeof sc === "object") {
+          for (const p of Object.keys(panelCollapsed)) panelCollapsed[p] = sc[p] === true;
+        }
+      }
+    } catch (_) {}
+    applyPanelCollapsed();
+  }
+
+  function togglePanel(panel) {
+    panelCollapsed[panel] = !panelCollapsed[panel];
+    applyPanelCollapsed();
+    fetch("/api/ui", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sidebarCollapsed: { ...panelCollapsed } }),
+    }).catch(() => {});
+  }
+
+  async function saveOrgPanel(panel, tree) {
+    org[panel] = tree;
+    renderPanel(panel);
+    try {
+      const res = await fetch(`/api/organization/${panel}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tree }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStatus(`Could not save ${panel} folders: ${data.error || res.status}`);
+        await loadLibrary();
+        return false;
+      }
+      org[panel] = data.tree || tree;
+      renderPanel(panel);
+      return true;
+    } catch (err) {
+      setStatus(`Folder save error: ${err}`);
+      return false;
+    }
+  }
+
+  function buildItemRow(panel, node) {
+    const key = OT.ITEM_KEY[panel];
+    const id = node[key];
+    const row = document.createElement("div");
+    row.dataset.id = id;
+    if (panel === "actors") {
+      const actor = entityById("actors", id) || { id, name: id };
+      row.className = "org-row lib-item";
+      row.title = "Drag onto map to place token · Click to open sheet · Double-click / F2 to rename · Right-click for more";
+      row.innerHTML = `
         <span class="dot" aria-hidden="true"></span>
         <span class="name">
-          <strong></strong>
+          <strong class="oname"></strong>
           <span></span>
-        </span>
-      `;
-      item.querySelector("strong").textContent = actor.name || actor.id;
-      item.querySelector(".name span").textContent = actor.sheet
-        ? `sheet: ${actor.sheet}`
-        : "actor";
+        </span>`;
+      row.querySelector("strong").textContent = actor.name || actor.id;
+      row.querySelector(".name span").textContent = actor.sheet ? `sheet: ${actor.sheet}` : "actor";
       if (actor.has_sheet) {
         const flag = document.createElement("span");
         flag.className = "sheet-flag";
         flag.textContent = "sheet";
-        item.appendChild(flag);
+        row.appendChild(flag);
       }
-      item.addEventListener("click", () => {
-        openSheet(actor.id);
-      });
-      item.addEventListener("dragstart", (e) => {
-        e.dataTransfer.setData(
-          "application/x-vtt-actor",
-          JSON.stringify(actor)
-        );
-        e.dataTransfer.setData("text/plain", actor.id);
-        e.dataTransfer.effectAllowed = "copy";
-      });
-      actorListEl.appendChild(item);
+    } else if (panel === "scenes") {
+      const sc = entityById("scenes", id) || { id, name: id };
+      row.className = "org-row scene-item";
+      row.title = "Click to open scene · Double-click / F2 to rename · Right-click for more";
+      const nm = document.createElement("span");
+      nm.className = "oname";
+      nm.textContent = sc.name || sc.id;
+      row.appendChild(nm);
+      const sub = document.createElement("span");
+      sub.className = "osub";
+      sub.textContent = sc.map ? `🗺 ${entityName("maps", sc.map)}` : "no map";
+      row.appendChild(sub);
+    } else {
+      const m = entityById("maps", id) || { id, name: id };
+      row.className = "org-row map-item";
+      row.title = "Map (reusable image + grid) · Right-click → Use in current scene / New scene · Double-click / F2 to rename";
+      const th = document.createElement("img");
+      th.className = "mthumb";
+      th.alt = "";
+      th.loading = "lazy";
+      if (m.thumb) th.src = `/assets/${m.thumb}`;
+      row.appendChild(th);
+      const nm = document.createElement("span");
+      nm.className = "oname";
+      nm.textContent = m.name || m.id;
+      row.appendChild(nm);
+      const sub = document.createElement("span");
+      sub.className = "osub";
+      const used = Array.isArray(m.used_by) ? m.used_by.length : 0;
+      sub.textContent = `${m.layer_count || 0} layer${m.layer_count === 1 ? "" : "s"} · ${used} scene${used === 1 ? "" : "s"}`;
+      row.appendChild(sub);
     }
+    return row;
+  }
 
-    for (const sc of library.scenes || []) {
-      const item = document.createElement("div");
-      item.className = "scene-item";
-      item.dataset.id = sc.id;
-      item.textContent = sc.name || sc.id;
-      item.addEventListener("click", () => {
-        loadScene(sc.id).catch((err) => setStatus(String(err)));
-      });
-      sceneListEl.appendChild(item);
+  function buildFolderRow(panel, node) {
+    const row = document.createElement("div");
+    row.className = "org-row folder" + (node.collapsed ? " collapsed" : "");
+    row.dataset.folder = node.folder;
+    row.title = "Click to collapse/expand · Double-click / F2 to rename · Drag to move · Right-click for more";
+    row.innerHTML = `<button type="button" class="org-fcaret" tabindex="-1" aria-label="Collapse folder">▾</button><span class="ficon">${node.collapsed ? "📁" : "📂"}</span><span class="fname oname"></span><span class="fcount"></span>`;
+    row.querySelector(".fname").textContent = node.name;
+    row.querySelector(".fcount").textContent = String(countItems(node));
+    return row;
+  }
+
+  function renderPanel(panel) {
+    const listEl = PANEL_LIST_EL[panel];
+    if (!listEl || orgRenaming) return;
+    listEl.innerHTML = "";
+    const rows = OT.rows(panel, org[panel] || []);
+    if (!rows.length) {
+      const empty = document.createElement("div");
+      empty.className = "org-empty";
+      empty.textContent = `No ${PANEL_LABEL[panel]}s yet — use + above.`;
+      listEl.appendChild(empty);
+    }
+    for (const r of rows) {
+      const row = OT.isFolder(r.node) ? buildFolderRow(panel, r.node) : buildItemRow(panel, r.node);
+      row.dataset.ref = r.ref;
+      row.dataset.panel = panel;
+      row.tabIndex = 0;
+      row.draggable = true;
+      row.style.marginLeft = `${r.depth * 0.9}rem`;
+      if (orgSelected[panel] === r.ref) row.classList.add("selected");
+      wireRow(panel, row, r.node);
+      listEl.appendChild(row);
     }
     renderLibrarySelection();
   }
+
+  function renderLibrary() {
+    if (!library) return;
+    for (const p of ["maps", "actors", "scenes"]) renderPanel(p);
+  }
+
+  function selectRow(panel, ref) {
+    orgSelected[panel] = ref;
+    for (const el of PANEL_LIST_EL[panel].querySelectorAll(".org-row")) {
+      el.classList.toggle("selected", el.dataset.ref === ref);
+    }
+  }
+
+  function activateRow(panel, node) {
+    if (OT.isFolder(node)) {
+      saveOrgPanel(panel, OT.setCollapsed(panel, org[panel], node.folder, !node.collapsed));
+      return;
+    }
+    const id = node[OT.ITEM_KEY[panel]];
+    if (panel === "actors") openSheet(id);
+    else if (panel === "scenes") loadScene(id).catch((err) => setStatus(String(err)));
+    else {
+      const m = entityById("maps", id);
+      const used = (m && m.used_by) || [];
+      setStatus(
+        `Map “${(m && m.name) || id}” · ${used.length ? `used by ${used.join(", ")}` : "not used by any scene"} · right-click to use it`
+      );
+    }
+  }
+
+  function wireRow(panel, row, node) {
+    const ref = row.dataset.ref;
+    row.addEventListener("click", (e) => {
+      if (orgRenaming) return;
+      selectRow(panel, ref);
+      if (e.detail > 1) return;
+      // short delay so a double-click (rename) does not also open/toggle
+      if (orgClickTimer) clearTimeout(orgClickTimer);
+      orgClickTimer = setTimeout(() => {
+        orgClickTimer = null;
+        activateRow(panel, node);
+      }, 230);
+    });
+    row.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      if (orgClickTimer) {
+        clearTimeout(orgClickTimer);
+        orgClickTimer = null;
+      }
+      startRename(panel, ref);
+    });
+    row.addEventListener("keydown", (e) => {
+      if (orgRenaming) return;
+      if (e.key === "F2") {
+        e.preventDefault();
+        startRename(panel, ref);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        activateRow(panel, node);
+      }
+    });
+    row.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      selectRow(panel, ref);
+      openOrgMenu(panel, node, e.clientX, e.clientY);
+    });
+    row.addEventListener("dragstart", (e) => {
+      if (orgRenaming) {
+        e.preventDefault();
+        return;
+      }
+      orgDrag = { panel, ref };
+      row.classList.add("dragging");
+      e.dataTransfer.setData("application/x-vtt-org", JSON.stringify(orgDrag));
+      if (panel === "actors" && !OT.isFolder(node)) {
+        // keep drag-to-place tokens on the map
+        const actor = entityById("actors", node.actor) || { id: node.actor };
+        e.dataTransfer.setData("application/x-vtt-actor", JSON.stringify(actor));
+        e.dataTransfer.setData("text/plain", actor.id);
+        e.dataTransfer.effectAllowed = "copyMove";
+      } else {
+        e.dataTransfer.effectAllowed = "move";
+      }
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      orgDrag = null;
+      clearDropMarks();
+    });
+    row.addEventListener("dragover", (e) => {
+      if (!orgDrag || orgDrag.panel !== panel || orgDrag.ref === ref) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      const pos = dropPos(row, node, e.clientY);
+      clearDropMarks();
+      row.classList.add(`drop-${pos}`);
+    });
+    row.addEventListener("drop", (e) => {
+      if (!orgDrag || orgDrag.panel !== panel) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const pos = dropPos(row, node, e.clientY);
+      const moved = OT.move(panel, org[panel], orgDrag.ref, ref, pos);
+      clearDropMarks();
+      orgDrag = null;
+      if (!moved) {
+        setStatus("Can't move a folder into itself");
+        return;
+      }
+      saveOrgPanel(panel, moved);
+    });
+  }
+
+  function dropPos(row, node, clientY) {
+    const r = row.getBoundingClientRect();
+    const f = (clientY - r.top) / Math.max(1, r.height);
+    if (OT.isFolder(node)) return f < 0.25 ? "before" : f > 0.75 ? "after" : "inside";
+    return f < 0.5 ? "before" : "after";
+  }
+
+  function clearDropMarks() {
+    for (const el of document.querySelectorAll(".drop-before,.drop-after,.drop-inside,.drop-root")) {
+      el.classList.remove("drop-before", "drop-after", "drop-inside", "drop-root");
+    }
+  }
+
+  // Empty space in a panel list = move to the end of the root level
+  for (const [panel, listEl] of Object.entries(PANEL_LIST_EL)) {
+    listEl.addEventListener("dragover", (e) => {
+      if (!orgDrag || orgDrag.panel !== panel) return;
+      e.preventDefault();
+      clearDropMarks();
+      listEl.classList.add("drop-root");
+    });
+    listEl.addEventListener("dragleave", (e) => {
+      if (e.target === listEl) listEl.classList.remove("drop-root");
+    });
+    listEl.addEventListener("drop", (e) => {
+      if (!orgDrag || orgDrag.panel !== panel) return;
+      e.preventDefault();
+      const moved = OT.move(panel, org[panel], orgDrag.ref, null, "after");
+      clearDropMarks();
+      orgDrag = null;
+      if (moved) saveOrgPanel(panel, moved);
+    });
+  }
+
+  function findRow(panel, ref) {
+    for (const el of PANEL_LIST_EL[panel].querySelectorAll(".org-row")) {
+      if (el.dataset.ref === ref) return el;
+    }
+    return null;
+  }
+
+  function startRename(panel, ref) {
+    const row = findRow(panel, ref);
+    if (!row || orgRenaming) return;
+    const hit = OT.find(panel, org[panel], ref);
+    if (!hit) return;
+    const node = hit.node;
+    const isF = OT.isFolder(node);
+    const id = isF ? node.folder : node[OT.ITEM_KEY[panel]];
+    const current = isF ? node.name : entityName(panel, id);
+    const labelEl = row.querySelector(".oname");
+    if (!labelEl) return;
+    orgRenaming = true;
+    row.draggable = false;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "org-rename";
+    input.value = current;
+    input.maxLength = 120;
+    input.setAttribute("aria-label", "New name");
+    labelEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = async (commit) => {
+      if (done) return;
+      done = true;
+      orgRenaming = false;
+      const next = input.value.trim();
+      if (!commit || !next || next === current) {
+        renderPanel(panel);
+        return;
+      }
+      await renameNode(panel, isF ? "folder" : OT.ITEM_KEY[panel], id, next, current);
+    };
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("dblclick", (e) => e.stopPropagation());
+  }
+
+  async function renameNode(panel, kind, id, name, oldName) {
+    if (kind === "actor" && saveTimer) {
+      // flush pending token moves before the server rewrites token labels
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      await persistTokens();
+    }
+    let data = {};
+    try {
+      const res = await fetch("/api/organization/rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ panel, kind, id, name }),
+      });
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStatus(`Rename failed: ${data.error || res.status}`);
+        renderPanel(panel);
+        return;
+      }
+    } catch (err) {
+      setStatus(`Rename error: ${err}`);
+      renderPanel(panel);
+      return;
+    }
+    const finalName = data.name || name;
+    if (kind === "actor") {
+      await loadTokens(); // server updated token name/label derived from the old name
+      const api = window.pywebview && window.pywebview.api;
+      if (api && typeof api.actor_renamed === "function") {
+        Promise.resolve(api.actor_renamed(id, finalName)).catch(() => {});
+      }
+      if (typeof BroadcastChannel !== "undefined") {
+        try {
+          const ch = new BroadcastChannel("gm-session-rename");
+          ch.postMessage({ kind: "actor", id, name: finalName });
+          ch.close();
+        } catch (_) {}
+      }
+    }
+    await loadLibrary();
+    if (kind === "scene" && id === sceneId && scene) {
+      scene.name = finalName;
+      nameEl.textContent = finalName;
+    }
+    if (kind === "map" && scene && scene.map_info && scene.map_info.id === id) {
+      scene.map_info.name = finalName;
+      renderLibrarySelection();
+    }
+    draw();
+    setStatus(
+      `Renamed “${oldName}” → “${finalName}” (id ${id} unchanged)` +
+        (data.tokens_updated ? ` · ${data.tokens_updated} token label(s) updated` : "")
+    );
+  }
+
+  function selectedFolderId(panel) {
+    const ref = orgSelected[panel];
+    return ref && ref.startsWith("folder:") ? ref.slice(7) : null;
+  }
+
+  async function newFolder(panel, parentId) {
+    let res;
+    try {
+      res = OT.addFolder(panel, org[panel], "New folder", parentId || null);
+    } catch (err) {
+      setStatus(String(err.message || err));
+      return;
+    }
+    const ok = await saveOrgPanel(panel, res.tree);
+    if (!ok) return;
+    const ref = `folder:${res.folder.folder}`;
+    selectRow(panel, ref);
+    startRename(panel, ref);
+  }
+
+  async function postJson(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async function newItem(panel, folderId) {
+    if (panelCollapsed[panel]) togglePanel(panel);
+    try {
+      if (panel === "maps") {
+        pendingMapFolder = folderId || null;
+        mapFileInput.value = "";
+        mapFileInput.click();
+        return;
+      }
+      let ref;
+      if (panel === "actors") {
+        const data = await postJson("/api/actors", { name: "New character", folder: folderId || null });
+        ref = `actor:${data.actor.id}`;
+        setStatus(`Created character “${data.actor.name}” (${data.actor.id}) — type a name`);
+        await loadLibrary();
+      } else {
+        const data = await postJson("/api/scenes", { name: "New scene", folder: folderId || null });
+        ref = `scene:${data.scene.id}`;
+        await loadLibrary();
+        await loadScene(data.scene.id);
+        setStatus(`Created scene “${data.scene.name}” — type a name; pick a map via Maps → right-click → Use in current scene`);
+      }
+      selectRow(panel, ref);
+      startRename(panel, ref);
+    } catch (err) {
+      setStatus(`Create failed: ${err.message || err}`);
+    }
+  }
+
+  let pendingMapFolder = null;
+  async function createMapFromFile(file) {
+    if (!file) return;
+    try {
+      const { layer, statusExtra } = await importMapImage(file, new Set());
+      const name = layer.name || "New map";
+      const def = { id: layer.id, name: layer.name, asset: layer.asset, visible: true, x: layer.x, y: layer.y };
+      if (layer.w != null) def.w = layer.w;
+      if (layer.h != null) def.h = layer.h;
+      const data = await postJson("/api/maps", {
+        name,
+        layers: [def],
+        grid: { size: gridSize },
+        folder: pendingMapFolder,
+      });
+      pendingMapFolder = null;
+      await loadLibrary();
+      const ref = `map:${data.map.id}`;
+      selectRow("maps", ref);
+      setStatus(`Created map “${data.map.name}”${statusExtra} · right-click → Use in current scene / New scene with this map`);
+      startRename("maps", ref);
+    } catch (err) {
+      setStatus(`New map failed: ${err.message || err}`);
+    }
+  }
+
+  async function useMapInCurrentScene(mapId) {
+    if (!sceneId) return;
+    const res = await fetch(`/api/scene/${encodeURIComponent(sceneId)}/map`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ map: mapId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus(`Could not set map: ${data.error || res.status}`);
+      return;
+    }
+    await loadLibrary();
+    await loadScene(sceneId, { fit: false });
+    setStatus(mapId ? `Scene now uses map “${entityName("maps", mapId)}”` : "Map detached from scene");
+  }
+
+  async function newSceneWithMap(mapId) {
+    try {
+      const data = await postJson("/api/scenes", { name: entityName("maps", mapId), map: mapId });
+      await loadLibrary();
+      await loadScene(data.scene.id);
+      const ref = `scene:${data.scene.id}`;
+      selectRow("scenes", ref);
+      startRename("scenes", ref);
+    } catch (err) {
+      setStatus(`Create failed: ${err.message || err}`);
+    }
+  }
+
+  const orgMenuEl = document.getElementById("org-menu");
+  function closeOrgMenu() {
+    if (orgMenuEl) orgMenuEl.hidden = true;
+  }
+  function openOrgMenu(panel, node, x, y) {
+    if (!orgMenuEl) return;
+    orgMenuEl.innerHTML = "";
+    const add = (label, fn) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      b.addEventListener("click", () => {
+        closeOrgMenu();
+        fn();
+      });
+      orgMenuEl.appendChild(b);
+    };
+    const sep = () => orgMenuEl.appendChild(document.createElement("hr"));
+    const ref = OT.refOf(panel, node);
+    add("Rename  (F2)", () => startRename(panel, ref));
+    if (OT.isFolder(node)) {
+      add(node.collapsed ? "Expand folder" : "Collapse folder", () =>
+        saveOrgPanel(panel, OT.setCollapsed(panel, org[panel], node.folder, !node.collapsed))
+      );
+      add("New folder inside", () => newFolder(panel, node.folder));
+      add(`New ${PANEL_LABEL[panel]} here`, () => newItem(panel, node.folder));
+      sep();
+      add("Delete folder (keeps contents)", () => {
+        if (!confirm(`Delete folder “${node.name}”? Its contents move up one level; nothing is deleted.`)) return;
+        saveOrgPanel(panel, OT.deleteFolder(panel, org[panel], node.folder));
+      });
+    } else {
+      const id = node[OT.ITEM_KEY[panel]];
+      if (panel === "actors") add("Open sheet", () => openSheet(id));
+      if (panel === "scenes") add("Open scene", () => loadScene(id).catch((err) => setStatus(String(err))));
+      if (panel === "maps") {
+        add("Use in current scene", () => useMapInCurrentScene(id));
+        add("New scene with this map", () => newSceneWithMap(id));
+      }
+      if (panel === "scenes" && id === sceneId && scene && scene.map_info) {
+        add("Detach map from this scene", () => useMapInCurrentScene(null));
+      }
+      sep();
+      add("Move to top level", () => {
+        const moved = OT.move(panel, org[panel], ref, null, "after");
+        if (moved) saveOrgPanel(panel, moved);
+      });
+    }
+    sep();
+    add("New folder (top level)", () => newFolder(panel, null));
+    orgMenuEl.hidden = false;
+    const w = orgMenuEl.offsetWidth;
+    const h = orgMenuEl.offsetHeight;
+    orgMenuEl.style.left = `${Math.min(x, window.innerWidth - w - 4)}px`;
+    orgMenuEl.style.top = `${Math.min(y, window.innerHeight - h - 4)}px`;
+  }
+  document.addEventListener("mousedown", (e) => {
+    if (orgMenuEl && !orgMenuEl.hidden && !orgMenuEl.contains(e.target)) closeOrgMenu();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeOrgMenu();
+  });
+
+  for (const sec of document.querySelectorAll(".org-panel")) {
+    const panel = sec.dataset.panel;
+    sec.querySelector(".org-caret").addEventListener("click", () => togglePanel(panel));
+    sec.querySelector(".org-head h2").addEventListener("click", () => togglePanel(panel));
+    sec.querySelector(".org-new").addEventListener("click", () => newItem(panel, selectedFolderId(panel)));
+    sec.querySelector(".org-new-folder").addEventListener("click", () => newFolder(panel, selectedFolderId(panel)));
+  }
+  mapFileInput.addEventListener("change", () => {
+    const file = mapFileInput.files && mapFileInput.files[0];
+    if (file) createMapFromFile(file);
+  });
 
   async function loadLibrary() {
     const res = await fetch("/api/library");
@@ -1054,6 +1644,12 @@
     for (const a of library.actors || []) {
       if (a && a.aura_fields) actorAuraFields.set(a.id, TA.pickAuraFields(a.aura_fields));
     }
+    const o = library.organization || {};
+    org = {
+      maps: OT.reconcile("maps", o.maps || [], (library.maps || []).map((m) => m.id)),
+      actors: OT.reconcile("actors", o.actors || [], (library.actors || []).map((a) => a.id)),
+      scenes: OT.reconcile("scenes", o.scenes || [], (library.scenes || []).map((s) => s.id)),
+    };
     renderLibrary();
     draw();
   }
@@ -1925,84 +2521,103 @@
     return res.json();
   }
 
-  async function addMapLayerFromFile(file) {
-    if (!file) return;
+  /** Upload an image (+ optional grid-fit) → layer def with loaded img. Shared by
+   *  "Add layer" (current scene's map) and Maps "+ Map" (new map). */
+  async function importMapImage(file, usedIds) {
     const wantGridFit = !!(toggleGridFitEl && toggleGridFitEl.checked);
     setStatus(`Uploading ${file.name}…`);
-    try {
-      const buf = await file.arrayBuffer();
-      const { hash: originalHash, name } = await postAssetBuffer(
-        buf,
-        file.type || "application/octet-stream",
-        `maps/${file.name}`
-      );
+    const buf = await file.arrayBuffer();
+    const { hash: originalHash, name } = await postAssetBuffer(
+      buf,
+      file.type || "application/octet-stream",
+      `maps/${file.name}`
+    );
 
-      const baseId = String(file.name || "layer")
-        .replace(/\.[^.]+$/, "")
-        .replace(/[^A-Za-z0-9_-]+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        .toLowerCase() || "layer";
-      let id = baseId;
-      let n = 2;
-      const used = new Set(mapLayers.map((l) => l.id));
-      while (used.has(id)) {
-        id = `${baseId}-${n++}`;
-      }
+    const baseId = String(file.name || "layer")
+      .replace(/\.[^.]+$/, "")
+      .replace(/[^A-Za-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase() || "layer";
+    let id = baseId;
+    let n = 2;
+    while (usedIds.has(id)) {
+      id = `${baseId}-${n++}`;
+    }
 
-      let assetHash = originalHash;
-      let layerX = 0;
-      let layerY = 0;
-      let layerW = undefined;
-      let layerH = undefined;
-      let statusExtra = "";
-
-      if (wantGridFit) {
-        try {
-          const srcImg = await loadImageFromBlob(new Blob([buf], { type: file.type || "image/png" }));
-          const detected = detectGridPitch(srcImg);
-          if (!detected) {
-            statusExtra =
-              " · grid-fit: no grid (0.5.3→0.5.5 stages) — imported at natural size (0,0)";
-          } else {
-            const fitted = await gridFitImage(srcImg, detected);
-            const cropBuf = await fitted.blob.arrayBuffer();
-            const cropName = `maps/${file.name.replace(/\.[^.]+$/, "") || "layer"}-gridfit.png`;
-            const cropped = await postAssetBuffer(cropBuf, "image/png", cropName);
-            assetHash = cropped.hash;
-            layerX = fitted.x;
-            layerY = fitted.y;
-            layerW = fitted.w;
-            layerH = fitted.h;
-            statusExtra =
-              ` · grid-fit ${detected.pitch.toFixed(1)}px cells (stage ${detected.stage || 1}), lines at ${detected.phaseX.toFixed(1)},${detected.phaseY.toFixed(1)}px` +
-              (fitted.cropped ? "" : " · uncropped fallback");
-            if (fitted.warning) statusExtra += ` · ${fitted.warning}`;
-          }
-        } catch (fitErr) {
-          statusExtra = ` · grid-fit failed (${fitErr}) — imported without fit`;
+    let assetHash = originalHash;
+    let layerX = 0;
+    let layerY = 0;
+    let layerW = undefined;
+    let layerH = undefined;
+    let statusExtra = "";
+    if (wantGridFit) {
+      try {
+        const srcImg = await loadImageFromBlob(new Blob([buf], { type: file.type || "image/png" }));
+        const detected = detectGridPitch(srcImg);
+        if (!detected) {
+          statusExtra =
+            " · grid-fit: no grid (0.5.3→0.5.5 stages) — imported at natural size (0,0)";
+        } else {
+          const fitted = await gridFitImage(srcImg, detected);
+          const cropBuf = await fitted.blob.arrayBuffer();
+          const cropName = `maps/${file.name.replace(/\.[^.]+$/, "") || "layer"}-gridfit.png`;
+          const cropped = await postAssetBuffer(cropBuf, "image/png", cropName);
+          assetHash = cropped.hash;
+          layerX = fitted.x;
+          layerY = fitted.y;
+          layerW = fitted.w;
+          layerH = fitted.h;
+          statusExtra =
+            ` · grid-fit ${detected.pitch.toFixed(1)}px cells (stage ${detected.stage || 1}), lines at ${detected.phaseX.toFixed(1)},${detected.phaseY.toFixed(1)}px` +
+            (fitted.cropped ? "" : " · uncropped fallback");
+          if (fitted.warning) statusExtra += ` · ${fitted.warning}`;
         }
+      } catch (fitErr) {
+        statusExtra = ` · grid-fit failed (${fitErr}) — imported without fit`;
       }
+    }
 
-      const img = await loadImageByHash(assetHash);
-      const layer = {
-        id,
-        name: file.name.replace(/\.[^.]+$/, "") || name || id,
-        asset: assetHash,
-        visible: true,
-        x: layerX,
-        y: layerY,
-        img,
-        flipX: false,
-        flipY: false,
-        rotation: 0,
-      };
-      if (layerW != null) layer.w = layerW;
-      if (layerH != null) layer.h = layerH;
+    const img = await loadImageByHash(assetHash);
+    const layer = {
+      id,
+      name: file.name.replace(/\.[^.]+$/, "") || name || id,
+      asset: assetHash,
+      visible: true,
+      x: layerX,
+      y: layerY,
+      img,
+      flipX: false,
+      flipY: false,
+      rotation: 0,
+    };
+    if (layerW != null) layer.w = layerW;
+    if (layerH != null) layer.h = layerH;
+    return { layer, statusExtra };
+  }
+
+  async function addMapLayerFromFile(file) {
+    if (!file) return;
+    try {
+      const { layer, statusExtra } = await importMapImage(file, new Set(mapLayers.map((l) => l.id)));
+      const id = layer.id;
+      const assetHash = layer.asset;
       mapLayers.push(layer);
       // Ensure scene has layers key including legacy upgrade
       if (!scene.layers) scene.layers = [];
+      const hadMap = !!(scene && scene.map_info);
       const ok = await persistSceneLayers();
       if (!ok) return;
+      if (!hadMap) {
+        // server created a map for this map-less scene → refresh scene + Maps panel
+        await loadLibrary();
+        const r = await fetch(`/api/scene/${encodeURIComponent(sceneId)}`);
+        if (r.ok) {
+          const fresh = await r.json();
+          scene.map = fresh.map;
+          scene.map_info = fresh.map_info;
+        }
+        renderLibrarySelection();
+      }
       extent = computeExtent(scene);
       renderMapLayersList();
       draw();
@@ -2819,6 +3434,9 @@
     if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) {
       return;
     }
+    if (e.target && e.target.closest && e.target.closest(".org-row")) {
+      return; // sidebar rows: Delete must not remove the selected token/layer
+    }
     if (selectedTokenId) {
       e.preventDefault();
       removeSelectedToken();
@@ -2836,6 +3454,7 @@
   async function boot() {
     layout.classList.add("no-sheet");
     resize();
+    await loadPanelPrefs();
     await loadLibrary();
     await loadScene(sceneId);
   }

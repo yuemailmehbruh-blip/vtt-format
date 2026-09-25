@@ -316,6 +316,46 @@
       color: var(--text);
       border-color: var(--border);
     }
+    /* 0.6.19 organization panels */
+    .org-panel { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.6rem; background: var(--panel-2); }
+    .org-head { display: flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--border); }
+    .org-panel.collapsed .org-head { border-bottom: none; }
+    .org-panel.collapsed .org-body { display: none; }
+    .org-head h2 { margin: 0 !important; flex: 1; cursor: pointer; }
+    .org-btns { display: inline-flex; gap: 0.25rem; flex-wrap: wrap; justify-content: flex-end; }
+    .org-caret, .org-fcaret { background: none; border: none; color: var(--muted); cursor: pointer; width: 1.1rem; padding: 0; font-size: 0.8rem; transition: transform 0.12s; }
+    .org-panel.collapsed .org-caret, .org-row.collapsed .org-fcaret { transform: rotate(-90deg); }
+    .org-body { padding: 0.4rem 0.35rem 0.5rem; }
+    .org-tree { min-height: 1.6rem; border-radius: 6px; }
+    .org-tree.drop-root { outline: 1px dashed var(--accent); }
+    .org-row { position: relative; display: flex; align-items: center; gap: 0.35rem; outline: none; }
+    .org-row:focus-visible { box-shadow: 0 0 0 1px var(--accent); border-radius: 6px; }
+    .org-row.folder { padding: 0.3rem 0.35rem; margin-bottom: 0.2rem; border-radius: 6px; cursor: pointer; color: var(--text); font-size: 0.85rem; font-weight: 600; user-select: none; }
+    .org-row.folder:hover { background: var(--panel); }
+    .org-row.folder .ficon { font-size: 0.85rem; }
+    .org-row.folder .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .org-row.folder .fcount { font-size: 0.68rem; color: var(--muted); font-weight: 400; }
+    .org-row.selected { box-shadow: inset 0 0 0 1px rgba(110, 168, 254, 0.45); border-radius: 6px; }
+    .org-row.drop-before::before, .org-row.drop-after::after { content: ""; position: absolute; left: 0; right: 0; height: 2px; background: var(--accent); }
+    .org-row.drop-before::before { top: -2px; }
+    .org-row.drop-after::after { bottom: -2px; }
+    .org-row.drop-inside { outline: 1px dashed var(--accent); background: rgba(110, 168, 254, 0.08); }
+    .org-row.dragging { opacity: 0.45; }
+    .org-row.scene-item, .org-row.map-item { display: flex; }
+    .map-item { padding: 0.35rem 0.5rem; margin-bottom: 0.2rem; border-radius: 6px; cursor: pointer; border: 1px solid transparent; color: var(--muted); user-select: none; }
+    .map-item:hover { background: var(--panel); color: var(--text); }
+    .map-item.active, .scene-item.active { background: var(--panel); color: var(--text); border-color: var(--border); }
+    .map-item .mthumb { width: 26px; height: 20px; object-fit: cover; border-radius: 3px; background: #0d1016; flex-shrink: 0; border: 1px solid var(--border); }
+    .org-row .oname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .org-row .osub { font-size: 0.66rem; color: var(--muted); flex-shrink: 0; }
+    .org-rename { flex: 1; min-width: 0; font: inherit; font-size: 0.85rem; padding: 0.1rem 0.25rem; background: var(--bg, #0d1016); color: var(--text); border: 1px solid var(--accent); border-radius: 4px; }
+    .org-empty { font-size: 0.72rem; color: var(--muted); padding: 0.25rem 0.4rem; }
+    .org-subinfo { font-size: 0.72rem; color: var(--muted); margin: -0.2rem 0 0.35rem; }
+    #map-file { display: none; }
+    #org-menu { position: fixed; z-index: 50; min-width: 170px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem; box-shadow: 0 6px 24px rgba(0,0,0,0.45); }
+    #org-menu button { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); padding: 0.35rem 0.55rem; font-size: 0.8rem; border-radius: 4px; cursor: pointer; }
+    #org-menu button:hover { background: var(--panel-2); }
+    #org-menu hr { border: none; border-top: 1px solid var(--border); margin: 0.2rem 0; }
     #viewport {
       position: relative;
       overflow: hidden;
@@ -451,38 +491,74 @@
   </header>
   <div id="layout">
     <aside id="library">
-      <div class="section-head" style="margin-bottom:0.35rem;">
-        <h2 style="margin:0;">Characters / Actors</h2>
-        <button type="button" class="btn-add" id="btn-sheet-builder" title="Open sheet builder (fields + automations)">Sheet builder</button>
-      </div>
-      <div id="actor-list"></div>
-      <h2>Scenes</h2>
-      <div id="scene-list"></div>
-      <div class="section-head">
-        <h2>Map layers</h2>
-        <div style="display:inline-flex;align-items:center;gap:0.45rem;">
-          <label title="Image already has a drawn grid — 0.5.4 center 3×3 then 0.5.5 half-pitch fallback; align to map squares on import" style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.72rem;color:var(--muted);cursor:pointer;user-select:none;">
-            <input type="checkbox" id="toggle-grid-fit" /> Has grid
-          </label>
-          <button type="button" class="btn-add" id="btn-infer-grid-walls" title="Detect wall lines on the editing/top map layer and align a square grid when &gt;50% of walls match">Infer grid from walls</button>
-          <button type="button" class="btn-add" id="btn-add-layer" title="Upload a map image as a new layer">Add layer</button>
+      <section class="org-panel" data-panel="maps" id="panel-maps">
+        <div class="org-head">
+          <button type="button" class="org-caret" aria-label="Collapse Maps" title="Collapse / expand Maps">▾</button>
+          <h2>Maps</h2>
+          <span class="org-btns">
+            <button type="button" class="btn-add org-new-folder" title="New folder in Maps">+ Folder</button>
+            <button type="button" class="btn-add org-new" title="New map: import an image (uses Has grid)">+ Map</button>
+          </span>
         </div>
-      </div>
-      <div class="layer-tools" id="layer-tools">
-        <div class="row">
-          <label title="Snap map layer position/size to grid on release (independent of token snap)">
-            <input type="checkbox" id="toggle-snap-layers" /> Snap layers
-          </label>
+        <div class="org-body">
+          <div class="org-tree" id="map-list" data-panel="maps"></div>
+          <div class="section-head">
+            <h2 title="Image layers of the map used by the current scene">Scene map layers</h2>
+            <div style="display:inline-flex;align-items:center;gap:0.45rem;">
+              <label title="Image already has a drawn grid — 0.5.4 center 3×3 then 0.5.5 half-pitch fallback; align to map squares on import" style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.72rem;color:var(--muted);cursor:pointer;user-select:none;">
+                <input type="checkbox" id="toggle-grid-fit" /> Has grid
+              </label>
+              <button type="button" class="btn-add" id="btn-infer-grid-walls" title="Detect wall lines on the editing/top map layer and align a square grid when &gt;50% of walls match">Infer grid from walls</button>
+              <button type="button" class="btn-add" id="btn-add-layer" title="Upload a map image as a new layer">Add layer</button>
+            </div>
+          </div>
+          <div id="scene-map-info" class="org-subinfo"></div>
+          <div class="layer-tools" id="layer-tools">
+            <div class="row">
+              <label title="Snap map layer position/size to grid on release (independent of token snap)">
+                <input type="checkbox" id="toggle-snap-layers" /> Snap layers
+              </label>
+            </div>
+            <div class="row" id="layer-xforms" title="Transform the layer in Edit">
+              <button type="button" class="layer-xform-btn" id="btn-layer-scale" title="Set width/height in tiles">Scale</button>
+              <button type="button" class="layer-xform-btn" id="btn-layer-flip-h" title="Mirror horizontally">Flip H</button>
+              <button type="button" class="layer-xform-btn" id="btn-layer-flip-v" title="Mirror vertically">Flip V</button>
+              <button type="button" class="layer-xform-btn" id="btn-layer-rotate" title="Rotate 90° clockwise">Rotate</button>
+            </div>
+          </div>
+          <div id="layer-list"></div>
         </div>
-        <div class="row" id="layer-xforms" title="Transform the layer in Edit">
-          <button type="button" class="layer-xform-btn" id="btn-layer-scale" title="Set width/height in tiles">Scale</button>
-          <button type="button" class="layer-xform-btn" id="btn-layer-flip-h" title="Mirror horizontally">Flip H</button>
-          <button type="button" class="layer-xform-btn" id="btn-layer-flip-v" title="Mirror vertically">Flip V</button>
-          <button type="button" class="layer-xform-btn" id="btn-layer-rotate" title="Rotate 90° clockwise">Rotate</button>
+      </section>
+      <section class="org-panel" data-panel="actors" id="panel-actors">
+        <div class="org-head">
+          <button type="button" class="org-caret" aria-label="Collapse Characters" title="Collapse / expand Characters">▾</button>
+          <h2>Characters</h2>
+          <span class="org-btns">
+            <button type="button" class="btn-add" id="btn-sheet-builder" title="Open sheet builder (fields + automations)">Sheet builder</button>
+            <button type="button" class="btn-add org-new-folder" title="New folder in Characters">+ Folder</button>
+            <button type="button" class="btn-add org-new" title="New blank character">+ Char</button>
+          </span>
         </div>
-      </div>
-      <div id="layer-list"></div>
+        <div class="org-body">
+          <div class="org-tree" id="actor-list" data-panel="actors"></div>
+        </div>
+      </section>
+      <section class="org-panel" data-panel="scenes" id="panel-scenes">
+        <div class="org-head">
+          <button type="button" class="org-caret" aria-label="Collapse Scenes" title="Collapse / expand Scenes">▾</button>
+          <h2>Scenes</h2>
+          <span class="org-btns">
+            <button type="button" class="btn-add org-new-folder" title="New folder in Scenes">+ Folder</button>
+            <button type="button" class="btn-add org-new" title="New scene (uses no map until you pick one)">+ Scene</button>
+          </span>
+        </div>
+        <div class="org-body">
+          <div class="org-tree" id="scene-list" data-panel="scenes"></div>
+        </div>
+      </section>
       <input type="file" id="layer-file" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif" />
+      <input type="file" id="map-file" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif" />
+      <div id="org-menu" role="menu" hidden></div>
     </aside>
     <div id="viewport">
       <canvas id="map"></canvas>
@@ -515,6 +591,7 @@
   <script src="/infer-grid-from-walls.js"></script>
   <script src="/image-xform.js"></script>
   <script src="/token-auras.js"></script>
+  <script src="/org-tree.js"></script>
   <script src="/session.js"></script>
 </body>
 </html>

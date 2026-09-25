@@ -287,6 +287,34 @@ class DesktopApi:
                 pass
         return f"notified:{notified}"
 
+    def actor_renamed(self, actor_id: str, name: str = "") -> str:
+        """Map → all windows: actor display name changed (id unchanged).
+
+        Retitles the actor's open sheet window and lets every window update
+        labels via window.__gmActorRenamed(actorId, name)."""
+        actor_id = (actor_id or "").strip()
+        name = str(name or "").strip()
+        if not actor_id or not name:
+            return "error: missing actor_id/name"
+        win = self._sheets.get(actor_id)
+        if win is not None:
+            try:
+                win.set_title(name)
+            except Exception:  # noqa: BLE001
+                pass
+        js = (
+            "window.__gmActorRenamed && "
+            f"window.__gmActorRenamed({json.dumps(actor_id)}, {json.dumps(name)})"
+        )
+        notified = 0
+        for w in list(webview.windows):
+            try:
+                w.evaluate_js(js)
+                notified += 1
+            except Exception:  # noqa: BLE001
+                pass
+        return f"notified:{notified}"
+
     def session_roll(self, label, result, detail="", t=None) -> str:
         """Forward a sheet (or other) roll into the Rolls window session history.
 

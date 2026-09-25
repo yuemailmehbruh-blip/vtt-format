@@ -965,6 +965,25 @@
     return data;
   }
 
+  // 0.6.19: actor renamed from the map sidebar → retitle this sheet (id unchanged)
+  function applyActorRename(id, name) {
+    if (!actorId || id !== actorId || !name) return;
+    titleEl.textContent = name;
+    document.title = `${name} · Sheet`;
+  }
+  window.__gmActorRenamed = applyActorRename;
+  if (typeof BroadcastChannel !== "undefined") {
+    try {
+      const rc = new BroadcastChannel("gm-session-rename");
+      rc.onmessage = (ev) => {
+        const d = ev && ev.data;
+        if (d && d.kind === "actor") applyActorRename(d.id, d.name);
+      };
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
   async function load() {
     if (!actorId) {
       titleEl.textContent = "No actor";
