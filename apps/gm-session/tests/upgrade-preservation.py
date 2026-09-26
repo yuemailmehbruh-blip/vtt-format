@@ -16,6 +16,10 @@
 * Parse failures never cause a rewrite (tokens, players.yaml, schema marker, scenes).
 * A campaign's own sheet template wins over the shipped default template.
 * The installer script installs no campaign files and deletes nothing.
+* 0.7.3 automation shapes (pop-up step nodes, toggle-function entries, compressed blocks
+  with and without a stored size, keys a builder does not know) load, serve and survive
+  startup byte-for-byte; a library import only appends (the compiled sheet's own
+  compressed blocks and every existing node/edge/field stay exactly as they were).
 """
 from __future__ import annotations
 
@@ -352,6 +356,67 @@ def test_new_campaign_and_installer(tmp: Path) -> None:
     check(not re.search(r"^\[(InstallDelete|UninstallDelete)\]", piss, re.M), "player installer deletes nothing")
 
 
+def test_073_automation_shapes(tmp: Path) -> None:
+    root = tmp / "shapes073"
+    populated_071(root)
+    popup = {"id": "n_pop", "kind": "popup", "prompt": "Bonus?", "var": "bonus", "vtype": "choice",
+             "choices": "Adv=2, Normal=0", "default": 0, "x": 10, "y": 500}
+    toggle = {"id": "n_tog", "kind": "entry", "name": "rage", "mode": "toggle", "x": 10, "y": 600}
+    blocks = [
+        {"id": "c_old", "name": "old block", "nodeIds": ["n_str"], "x": 5, "y": 6},                       # pre-0.7.3: no size
+        {"id": "c_sized", "name": "sized", "nodeIds": ["n_pop"], "x": 1, "y": 2, "w": 333, "h": 111},
+        {"id": "c_future", "name": "future", "nodeIds": ["n_tog"], "x": 0, "y": 0, "w": 200, "h": 90, "color": "#abc", "v9": {"k": 1}},
+    ]
+    bpath = root / "editor-scratch/sheets/player.builder.json"
+    b = json.loads(bpath.read_text())
+    b["graph"]["nodes"] += [popup, toggle]
+    b["graph"]["collapsed"] = blocks
+    w(bpath, json.dumps(b, indent=2) + "\n")
+    ypath = root / "build/sheets/player.yaml"
+    y = yaml.safe_load(ypath.read_text())
+    y["graph"]["nodes"] += [popup, toggle]
+    y["graph"]["collapsed"] = blocks
+    ydump(ypath, y, "# Compiled by the GM (custom)\n")
+    (root / "editor-scratch/mechanics").mkdir(parents=True, exist_ok=True)
+    w(root / "editor-scratch/mechanics/legacy_fn.json", json.dumps({"name": "legacy_fn", "nodes": [{"id": "e", "kind": "entry", "name": "legacy_fn"}], "edges": []}))
+    w(root / "editor-scratch/mechanics/tiny_macro.json", json.dumps({"name": "tiny_macro", "kind": "macro",
+      "nodes": [{"id": "a", "kind": "field", "field": "[x]", "role": "source"}, {"id": "o", "kind": "field", "field": "[x]_tiny", "role": "output"}],
+      "edges": [{"id": "e", "from": "a", "to": "o", "toPort": 0}], "collapsed": [{"id": "c", "name": "tiny_macro", "nodeIds": ["a", "o"]}]}))
+    before = hashes(root)
+    server, base = start(root)
+    try:
+        exercise_reads(base, root)
+        st, lib = req("GET", base + "/api/mechanics")
+        check({m["name"]: m["kind"] for m in lib["mechanics"]} == {"legacy_fn": "function", "tiny_macro": "macro"}, "library lists old (kind-less) and new files")
+        st, sheet = req("GET", base + "/api/sheet/party-fighter")
+        g = sheet["graph"]
+        check(popup in g["nodes"] and toggle in g["nodes"], "pop-up + toggle-entry nodes served verbatim to the sheet")
+        check(g["collapsed"] == blocks, "compressed blocks served verbatim (no size invented, unknown keys kept)")
+        st, bd = req("GET", base + "/api/sheet-builder/player")
+        check(bd["graph"]["collapsed"] == blocks, "builder receives the blocks verbatim (old block has no size → default drawn)")
+    finally:
+        stop(server)
+    after = hashes(root)
+    changed = sorted(k for k in before if after.get(k) != before[k])
+    check(changed == [], f"0.7.3 shapes: startup + reads change no file ({changed})")
+    # an import appends only
+    server, base = start(root, players=False)
+    try:
+        st, d = req("POST", base + "/api/sheet-builder/player/import-mechanic", {"name": "tiny_macro"})
+        check(st == 200 and d["kind"] == "macro", "import a macro into the customised sheet")
+    finally:
+        stop(server)
+    b2 = json.loads(bpath.read_text())
+    y2 = yaml.safe_load(ypath.read_text())
+    check(b2["graph"]["nodes"][: len(b["graph"]["nodes"])] == b["graph"]["nodes"] and b2["graph"]["collapsed"][:3] == blocks,
+          "builder data: existing nodes + blocks untouched by the import")
+    check(y2["graph"]["nodes"][: len(y["graph"]["nodes"])] == y["graph"]["nodes"] and y2["graph"]["collapsed"][:3] == blocks
+          and y2["graph"]["edges"][: len(y["graph"]["edges"])] == y["graph"]["edges"], "compiled sheet: existing graph (incl. compressed blocks) untouched")
+    check(all(b2["fields"][k] == v for k, v in b["fields"].items()) and all(y2["fields"][k] == v for k, v in y["fields"].items()),
+          "every existing field definition untouched")
+    check(y2.get("name") == "House Rules Sheet" and y2.get("layout") == y.get("layout"), "sheet name + layout untouched")
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -359,6 +424,7 @@ def main() -> None:
         test_legacy_06x(tmp)
         test_parse_failures(tmp)
         test_new_campaign_and_installer(tmp)
+        test_073_automation_shapes(tmp)
     print("upgrade-preservation: all ok")
 
 

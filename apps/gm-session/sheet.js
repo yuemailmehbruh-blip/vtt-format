@@ -508,6 +508,19 @@
     const curN = Number(cur);
     const on = Number.isFinite(curN) && curN !== 0;
     const next = on ? 0 : 1;
+    // 0.7.3 toggle function (entry marked mode: toggle): flip + run its steps (pop-ups etc.)
+    // with entry = the new 0/1 value; everything is saved together, and a cancelled
+    // pop-up leaves the field unflipped.
+    if (RT && typeof RT.entryModeFor === "function" && RT.entryModeFor(graph, name) === "toggle") {
+      await runNamedFunction(name, {
+        mode: "toggle",
+        label,
+        statusFn,
+        entryValue: next,
+        extraWrites: { [name]: next },
+      });
+      return;
+    }
     actorFields[name] = next;
     liveValues[name] = next;
     try {
@@ -543,15 +556,31 @@
       statusFn("SheetRuntime missing");
       return;
     }
+    if (runBusy) {
+      statusFn("Finish the open pop-up first");
+      return;
+    }
     recomputeLive();
-    const evalOpts = {};
+    const evalOpts = { prompt: askPopup };
+    currentRunLabel = label;
     if (optsIn.entryValue !== undefined) evalOpts.entryValue = optsIn.entryValue;
-    const result = RT.evaluateNamedFunction(
-      graph,
-      fid,
-      liveValues,
-      Object.keys(evalOpts).length ? evalOpts : undefined
-    );
+    let result;
+    runBusy = true;
+    try {
+      // 0.7.3: pop-up steps are asked first (in order); nothing is rolled, sent or saved
+      // until every pop-up is answered, so Cancel has no side effects at all.
+      result =
+        typeof RT.runNamedFunctionAsync === "function"
+          ? await RT.runNamedFunctionAsync(graph, fid, liveValues, evalOpts)
+          : RT.evaluateNamedFunction(graph, fid, liveValues, evalOpts);
+    } finally {
+      runBusy = false;
+      closePopup();
+    }
+    if (result && result.cancelled) {
+      statusFn(`${label}: cancelled — nothing rolled, sent or saved`);
+      return;
+    }
     if (!result.ok) {
       statusFn(result.error || "Function failed");
       return;
@@ -573,7 +602,7 @@
       showRollToast(`${chatLabel}: ${m.value}${detail ? ` (${detail})` : ""}`);
       publishRoll(chatLabel, m.value, detail);
     }
-    const writes = result.writes || {};
+    const writes = { ...(result.writes || {}), ...(optsIn.extraWrites || {}) };
     const keys = Object.keys(writes);
     if (keys.length) {
       for (const k of keys) {
@@ -610,6 +639,101 @@
     await runNamedFunction(functionId, opts);
   }
 
+  // ---- 0.7.3 pop-up step modal (shared by the GM app and the player app sheet) ----
+  let runBusy = false;
+  let popupEl = null;
+  let popupDone = null;
+
+  function closePopup(value) {
+    if (popupEl) popupEl.hidden = true;
+    const done = popupDone;
+    popupDone = null;
+    if (done) done(value === undefined ? null : value);
+  }
+
+  function ensurePopupEl() {
+    if (popupEl) return popupEl;
+    popupEl = document.createElement("div");
+    popupEl.id = "popup-step";
+    popupEl.className = "popup-step-backdrop";
+    popupEl.hidden = true;
+    popupEl.innerHTML =
+      `<form class="popup-step" role="dialog" aria-modal="true" aria-labelledby="popup-step-prompt">` +
+      `<div class="popup-step-head"><span id="popup-step-title"></span><span id="popup-step-count"></span></div>` +
+      `<label id="popup-step-prompt" for="popup-step-input"></label>` +
+      `<div id="popup-step-field"></div>` +
+      `<p class="popup-step-hint">Only used for this run — not saved to the sheet.</p>` +
+      `<p class="popup-step-err" id="popup-step-err" hidden></p>` +
+      `<div class="popup-step-actions"><button type="button" id="popup-step-cancel">Cancel</button>` +
+      `<button type="submit" class="primary" id="popup-step-ok">OK</button></div></form>`;
+    document.body.appendChild(popupEl);
+    popupEl.querySelector("#popup-step-cancel").addEventListener("click", () => closePopup(null));
+    popupEl.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closePopup(null);
+      }
+    });
+    return popupEl;
+  }
+
+  /** Resolves the entered value, or null on Cancel / Escape. */
+  function askPopup(spec, info) {
+    const el = ensurePopupEl();
+    if (popupDone) closePopup(null);
+    const form = el.querySelector("form");
+    el.querySelector("#popup-step-title").textContent = currentRunLabel || "Function";
+    el.querySelector("#popup-step-count").textContent =
+      info && info.total > 1 ? `step ${info.index + 1} of ${info.total}` : "";
+    el.querySelector("#popup-step-prompt").textContent = spec.prompt || spec.var || "Value";
+    const errEl = el.querySelector("#popup-step-err");
+    errEl.hidden = true;
+    const field = el.querySelector("#popup-step-field");
+    const def = spec.default == null ? "" : String(spec.default);
+    if (spec.type === "choice" && spec.choices && spec.choices.length) {
+      field.innerHTML =
+        `<select id="popup-step-input">` +
+        spec.choices
+          .map(
+            (c) =>
+              `<option value="${esc(String(c.value))}"${String(c.value) === def ? " selected" : ""}>${esc(c.label)}</option>`
+          )
+          .join("") +
+        `</select>`;
+    } else if (spec.type === "text") {
+      field.innerHTML = `<input id="popup-step-input" type="text" value="${esc(def)}" autocomplete="off" />`;
+    } else {
+      field.innerHTML = `<input id="popup-step-input" type="number" step="any" value="${esc(def)}" />`;
+    }
+    const input = field.querySelector("#popup-step-input");
+    el.hidden = false;
+    return new Promise((resolve) => {
+      popupDone = resolve;
+      form.onsubmit = (e) => {
+        e.preventDefault();
+        let v = input.value;
+        if (spec.type === "number") {
+          const num = Number(v);
+          if (String(v).trim() === "" || !Number.isFinite(num)) {
+            errEl.textContent = "Enter a number";
+            errEl.hidden = false;
+            input.focus();
+            return;
+          }
+          v = num;
+        }
+        closePopup(v);
+      };
+      requestAnimationFrame(() => {
+        try {
+          input.focus();
+          if (input.select) input.select();
+        } catch (_) {}
+      });
+    });
+  }
+  let currentRunLabel = "";
+
   function namedFunctionsOnSheet() {
     const nodes = (graph && graph.nodes) || [];
     const names = [];
@@ -626,6 +750,22 @@
     return names;
   }
 
+  /** Compressed blocks without an entry = formula macros (compiled continuously). */
+  function formulaMacroNames() {
+    const nodes = (graph && graph.nodes) || [];
+    const byId = new Map(nodes.map((n) => [n && n.id, n]));
+    const out = [];
+    for (const c of (graph && graph.collapsed) || []) {
+      if (!c || !Array.isArray(c.nodeIds)) continue;
+      const hasEntry = c.nodeIds.some((id) => {
+        const n = byId.get(id);
+        return n && (n.kind === "entry" || n.kind === "function");
+      });
+      if (!hasEntry && c.name) out.push(String(c.name));
+    }
+    return out;
+  }
+
   function closeMechImport() {
     if (!mechImportPanel) return;
     mechImportPanel.hidden = true;
@@ -638,12 +778,23 @@
     mechImportPanel.classList.add("open");
   }
 
+  const KIND_LABEL = { function: "trigger function", toggle: "toggle function", macro: "formula macro" };
+
+  /** Names already used on this sheet, per library kind (collision preview). */
+  function takenNamesFor(kind) {
+    if (kind === "macro") {
+      return new Set(((graph && graph.collapsed) || []).map((c) => String((c && c.name) || "").trim()));
+    }
+    return new Set(namedFunctionsOnSheet());
+  }
+
   async function showMechImportChooser() {
     if (!sheetId) {
       setMechanicsStatus("No sheet_id on this actor — cannot import");
       return;
     }
     openMechImport();
+    hideImportRename();
     setMechanicsStatus("Loading mechanics library…");
     try {
       const res = await fetch("/api/mechanics");
@@ -652,74 +803,131 @@
         setMechanicsStatus(data.error || `Library load failed (${res.status})`);
         return;
       }
-      const present = new Set(namedFunctionsOnSheet());
-      const all = Array.isArray(data.mechanics) ? data.mechanics : [];
-      const available = all.filter((m) => m && m.name && !present.has(String(m.name)));
+      const all = (Array.isArray(data.mechanics) ? data.mechanics : []).filter((m) => m && m.name);
       if (!mechImportSelect) return;
       mechImportSelect.innerHTML = "";
       if (mechImportHint) {
-        if (!all.length) {
-          mechImportHint.hidden = false;
-          mechImportHint.textContent =
-            "Library empty — publish a Function from Sheet builder (Publish to library).";
-        } else if (!available.length) {
-          mechImportHint.hidden = false;
-          mechImportHint.textContent =
-            "All library mechanics are already on this sheet.";
-        } else {
-          mechImportHint.hidden = true;
-          mechImportHint.textContent = "";
-        }
+        mechImportHint.hidden = !!all.length;
+        mechImportHint.textContent = all.length
+          ? ""
+          : "Library empty — in Sheet builder select a Function, toggle function or compressed macro and use Publish to library.";
       }
-      for (const m of available) {
+      // 0.7.3: trigger functions, toggle functions and formula macros; names already on the
+      // sheet stay listed (marked) — importing one asks for a new name, never overwrites.
+      const order = { function: 0, toggle: 1, macro: 2 };
+      all.sort((a, b) => (order[a.kind] ?? 3) - (order[b.kind] ?? 3) || String(a.name).localeCompare(String(b.name)));
+      for (const m of all) {
+        const kind = m.kind || "function";
+        const onSheet = takenNamesFor(kind).has(String(m.name));
         const opt = document.createElement("option");
         opt.value = String(m.name);
-        opt.textContent = String(m.name);
+        opt.dataset.kind = kind;
+        opt.textContent = `${m.name} — ${KIND_LABEL[kind] || kind}${onSheet ? " (name on sheet: import renames)" : ""}`;
+        if (kind === "unreadable") opt.disabled = true;
         mechImportSelect.appendChild(opt);
       }
-      if (btnMechImportConfirm) btnMechImportConfirm.disabled = !available.length;
-      setMechanicsStatus(
-        available.length
-          ? `Choose a mechanic (${available.length} available)`
-          : all.length
-            ? "Nothing new to import"
-            : "Library empty"
-      );
+      const firstOk = [...mechImportSelect.options].find((o) => !o.disabled);
+      if (firstOk) firstOk.selected = true;
+      if (btnMechImportConfirm) btnMechImportConfirm.disabled = !firstOk;
+      setMechanicsStatus(all.length ? `${all.length} in library` : "Library empty");
     } catch (err) {
       setMechanicsStatus(String(err));
     }
   }
 
+  let importRenameEl = null;
+  function hideImportRename() {
+    if (importRenameEl) importRenameEl.hidden = true;
+  }
+
+  /** Collision: ask for a new name (prefilled with the server's suggestion). */
+  function askImportRename(source, data) {
+    if (!mechImportPanel) return Promise.resolve(null);
+    if (!importRenameEl) {
+      importRenameEl = document.createElement("div");
+      importRenameEl.className = "mech-import-rename";
+      importRenameEl.innerHTML =
+        `<p class="mech-empty" id="mech-rename-msg"></p>` +
+        `<label>Import as <input type="text" id="mech-rename-input" autocomplete="off" /></label>` +
+        `<div class="mech-import-actions"><button type="button" class="primary" id="mech-rename-ok">Import as new name</button>` +
+        `<button type="button" id="mech-rename-cancel">Cancel</button></div>`;
+      mechImportPanel.appendChild(importRenameEl);
+    }
+    importRenameEl.hidden = false;
+    importRenameEl.querySelector("#mech-rename-msg").textContent =
+      `${data.error || "Name already used."} The existing one is kept as it is.`;
+    const input = importRenameEl.querySelector("#mech-rename-input");
+    input.value = data.suggested || `${source}_2`;
+    return new Promise((resolve) => {
+      const done = (v) => {
+        importRenameEl.hidden = true;
+        resolve(v);
+      };
+      importRenameEl.querySelector("#mech-rename-ok").onclick = () => {
+        const v = input.value.trim();
+        if (!/^[A-Za-z0-9_-]+$/.test(v)) {
+          setMechanicsStatus("Name: letters, digits, _ or -");
+          return;
+        }
+        done(v);
+      };
+      importRenameEl.querySelector("#mech-rename-cancel").onclick = () => done(null);
+      input.onkeydown = (e) => {
+        if (e.key === "Enter") importRenameEl.querySelector("#mech-rename-ok").click();
+        else if (e.key === "Escape") done(null);
+      };
+      requestAnimationFrame(() => {
+        input.focus();
+        input.select();
+      });
+    });
+  }
+
+  async function postImport(name, as) {
+    const res = await fetch(`/api/sheet-builder/${encodeURIComponent(sheetId)}/import-mechanic`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(as ? { name, as } : { name }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return { res, data };
+  }
+
   async function confirmMechImport() {
     if (!sheetId) {
-      setMechanicsStatus("Missing sheet_id");
+      setMechanicsStatus("No sheet_id on this actor — cannot import");
       return;
     }
     const name = mechImportSelect && mechImportSelect.value;
     if (!name) {
-      setMechanicsStatus("Select a mechanic first");
+      setMechanicsStatus("Choose a mechanic to import");
       return;
     }
     setMechanicsStatus(`Importing "${name}"…`);
     try {
-      const res = await fetch(
-        `/api/sheet-builder/${encodeURIComponent(sheetId)}/import-mechanic`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name }),
+      let as = null;
+      let { res, data } = await postImport(name, null);
+      while (res.status === 409 && data.conflict === "name") {
+        as = await askImportRename(name, data);
+        if (!as) {
+          setMechanicsStatus("Import cancelled — sheet unchanged");
+          return;
         }
-      );
-      const data = await res.json().catch(() => ({}));
+        ({ res, data } = await postImport(name, as));
+      }
       if (!res.ok) {
         setMechanicsStatus(data.error || `Import failed (${res.status})`);
         return;
       }
       closeMechImport();
       await load();
-      setMechanicsStatus(
-        `Imported mechanic "${name}" (${data.graph_node_count ?? "?"} graph nodes)`
-      );
+      const kind = KIND_LABEL[data.kind] || data.kind || "mechanic";
+      let msg = `Imported ${kind} "${data.name || name}"${data.renamed ? ` (from "${name}")` : ""}`;
+      if (data.added_fields && data.added_fields.length) msg += ` · added fields: ${data.added_fields.join(", ")}`;
+      if (data.missing_fields && data.missing_fields.length) {
+        msg += ` · uses fields not on this sheet (read as 0): ${data.missing_fields.join(", ")}`;
+      }
+      setMechanicsStatus(msg);
     } catch (err) {
       setMechanicsStatus(String(err));
     }
@@ -736,15 +944,22 @@
       return;
     }
     let html =
-      `<p class="mech-empty" style="margin-bottom:0.5rem">Trigger runs the named function. Toggle flips field <em>name</em> between 0 and 1 (does not invoke the graph). Templates with <code>[x]</code> need a button id (e.g. check_ATK) — Trigger on the template name alone will error.</p>`;
+      `<p class="mech-empty" style="margin-bottom:0.5rem">Trigger runs the named function. Toggle flips field <em>name</em> between 0 and 1; a <em>toggle function</em> (Function entry set to toggle in the builder) also runs its steps with the new value. Templates with <code>[x]</code> need a button id (e.g. check_ATK) — Trigger on the template name alone will error.</p>`;
     for (const name of names) {
       const isTemplate = name.includes("[x]");
       const pressed = fieldToggleOn(name);
+      const isToggleFn = !!(RT && RT.entryModeFor && RT.entryModeFor(graph, name) === "toggle");
       html += `<div class="mech-row" data-fn="${esc(name)}">`;
-      html += `<span class="mech-name">${esc(name)}${isTemplate ? ' <span class="mech-empty">(template)</span>' : ""}</span>`;
-      html += `<button type="button" class="mech-trigger" data-action="trigger" title="${isTemplate ? "Needs button function_id with concrete ID" : "Run named function"}">Trigger</button>`;
-      html += `<button type="button" class="mech-toggle${pressed ? " toggle-on" : ""}" data-action="toggle" aria-pressed="${pressed ? "true" : "false"}">${pressed ? "On" : "Off"}</button>`;
+      html += `<span class="mech-name">${esc(name)}${isTemplate ? ' <span class="mech-empty">(template)</span>' : ""}${isToggleFn ? ' <span class="mech-empty">(toggle function)</span>' : ""}</span>`;
+      if (!isToggleFn) {
+        html += `<button type="button" class="mech-trigger" data-action="trigger" title="${isTemplate ? "Needs button function_id with concrete ID" : "Run named function"}">Trigger</button>`;
+      }
+      html += `<button type="button" class="mech-toggle${pressed ? " toggle-on" : ""}" data-action="toggle" aria-pressed="${pressed ? "true" : "false"}" title="${isToggleFn ? `Flip ${esc(name)} 0/1 and run its steps` : `Flip field ${esc(name)} 0/1`}">${pressed ? "On" : "Off"}</button>`;
       html += `</div>`;
+    }
+    const macros = formulaMacroNames();
+    if (macros.length) {
+      html += `<p class="mech-empty" style="margin-top:0.6rem">Formula macros (always on): ${macros.map((m) => `<code>${esc(m)}</code>`).join(", ")}</p>`;
     }
     mechanicsListEl.innerHTML = html;
     mechanicsListEl.querySelectorAll(".mech-row").forEach((row) => {
@@ -1641,6 +1856,10 @@
     appearance: () => appearance,
     liveValues: () => liveValues,
     runNamedFunction: (id) => runNamedFunction(id),
+    runToggleField: (id) => runToggleField(id),
+    popupOpen: () => !!(popupEl && !popupEl.hidden),
+    graph: () => graph,
+    actorFields: () => actorFields,
   };
 
   // --- Zoom / pan on session sheet ---

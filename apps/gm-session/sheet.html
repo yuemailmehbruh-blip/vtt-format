@@ -358,6 +358,39 @@
     .crop-tools input[type="number"] { width: 4.2rem; padding: 0.2rem 0.3rem; border-radius: 5px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
     .crop-actions { display: flex; justify-content: flex-end; gap: 0.4rem; margin-top: 0.65rem; }
     #crop-dialog button.primary { border-color: #3d6cb0; background: #2a4a7a; }
+    .mech-import-rename { display: flex; flex-direction: column; gap: 0.35rem; border-top: 1px dashed var(--border); padding-top: 0.4rem; }
+    .mech-import-rename[hidden] { display: none; }
+    .mech-import-rename input { padding: 0.25rem 0.4rem; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+    /* 0.7.3 pop-up step (automation asks for a value for this run only) */
+    .popup-step-backdrop {
+      position: fixed; inset: 0; z-index: 50;
+      background: rgba(6, 8, 12, 0.62);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .popup-step-backdrop[hidden] { display: none; }
+    .popup-step {
+      min-width: 17rem; max-width: 90vw;
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--btn); border-radius: 10px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+      padding: 0.9rem 1rem 0.8rem;
+      display: flex; flex-direction: column; gap: 0.5rem;
+    }
+    .popup-step-head { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.75rem; color: var(--muted); }
+    .popup-step-head span:first-child { color: var(--btn); font-weight: 600; }
+    .popup-step label { font-weight: 600; font-size: 0.95rem; }
+    .popup-step input, .popup-step select {
+      width: 100%; padding: 0.4rem 0.5rem; font: inherit; font-size: 1rem;
+      background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    }
+    .popup-step-hint { margin: 0; font-size: 0.72rem; color: var(--muted); }
+    .popup-step-err { margin: 0; font-size: 0.8rem; color: #f07178; }
+    .popup-step-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+    .popup-step-actions button {
+      padding: 0.35rem 0.9rem; border-radius: 6px; font: inherit; cursor: pointer;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    }
+    .popup-step-actions button.primary { background: #2a4a7a; border-color: #3d6cb0; font-weight: 600; }
   </style>
 </head>
 <body>

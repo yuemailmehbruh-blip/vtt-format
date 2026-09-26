@@ -53,6 +53,13 @@
   /** Graph drag / wire state */
   let graphDrag = null;
   let wireFrom = null; // { nodeId, x, y } world coords
+  /** 0.7.3 isolated edit of one compressed block: { cid, snapshot, view, confirming } | null */
+  let isoEdit = null;
+  /** Compressed block size limits (resize handle) */
+  const BLOCK_MIN_W = 120;
+  const BLOCK_MIN_H = 56;
+  const BLOCK_DEFAULT_W = 168;
+  const BLOCK_DEFAULT_H = 72;
 
   let uidCounter = 1;
   function uid(prefix) {
@@ -329,6 +336,7 @@
       throw new Error(err.error || `load failed: ${res.status}`);
     }
     const data = await res.json();
+    if (isoEdit) leaveIsoEdit();
     doc = normalizeDoc(data);
     // New sheets start from the bundled default template (_source "template");
     // the legacy STR→STR_mod sample is only a fallback when no template is bundled.
@@ -497,15 +505,13 @@
         ? c.nodeIds.map((x) => String(x)).filter(Boolean)
         : [];
       if (!nodeIds.length) continue;
-      out.push({
-        id,
-        name,
-        nodeIds,
-        x: Number(c.x) || 0,
-        y: Number(c.y) || 0,
-        w: c.w != null ? Number(c.w) : undefined,
-        h: c.h != null ? Number(c.h) : undefined,
-      });
+      // keep keys this version does not know (additive data from newer builders)
+      const block = { ...c, id, name, nodeIds, x: Number(c.x) || 0, y: Number(c.y) || 0 };
+      if (c.w != null && Number(c.w) > 0) block.w = Number(c.w);
+      else delete block.w;
+      if (c.h != null && Number(c.h) > 0) block.h = Number(c.h);
+      else delete block.h;
+      out.push(block);
     }
     return out;
   }
@@ -1029,6 +1035,11 @@
   }
 
   window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && isoEdit && !isTypingTarget(e.target)) {
+      e.preventDefault();
+      exitIsoEdit(false);
+      return;
+    }
     if (e.code === "Space" && !e.repeat) {
       if (!isTypingTarget(e.target) && !isTypingTarget(document.activeElement)) {
         spaceDown = true;
@@ -1204,10 +1215,13 @@
       return n.op;
     }
     if (n.kind === "roll") return `d${n.sides != null ? n.sides : 20}`;
-    if (n.kind === "entry" || n.kind === "function") return n.name || "fn";
+    if (n.kind === "entry" || n.kind === "function") {
+      return (n.mode === "toggle" ? "⏻ " : "") + (n.name || "fn");
+    }
     if (n.kind === "send_to_chat" || n.kind === "chat") {
       return n.label ? String(n.label) : "chat";
     }
+    if (n.kind === "popup") return `❔ ${n.var || "popup"}`;
     return n.kind;
   }
 
@@ -1246,8 +1260,14 @@
       return "op";
     }
     if (n.kind === "roll") return "roll";
-    if (n.kind === "entry" || n.kind === "function") return "entry";
+    if (n.kind === "entry" || n.kind === "function") {
+      return n.mode === "toggle" ? "toggle function" : "entry";
+    }
     if (n.kind === "send_to_chat" || n.kind === "chat") return "send to chat";
+    if (n.kind === "popup") {
+      const t = String(n.vtype || "number");
+      return `pop-up · ${t}`;
+    }
     return "";
   }
 
@@ -1271,9 +1291,21 @@
     return hidden;
   }
 
+  /** Node ids not drawn/hit: members of compressed blocks, or (isolated edit) everything outside the block. */
+  function hiddenIdSet() {
+    if (isoEdit) {
+      const block = collapsedById(isoEdit.cid);
+      const keep = new Set(block ? block.nodeIds || [] : []);
+      const hidden = new Set();
+      for (const n of doc.graph.nodes || []) if (!keep.has(n.id)) hidden.add(n.id);
+      return hidden;
+    }
+    return memberIdSet();
+  }
+
   function collapsedBox(c) {
-    const w = c.w != null && c.w > 0 ? c.w : 168;
-    const h = c.h != null && c.h > 0 ? c.h : 72;
+    const w = c.w != null && c.w > 0 ? c.w : BLOCK_DEFAULT_W;
+    const h = c.h != null && c.h > 0 ? c.h : BLOCK_DEFAULT_H;
     return { x: c.x || 0, y: c.y || 0, w, h };
   }
 
@@ -1293,7 +1325,11 @@
 
   function updateExpandButton() {
     const btn = document.getElementById("btn-graph-expand");
-    if (btn) btn.disabled = !selectedCollapsedId;
+    if (btn) btn.disabled = !selectedCollapsedId || !!isoEdit;
+    for (const id of ["btn-graph-compress", "btn-graph-publish"]) {
+      const b = document.getElementById(id);
+      if (b) b.disabled = !!isoEdit;
+    }
   }
 
   /** Named Function entries in ids (exact members only). */
@@ -1447,6 +1483,10 @@
         return;
       }
       memberIds = new Set(block.nodeIds || []);
+      if (!collapsedHasEntry(block)) {
+        await publishMacroBlock(block);
+        return;
+      }
       const entry =
         (doc.graph.nodes || []).find(
           (n) =>
@@ -1505,14 +1545,101 @@
       }));
 
     const remapped = remapIdsForPublish(nodes, edges, collapsed);
+    const entryNode = nodeById(entryId);
+    const kind = entryNode && entryNode.mode === "toggle" ? "toggle" : "function";
     const body = {
       name,
+      kind,
       nodes: remapped.nodes,
       edges: remapped.edges,
+      fields: fieldDefsFor(nodes, kind === "toggle" ? [name] : []),
     };
     if (remapped.collapsed.length) body.collapsed = remapped.collapsed;
+    await putMechanic(name, body);
+  }
 
-    setStatus(`Publishing mechanic "${name}"…`);
+  /** Field definitions the published automation reads/writes (dependencies for import). */
+  function fieldDefsFor(nodes, extra) {
+    const out = {};
+    const names = new Set(extra || []);
+    for (const n of nodes) {
+      if (n.kind === "field" && n.field && !String(n.field).includes("[x]")) names.add(String(n.field).trim());
+    }
+    // pop-up instance variables are not sheet fields
+    for (const n of nodes) if (n.kind === "popup" && n.var) names.delete(String(n.var));
+    for (const k of names) {
+      if (!k) continue;
+      const def = doc.fields[k];
+      if (def && typeof def === "object") {
+        const copy = { ...def };
+        delete copy.formula; // formulas come from the graph at the destination
+        out[k] = copy;
+      } else if ((extra || []).includes(k)) {
+        out[k] = { type: "integer", default: 0 };
+      }
+    }
+    return out;
+  }
+
+  /** Fields this sheet has that the macro's [x] outputs produce (e.g. [x]_half → STR_half):
+   *  published with the macro so an import can add the ones the target sheet lacks. */
+  function macroBoundFieldDefs(nodes) {
+    const out = {};
+    const tmpls = nodes
+      .filter((n) => n.kind === "field" && n.role === "output" && String(n.field || "").includes("[x]"))
+      .map((n) => String(n.field).trim());
+    if (!tmpls.length || !RT || typeof RT.bindMacroId !== "function") return out;
+    for (const [k, def] of Object.entries(doc.fields || {})) {
+      if (!def || typeof def !== "object") continue;
+      if (tmpls.some((t) => RT.bindMacroId(t, k))) {
+        const copy = { ...def };
+        delete copy.formula;
+        out[k] = copy;
+      }
+    }
+    return out;
+  }
+
+  /** Formula macro (compressed block with no Function entry) → library kind "macro". */
+  async function publishMacroBlock(block) {
+    const raw = String(block.name || "").trim();
+    const name = raw.replace(/\[x\]/g, "x").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+    if (!name) {
+      setStatus("Name the macro block (letters, digits, _ or -) before publishing", "err");
+      return;
+    }
+    const ids = new Set(block.nodeIds || []);
+    const nodes = (doc.graph.nodes || []).filter((n) => ids.has(n.id));
+    const edges = (doc.graph.edges || []).filter((e) => ids.has(e.from) && ids.has(e.to));
+    const remapped = remapIdsForPublish(nodes, edges, [{ ...block, name }]);
+    await putMechanic(name, {
+      name,
+      kind: "macro",
+      nodes: remapped.nodes,
+      edges: remapped.edges,
+      collapsed: remapped.collapsed,
+      fields: { ...fieldDefsFor(nodes, []), ...macroBoundFieldDefs(nodes) },
+    });
+  }
+
+  async function putMechanic(name, body) {
+    const kind = body.kind || "function";
+    // never replace a library entry silently
+    try {
+      const cur = await fetch(`/api/mechanics/${encodeURIComponent(name)}`);
+      if (cur.ok) {
+        const old = await cur.json().catch(() => ({}));
+        const oldKind = old.kind || (Array.isArray(old.nodes) && old.nodes.some((n) => n && (n.kind === "entry" || n.kind === "function")) ? "function" : "macro");
+        const ok = await askReplace(`The library already has ${oldKind} “${name}”. Replace it with this ${kind}?`);
+        if (!ok) {
+          setStatus("Publish cancelled — library unchanged", "warn");
+          return;
+        }
+      }
+    } catch (_) {
+      /* offline check failed → server PUT still validates */
+    }
+    setStatus(`Publishing ${kind} "${name}"…`);
     try {
       const res = await fetch(`/api/mechanics/${encodeURIComponent(name)}`, {
         method: "PUT",
@@ -1524,14 +1651,35 @@
         setStatus(data.error || `Publish failed (${res.status})`, "err");
         return;
       }
-      setStatus(`Published mechanic "${name}"`, "ok");
+      setStatus(`Published ${kind} "${name}" to the campaign library`, "ok");
     } catch (err) {
       setStatus(String(err), "err");
     }
   }
 
 
+  /** In-pane yes/no (pywebview-safe; no window.confirm). */
+  function askReplace(message) {
+    return new Promise((resolve) => {
+      const wrap = document.getElementById("graph-wrap");
+      const bar = document.createElement("div");
+      bar.id = "ask-bar";
+      bar.innerHTML = `<span class="iso-title">${esc(message)}</span><button type="button" class="danger" id="ask-yes">Replace</button><button type="button" id="ask-no">Cancel</button>`;
+      wrap.appendChild(bar);
+      const done = (v) => {
+        bar.remove();
+        resolve(v);
+      };
+      bar.querySelector("#ask-yes").onclick = () => done(true);
+      bar.querySelector("#ask-no").onclick = () => done(false);
+    });
+  }
+
   function compressSelection() {
+    if (isoEdit) {
+      setStatus("Finish editing the compressed block first (Exit / Save and exit)", "warn");
+      return;
+    }
     const ids = [...selectedNodeIds];
     if (!ids.length) {
       setStatus("Select nodes to compress", "err");
@@ -1678,7 +1826,7 @@
         ...c,
         nodeIds: (c.nodeIds || []).filter((nid) => !kill.has(nid)),
       }))
-      .filter((c) => c.nodeIds.length > 0);
+      .filter((c) => c.nodeIds.length > 0 || (isoEdit && c.id === isoEdit.cid));
     clearGraphSelection();
     renderGraph();
   }
@@ -1686,7 +1834,7 @@
   function renderGraph() {
     const nodes = doc.graph.nodes || [];
     const edges = doc.graph.edges || [];
-    const hidden = memberIdSet();
+    const hidden = hiddenIdSet();
     let html = `<g id="graph-root" transform="translate(${graphView.x},${graphView.y}) scale(${graphView.scale})">`;
     html += `<g id="wires">`;
     for (const e of edges) {
@@ -1728,25 +1876,220 @@
       html += `</g>`;
     }
     html += `</g><g id="collapsed">`;
-    for (const c of ensureCollapsedArray()) {
-      const box = collapsedBox(c);
-      const sel = c.id === selectedCollapsedId ? " collapsed-selected" : "";
-      html += `<g class="collapsed-block${sel}" data-cid="${esc(c.id)}" transform="translate(${box.x},${box.y})">`;
-      html += `<rect class="collapsed-rect" width="${box.w}" height="${box.h}" />`;
-      html += `<text class="collapsed-title" x="14" y="28">${esc(c.name || "(unnamed)")}</text>`;
-      const kindLabel = collapsedHasEntry(c) ? "function" : "macro";
-      html += `<text class="collapsed-sub" x="14" y="46">${kindLabel} · compressed · ${(c.nodeIds || []).length} nodes</text>`;
-      html += `</g>`;
+    if (isoEdit) {
+      html += isoPortsSvg();
+    } else {
+      for (const c of ensureCollapsedArray()) {
+        const box = collapsedBox(c);
+        const sel = c.id === selectedCollapsedId ? " collapsed-selected" : "";
+        html += `<g class="collapsed-block${sel}" data-cid="${esc(c.id)}" transform="translate(${box.x},${box.y})">`;
+        html += `<rect class="collapsed-rect" width="${box.w}" height="${box.h}" />`;
+        html += `<text class="collapsed-title" x="14" y="28">${esc(c.name || "(unnamed)")}</text>`;
+        const kindLabel = collapsedHasEntry(c) ? "function" : "macro";
+        html += `<text class="collapsed-sub" x="14" y="46">${kindLabel} · compressed · ${(c.nodeIds || []).length} nodes</text>`;
+        if (box.h >= 84) {
+          html += `<text class="collapsed-sub" x="14" y="62">double-click to edit</text>`;
+        }
+        // 0.7.3 resize grip (bottom-right)
+        html += `<g class="collapsed-resize" data-resize="${esc(c.id)}" transform="translate(${box.w - 16},${box.h - 16})">`;
+        html += `<rect width="16" height="16" fill="transparent" />`;
+        html += `<path d="M4 14 L14 4 M8 14 L14 8 M12 14 L14 12" />`;
+        html += `</g>`;
+        html += `</g>`;
+      }
     }
     html += `</g></g>`;
     graphSvg.innerHTML = html;
     renderGraphProps();
     updateExpandButton();
+    renderIsoBar();
   }
+
+  // ---- 0.7.3 isolated edit of a compressed block ---------------------------------
+  /** Wires that cross the edited block's boundary, drawn as read-only port stubs. */
+  function isoBoundary() {
+    const block = isoEdit ? collapsedById(isoEdit.cid) : null;
+    if (!block) return { ins: [], outs: [], bounds: null };
+    const members = new Set(block.nodeIds || []);
+    const mem = (doc.graph.nodes || []).filter((n) => members.has(n.id));
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of mem) {
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + NODE_W);
+      maxY = Math.max(maxY, n.y + NODE_H);
+    }
+    const ins = [];
+    const outs = [];
+    for (const e of doc.graph.edges || []) {
+      const fi = members.has(e.from);
+      const ti = members.has(e.to);
+      if (!fi && ti) ins.push(e);
+      else if (fi && !ti) outs.push(e);
+    }
+    return { ins, outs, bounds: mem.length ? { minX, minY, maxX, maxY } : null };
+  }
+
+  function isoPortsSvg() {
+    const { ins, outs, bounds } = isoBoundary();
+    if (!bounds) return "";
+    let html = "";
+    const pad = 28;
+    html += `<rect class="iso-frame" x="${bounds.minX - pad}" y="${bounds.minY - pad}" width="${bounds.maxX - bounds.minX + pad * 2}" height="${bounds.maxY - bounds.minY + pad * 2}" rx="14" />`;
+    const PW = 118;
+    const PH = 24;
+    const used = [];
+    const place = (x, y) => {
+      let yy = y;
+      while (used.some((u) => u.x === x && Math.abs(u.y - yy) < PH + 4)) yy += PH + 6;
+      used.push({ x, y: yy });
+      return yy;
+    };
+    for (const e of ins) {
+      const ext = nodeById(e.from);
+      const b = nodeById(e.to);
+      if (!b) continue;
+      const p1 = portPos(b, "in", e.toPort);
+      const x = bounds.minX - pad - PW - 36;
+      const y = place(x, p1.y - PH / 2);
+      const px = x + PW;
+      const py = y + PH / 2;
+      const mid = (px + p1.x) / 2;
+      html += `<path class="wire iso-wire" d="M${px},${py} C${mid},${py} ${mid},${p1.y} ${p1.x},${p1.y}" />`;
+      html += `<g class="iso-port iso-port-in" transform="translate(${x},${y})"><rect width="${PW}" height="${PH}" rx="12" />`;
+      html += `<text x="10" y="16">in ⟵ ${esc(ext ? nodeLabel(ext) : "?")}</text><circle cx="${PW}" cy="${PH / 2}" r="5" /></g>`;
+    }
+    for (const e of outs) {
+      const a = nodeById(e.from);
+      const ext = nodeById(e.to);
+      if (!a) continue;
+      const p0 = portPos(a, "out");
+      const x = bounds.maxX + pad + 36;
+      const y = place(x, p0.y - PH / 2);
+      const py = y + PH / 2;
+      const mid = (p0.x + x) / 2;
+      html += `<path class="wire iso-wire" d="M${p0.x},${p0.y} C${mid},${p0.y} ${mid},${py} ${x},${py}" />`;
+      html += `<g class="iso-port iso-port-out" transform="translate(${x},${y})"><rect width="${PW}" height="${PH}" rx="12" />`;
+      html += `<text x="12" y="16">out ⟶ ${esc(ext ? nodeLabel(ext) : "?")}</text><circle cx="0" cy="${PH / 2}" r="5" /></g>`;
+    }
+    return html;
+  }
+
+  function isoDirty() {
+    return !!isoEdit && JSON.stringify(doc.graph) !== isoEdit.snapshot;
+  }
+
+  function renderIsoBar() {
+    const wrap = document.getElementById("graph-wrap");
+    if (!wrap) return;
+    let bar = document.getElementById("iso-bar");
+    if (!isoEdit) {
+      if (bar) bar.remove();
+      document.getElementById("pane-graph").classList.remove("iso-editing");
+      return;
+    }
+    document.getElementById("pane-graph").classList.add("iso-editing");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = "iso-bar";
+      wrap.appendChild(bar);
+    }
+    const block = collapsedById(isoEdit.cid);
+    const name = block ? block.name || "(unnamed)" : "(block)";
+    const kind = block && collapsedHasEntry(block) ? "function" : "macro";
+    if (isoEdit.confirming) {
+      bar.innerHTML =
+        `<span class="iso-title">Discard your changes to “${esc(name)}”?</span>` +
+        `<button type="button" id="iso-discard" class="danger">Discard and exit</button>` +
+        `<button type="button" id="iso-keep">Keep editing</button>`;
+      bar.querySelector("#iso-discard").onclick = () => exitIsoEdit(false, true);
+      bar.querySelector("#iso-keep").onclick = () => {
+        isoEdit.confirming = false;
+        renderIsoBar();
+      };
+      return;
+    }
+    bar.innerHTML =
+      `<span class="iso-title">Editing compressed ${kind} “${esc(name)}”${isoDirty() ? " · <em>unsaved changes</em>" : ""}</span>` +
+      `<span class="iso-hint">other blocks hidden · in/out stubs are its wires</span>` +
+      `<button type="button" id="iso-exit" title="Re-package without saving your edits (Esc)">Exit</button>` +
+      `<button type="button" id="iso-save" class="primary" title="Keep the edits, re-package and save">Save and exit</button>`;
+    bar.querySelector("#iso-exit").onclick = () => exitIsoEdit(false);
+    bar.querySelector("#iso-save").onclick = () => {
+      exitIsoEdit(true).catch((err) => setStatus(String(err), "err"));
+    };
+  }
+
+  function enterIsoEdit(cid) {
+    const block = collapsedById(cid);
+    if (!block) return;
+    if (compressPending) compressPending = null;
+    isoEdit = {
+      cid,
+      snapshot: JSON.stringify(doc.graph),
+      view: { ...graphView },
+      confirming: false,
+    };
+    clearGraphSelection();
+    wireFrom = null;
+    // frame the block's internals (plus room for the port stubs)
+    const { bounds } = isoBoundary();
+    const wrap = document.getElementById("graph-wrap");
+    if (bounds && wrap) {
+      const rect = wrap.getBoundingClientRect();
+      const bw = bounds.maxX - bounds.minX + 2 * (28 + 118 + 50);
+      const bh = bounds.maxY - bounds.minY + 140;
+      const scale = Math.min(1.4, Math.max(0.3, Math.min(rect.width / bw, (rect.height - 50) / bh)));
+      const cx = (bounds.minX + bounds.maxX) / 2;
+      const cy = (bounds.minY + bounds.maxY) / 2;
+      graphView = { scale, x: rect.width / 2 - cx * scale, y: (rect.height + 40) / 2 - cy * scale };
+    }
+    renderGraph();
+    setStatus(`Editing “${block.name || "block"}” — Exit discards, Save and exit keeps`, "warn");
+  }
+
+  function leaveIsoEdit() {
+    if (!isoEdit) return;
+    graphView = isoEdit.view || graphView;
+    isoEdit = null;
+    renderIsoBar();
+  }
+
+  /** save=false → discard (asks first when there are changes); save=true → keep + persist. */
+  async function exitIsoEdit(save, force) {
+    if (!isoEdit) return;
+    const cid = isoEdit.cid;
+    if (!save) {
+      if (isoDirty() && !force) {
+        isoEdit.confirming = true;
+        renderIsoBar();
+        return;
+      }
+      doc.graph = JSON.parse(isoEdit.snapshot);
+      leaveIsoEdit();
+      clearGraphSelection();
+      if (collapsedById(cid)) selectedCollapsedId = cid;
+      renderGraph();
+      setStatus("Exited without saving — block unchanged", "ok");
+      return;
+    }
+    const block = collapsedById(cid);
+    const name = block ? block.name || "block" : "block";
+    if (block && !(block.nodeIds || []).length) {
+      doc.graph.collapsed = ensureCollapsedArray().filter((c) => c.id !== cid);
+    }
+    leaveIsoEdit();
+    clearGraphSelection();
+    if (collapsedById(cid)) selectedCollapsedId = cid;
+    renderGraph();
+    await saveBuilder();
+    setStatus(`Saved “${name}” and re-packaged`, "ok");
+  }
+
 
   function hitNode(x, y) {
     const nodes = doc.graph.nodes || [];
-    const hidden = memberIdSet();
+    const hidden = hiddenIdSet();
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
       if (hidden.has(n.id)) continue;
@@ -1755,7 +2098,20 @@
     return null;
   }
 
+  function hitCollapsedResize(x, y) {
+    if (isoEdit) return null;
+    const list = ensureCollapsedArray();
+    for (let i = list.length - 1; i >= 0; i--) {
+      const box = collapsedBox(list[i]);
+      if (x >= box.x + box.w - 16 && x <= box.x + box.w + 2 && y >= box.y + box.h - 16 && y <= box.y + box.h + 2) {
+        return list[i];
+      }
+    }
+    return null;
+  }
+
   function hitCollapsed(x, y) {
+    if (isoEdit) return null;
     const list = ensureCollapsedArray();
     for (let i = list.length - 1; i >= 0; i--) {
       const c = list[i];
@@ -1767,7 +2123,7 @@
 
   function hitPort(x, y) {
     const nodes = doc.graph.nodes || [];
-    const hidden = memberIdSet();
+    const hidden = hiddenIdSet();
     const R = 10;
     for (const n of nodes) {
       if (hidden.has(n.id)) continue;
@@ -1790,7 +2146,7 @@
 
   function hitEdge(x, y) {
     const edges = doc.graph.edges || [];
-    const hidden = memberIdSet();
+    const hidden = hiddenIdSet();
     for (const e of edges) {
       if (hidden.has(e.from) || hidden.has(e.to)) continue;
       const a = nodeById(e.from);
@@ -1835,7 +2191,7 @@
     if (selectedCollapsedId) {
       const c = collapsedById(selectedCollapsedId);
       let msg = c
-        ? `<span class="hint">Compressed “${esc(c.name || "")}” · ${(c.nodeIds || []).length} nodes · double-click or Expand</span>`
+        ? `<span class="hint">Compressed “${esc(c.name || "")}” · ${(c.nodeIds || []).length} nodes · double-click to edit in place · Expand to unpack · drag the corner grip to resize</span>`
         : `<span class="hint">Compressed block</span>`;
       if (compiled.error) {
         msg += ` <span class="formula-preview" style="color:var(--err)">${esc(compiled.error)}</span>`;
@@ -1912,7 +2268,28 @@
       body += `<span class="hint">runtime roll 1..sides</span>`;
     } else if (n.kind === "entry" || n.kind === "function") {
       body += `<label>Name <input type="text" id="g-entry-name" value="${esc(n.name || "")}" placeholder="check_[x]" style="width:8rem" /></label>`;
-      body += `<span class="hint">button function_id entry · use [x] for templates (button check_ATK / check_[ATK])</span>`;
+      const tog = n.mode === "toggle";
+      body += `<label>Activation <select id="g-entry-mode">
+        <option value="trigger"${tog ? "" : " selected"}>trigger (runs)</option>
+        <option value="toggle"${tog ? " selected" : ""}>toggle (flips field, then runs)</option>
+      </select></label>`;
+      body += tog
+        ? `<span class="hint">toggle function: flips 0/1 field “${esc(n.name || "name")}”, then runs these steps with entry = the new value (1 on, 0 off)</span>`
+        : `<span class="hint">button function_id entry · use [x] for templates (button check_ATK / check_[ATK])</span>`;
+    } else if (n.kind === "popup") {
+      const t = String(n.vtype || "number");
+      body += `<label>Prompt <input type="text" id="g-pop-prompt" value="${esc(n.prompt || "")}" placeholder="Situational bonus?" style="width:10rem" /></label>`;
+      body += `<label>Variable <input type="text" id="g-pop-var" value="${esc(n.var || "")}" placeholder="bonus" style="width:6rem" /></label>`;
+      body += `<label>Type <select id="g-pop-type">
+        <option value="number"${t === "number" ? " selected" : ""}>number</option>
+        <option value="text"${t === "text" ? " selected" : ""}>text</option>
+        <option value="choice"${t === "choice" ? " selected" : ""}>choice</option>
+      </select></label>`;
+      body += `<label>Default <input type="${t === "number" ? "number" : "text"}" id="g-pop-default" value="${esc(n.default != null ? String(n.default) : "")}" style="width:5rem" /></label>`;
+      if (t === "choice") {
+        body += `<label>Choices <input type="text" id="g-pop-choices" value="${esc(Array.isArray(n.choices) ? n.choices.map((c) => `${c.label}=${c.value}`).join(", ") : n.choices || "")}" placeholder="Advantage=2, Normal=0" style="width:13rem" /></label>`;
+      }
+      body += `<span class="hint">pop-up step: asks during play, value is an instance variable for this run only (output port · field nodes named “${esc(n.var || "var")}” · {${esc(n.var || "var")}} in chat labels) — never saved to the sheet; Cancel aborts the run</span>`;
     } else if (n.kind === "send_to_chat" || n.kind === "chat") {
       body += `<label>Label <input type="text" id="g-chat-label" value="${esc(n.label || "")}" placeholder="optional" style="width:8rem" /></label>`;
       const arithOn = n.include_arithmetic === true;
@@ -1934,6 +2311,46 @@
     const gchat = document.getElementById("g-chat-label");
     const garith = document.getElementById("g-chat-arith");
     const grm = document.getElementById("g-round-mode");
+    const gem = document.getElementById("g-entry-mode");
+    if (gem) {
+      gem.addEventListener("change", () => {
+        if (gem.value === "toggle") n.mode = "toggle";
+        else delete n.mode;
+        renderGraph();
+      });
+    }
+    const bindPop = (id, fn) => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener("change", () => fn(el));
+    };
+    bindPop("g-pop-prompt", (el) => {
+      n.prompt = el.value;
+      renderGraph();
+    });
+    bindPop("g-pop-var", (el) => {
+      const v = el.value.trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(v)) {
+        setStatus("Variable name: letters, digits, _ (not starting with a digit)", "err");
+        el.value = n.var || "";
+        return;
+      }
+      n.var = v;
+      renderGraph();
+    });
+    bindPop("g-pop-type", (el) => {
+      n.vtype = el.value;
+      if (n.vtype === "number" && !Number.isFinite(Number(n.default))) n.default = 0;
+      if (n.vtype === "choice" && !n.choices) n.choices = "Yes=1, No=0";
+      renderGraph();
+    });
+    bindPop("g-pop-default", (el) => {
+      n.default = n.vtype === "number" || !n.vtype ? Number(el.value) || 0 : el.value;
+      renderGraph();
+    });
+    bindPop("g-pop-choices", (el) => {
+      n.choices = el.value;
+      renderGraph();
+    });
     if (grm) {
       grm.addEventListener("change", () => {
         n.mode = roundNodeMode({ mode: grm.value });
@@ -1994,6 +2411,14 @@
     }
   }
 
+  function uniquePopupVar(base) {
+    const used = new Set((doc.graph.nodes || []).filter((n) => n.kind === "popup").map((n) => String(n.var || "")));
+    if (!used.has(base)) return base;
+    let i = 2;
+    while (used.has(`${base}${i}`)) i++;
+    return `${base}${i}`;
+  }
+
   function addGraphNode(kind, op, x, y) {
     const n = {
       id: uid("n"),
@@ -2018,8 +2443,17 @@
       n.kind = "send_to_chat";
       n.label = "";
       n.include_arithmetic = false;
+    } else if (kind === "popup") {
+      n.prompt = "Bonus?";
+      n.var = uniquePopupVar("bonus");
+      n.vtype = "number";
+      n.default = 0;
     }
     doc.graph.nodes.push(n);
+    if (isoEdit) {
+      const block = collapsedById(isoEdit.cid);
+      if (block) block.nodeIds = [...(block.nodeIds || []), n.id];
+    }
     setNodeSelection([n.id], n.id);
     renderGraph();
   }
@@ -2057,8 +2491,22 @@
     });
   }
 
+  let lastBlockClick = null;
   graphSvg.addEventListener("pointerdown", (e) => {
     const p = graphWorldPoint(e);
+    const grip = e.button === 0 && !spaceDown ? hitCollapsedResize(p.x, p.y) : null;
+    if (grip) {
+      e.preventDefault();
+      const box = collapsedBox(grip);
+      selectedCollapsedId = grip.id;
+      selectedNodeIds = new Set();
+      selectedNodeId = null;
+      selectedEdgeId = null;
+      graphDrag = { kind: "resize", id: grip.id, sx: p.x, sy: p.y, w0: box.w, h0: box.h };
+      graphSvg.setPointerCapture(e.pointerId);
+      renderGraph();
+      return;
+    }
     const port = hitPort(p.x, p.y);
     const hitCollapsedBlock = !port ? hitCollapsed(p.x, p.y) : null;
     const hit = !port && !hitCollapsedBlock ? hitNode(p.x, p.y) : null;
@@ -2114,6 +2562,22 @@
       return;
     }
     if (hitCollapsedBlock) {
+      // Double-click detected here: pointerdown re-renders the SVG, so the browser's own
+      // dblclick is unreliable (its target element is replaced between the two clicks).
+      const now = Date.now();
+      if (
+        lastBlockClick &&
+        lastBlockClick.id === hitCollapsedBlock.id &&
+        now - lastBlockClick.t < 450 &&
+        Math.abs(e.clientX - lastBlockClick.x) < 8 &&
+        Math.abs(e.clientY - lastBlockClick.y) < 8
+      ) {
+        lastBlockClick = null;
+        e.preventDefault();
+        enterIsoEdit(hitCollapsedBlock.id);
+        return;
+      }
+      lastBlockClick = { id: hitCollapsedBlock.id, t: now, x: e.clientX, y: e.clientY };
       selectedCollapsedId = hitCollapsedBlock.id;
       selectedNodeIds = new Set();
       selectedNodeId = null;
@@ -2232,6 +2696,15 @@
       return;
     }
     if (!graphDrag) return;
+    if (graphDrag.kind === "resize") {
+      const block = collapsedById(graphDrag.id);
+      if (!block) return;
+      block.w = Math.round(Math.max(BLOCK_MIN_W, graphDrag.w0 + (p.x - graphDrag.sx)));
+      block.h = Math.round(Math.max(BLOCK_MIN_H, graphDrag.h0 + (p.y - graphDrag.sy)));
+      graphDrag.resized = true;
+      renderGraph();
+      return;
+    }
     if (graphDrag.kind === "collapsed") {
       const block = collapsedById(graphDrag.id);
       if (!block) return;
@@ -2286,6 +2759,10 @@
       wireFrom = null;
       renderGraph();
     }
+    if (graphDrag && graphDrag.kind === "resize" && graphDrag.resized) {
+      const block = collapsedById(graphDrag.id);
+      if (block) setStatus(`Resized “${block.name || "block"}” to ${block.w}×${block.h} — Save to keep`, "warn");
+    }
     graphDrag = null;
     graphPan = null;
   });
@@ -2298,9 +2775,9 @@
   graphSvg.addEventListener("dblclick", (e) => {
     const p = graphWorldPoint(e);
     const c = hitCollapsed(p.x, p.y);
-    if (c) {
+    if (c && !isoEdit) {
       e.preventDefault();
-      expandCollapsed(c.id);
+      enterIsoEdit(c.id);
     }
   });
 
@@ -2386,6 +2863,21 @@
       setStatus(String(err), "err")
     );
   });
+
+  // test / automation hooks (read-only views + world→screen for the automations canvas)
+  window.__builderDebug = {
+    doc: () => doc,
+    isoEdit: () => (isoEdit ? { cid: isoEdit.cid, dirty: isoDirty(), confirming: !!isoEdit.confirming } : null),
+    selection: () => ({ nodes: [...selectedNodeIds], node: selectedNodeId, collapsed: selectedCollapsedId }),
+    graphToScreen: (x, y) => {
+      const r = graphSvg.getBoundingClientRect();
+      const ctm = graphSvg.getScreenCTM();
+      const a = ctm && ctm.a ? ctm.a : 1;
+      return { x: r.left + (graphView.x + x * graphView.scale) * a, y: r.top + (graphView.y + y * graphView.scale) * a };
+    },
+    nodeW: NODE_W,
+    nodeH: NODE_H,
+  };
 
   async function boot() {
     const id = qsSheetId();

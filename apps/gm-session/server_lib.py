@@ -169,6 +169,59 @@ def entry_names_in_nodes(nodes) -> set[str]:
     return names
 
 
+MECHANIC_KINDS = ("function", "toggle", "macro")
+
+
+def _is_entry(n) -> bool:
+    return isinstance(n, dict) and n.get("kind") in ("entry", "function")
+
+
+def mechanic_kind(mech: dict) -> str:
+    """function | toggle | macro. Library files from before 0.7.3 have no ``kind``: they are
+    functions (publish required a named entry); an entry-less file is a formula macro."""
+    kind = str(mech.get("kind") or "").strip() if isinstance(mech, dict) else ""
+    if kind in MECHANIC_KINDS:
+        return kind
+    nodes = mech.get("nodes") if isinstance(mech, dict) and isinstance(mech.get("nodes"), list) else []
+    entries = [n for n in nodes if _is_entry(n)]
+    if not entries:
+        return "macro"
+    name = str(mech.get("name") or "")
+    main = next((n for n in entries if str(n.get("name") or "").strip() == name), entries[0])
+    return "toggle" if main.get("mode") == "toggle" else "function"
+
+
+def macro_blocks(nodes, collapsed) -> list[dict]:
+    """Compressed blocks without an entry (formula macros)."""
+    by_id = {n.get("id"): n for n in nodes or [] if isinstance(n, dict)}
+    out = []
+    for c in collapsed or []:
+        if not isinstance(c, dict):
+            continue
+        ids = [str(i) for i in c.get("nodeIds") or []]
+        if not ids or any(_is_entry(by_id.get(i)) for i in ids):
+            continue
+        out.append(c)
+    return out
+
+
+def macro_output_templates(nodes, block) -> set[str]:
+    ids = {str(i) for i in block.get("nodeIds") or []}
+    return {
+        str(n.get("field") or "").strip()
+        for n in nodes or []
+        if isinstance(n, dict) and n.get("id") in ids and n.get("kind") == "field"
+        and n.get("role") == "output" and "[x]" in str(n.get("field") or "")
+    }
+
+
+def _suggest_name(base: str, taken: set[str]) -> str:
+    i = 2
+    while f"{base}_{i}" in taken:
+        i += 1
+    return f"{base}_{i}"
+
+
 AURA_MAX = 3
 AURA_FIELDS = ("AURA1_RADIUS", "AURA2_RADIUS", "AURA3_RADIUS")
 AURA_DEFAULT_COLORS = ("#4fc3f7", "#ffb74d", "#ba68c8")
@@ -1771,12 +1824,15 @@ class Handler(BaseHTTPRequestHandler):
                 name = p.stem
                 if not safe_mechanic_name(name):
                     continue
-                out.append(
-                    {
-                        "name": name,
-                        "path": f"editor-scratch/mechanics/{name}.json",
-                    }
-                )
+                item = {
+                    "name": name,
+                    "path": f"editor-scratch/mechanics/{name}.json",
+                }
+                try:
+                    item["kind"] = mechanic_kind(json.loads(p.read_text(encoding="utf-8")))
+                except (OSError, ValueError):
+                    item["kind"] = "unreadable"
+                out.append(item)
         self._send_json(200, {"mechanics": out})
 
     def _api_mechanics_get(self, name: str) -> None:
@@ -1821,6 +1877,14 @@ class Handler(BaseHTTPRequestHandler):
         doc = {"name": name, "nodes": nodes, "edges": edges}
         if collapsed:
             doc["collapsed"] = collapsed
+        # 0.7.3: library kinds (function | toggle | macro) + field dependencies
+        kind = str(body.get("kind") or "").strip()
+        if kind in MECHANIC_KINDS:
+            doc["kind"] = kind
+        if isinstance(body.get("fields"), dict) and body["fields"]:
+            doc["fields"] = {
+                str(k): v for k, v in body["fields"].items() if isinstance(v, dict) and str(k).strip()
+            }
         mdir = self._mechanics_dir()
         mdir.mkdir(parents=True, exist_ok=True)
         path = self._mechanic_path(name)
@@ -1843,8 +1907,14 @@ class Handler(BaseHTTPRequestHandler):
         path.unlink()
         self._send_json(200, {"ok": True, "name": name})
 
-    def _merge_graph_into_yaml(self, sheet_id: str, graph: dict) -> bool:
-        """Update build yaml graph nodes/edges in place; preserve fields/layout."""
+    def _merge_graph_into_yaml(self, sheet_id: str, graph: dict, new_fields: dict | None = None,
+                               full_graph: dict | None = None) -> bool:
+        """Append an imported subgraph to the compiled yaml; everything already there is kept.
+
+        0.7.3: before, this replaced the yaml graph with the builder's nodes/edges and dropped
+        ``collapsed`` — an import erased the compiled sheet's formula macros. Now it only appends
+        (nodes, edges, compressed blocks) and adds fields the sheet does not have.
+        """
         ypath = self._sheet_yaml_path(sheet_id)
         if not ypath.is_file():
             return False
@@ -1852,9 +1922,22 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(loaded, dict):
             return False
         sheet_name = str(loaded.get("name") or sheet_id)
-        nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
-        edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
-        loaded["graph"] = {"nodes": list(nodes), "edges": list(edges)}
+        old = loaded.get("graph") if isinstance(loaded.get("graph"), dict) else {}
+        if full_graph is not None and not (isinstance(old.get("nodes"), list) and old.get("nodes")):
+            # yaml had no graph (the sheet ran from the builder draft): take the draft + import
+            old, graph = {}, full_graph
+        merged = dict(old)
+        for key in ("nodes", "edges", "collapsed"):
+            have = old.get(key) if isinstance(old.get(key), list) else []
+            add = graph.get(key) if isinstance(graph.get(key), list) else []
+            if have or add:
+                merged[key] = list(have) + list(add)
+        loaded["graph"] = merged
+        if new_fields:
+            fields = loaded.get("fields") if isinstance(loaded.get("fields"), dict) else {}
+            for k, v in new_fields.items():
+                fields.setdefault(k, v)
+            loaded["fields"] = fields
         dumped = yaml.safe_dump(
             loaded,
             sort_keys=False,
@@ -1928,21 +2011,86 @@ class Handler(BaseHTTPRequestHandler):
             g.get("collapsed") if isinstance(g.get("collapsed"), list) else []
         )
 
-        if name in entry_names_in_nodes(existing_nodes):
-            self._send_json(
-                409,
-                {
-                    "error": (
-                        f'Sheet already has an entry function named "{name}". '
-                        "Rename or remove it before importing."
-                    )
-                },
-            )
+        # 0.7.3: functions, toggle functions and formula macros; collisions → 409 with a
+        # suggested new name (the client asks), never an overwrite of what the sheet has.
+        kind = mechanic_kind(mech)
+        target = str(body.get("as") or "").strip() or name
+        if not safe_mechanic_name(target):
+            self._send_json(400, {"error": "new name must use letters, digits, _ or -"})
             return
+        existing_macros = macro_blocks(existing_nodes, existing_collapsed)
+        if kind == "macro":
+            taken = {str(c.get("name") or "").strip() for c in existing_collapsed if isinstance(c, dict)}
+            if target in taken:
+                self._send_json(409, {
+                    "error": f'Sheet already has a compressed block named "{target}".',
+                    "conflict": "name", "kind": kind, "suggested": _suggest_name(target, taken),
+                })
+                return
+            mine = set()
+            for c in macro_blocks(mech_nodes, mech_collapsed):
+                mine |= macro_output_templates(mech_nodes, c)
+            for c in existing_macros:
+                clash = mine & macro_output_templates(existing_nodes, c)
+                if clash:
+                    self._send_json(409, {
+                        "error": (
+                            f'Macro "{c.get("name") or c.get("id")}" on this sheet already produces '
+                            f'{", ".join(sorted(clash))} — two macros cannot own the same fields. '
+                            "Remove or change one of them first."
+                        ),
+                        "conflict": "fields", "kind": kind,
+                    })
+                    return
+        else:
+            taken = entry_names_in_nodes(existing_nodes)
+            if target in taken:
+                self._send_json(409, {
+                    "error": (
+                        f'Sheet already has an entry function named "{target}". '
+                        "Import it under another name, or rename/remove the existing one."
+                    ),
+                    "conflict": "name", "kind": kind, "suggested": _suggest_name(target, taken),
+                })
+                return
 
         new_nodes, new_edges, new_collapsed, _id_map = remap_mechanic_subgraph(
             mech_nodes, mech_edges, mech_collapsed
         )
+        if target != name:
+            for n in new_nodes:
+                if kind != "macro" and _is_entry(n) and str(n.get("name") or "").strip() == name:
+                    n["name"] = target
+            for c in new_collapsed:
+                if str(c.get("name") or "").strip() == name or kind == "macro":
+                    c["name"] = target
+        if kind == "macro" and not new_collapsed:
+            # a macro is its compressed block: package loose macro nodes on import
+            new_collapsed = [{"id": fresh_uid("c"), "name": target, "nodeIds": [n["id"] for n in new_nodes],
+                              "x": min((float(n.get("x") or 0) for n in new_nodes), default=0.0),
+                              "y": min((float(n.get("y") or 0) for n in new_nodes), default=0.0)}]
+
+        # field dependencies: add only fields the sheet does not have (never touch existing ones)
+        doc_fields = doc.get("fields") if isinstance(doc.get("fields"), dict) else {}
+        want: dict = {}
+        mfields = mech.get("fields") if isinstance(mech.get("fields"), dict) else {}
+        for k, v in mfields.items():
+            k2 = target if (kind == "toggle" and k == name) else str(k)
+            if isinstance(v, dict):
+                want[k2] = {kk: vv for kk, vv in v.items() if kk != "formula"}
+        if kind == "toggle" and target not in want:
+            want[target] = {"type": "integer", "default": 0}
+        popup_vars = {str(n.get("var") or "") for n in new_nodes if n.get("kind") == "popup"}
+        added_fields = sorted(k for k in want if k not in doc_fields)
+        kept_fields = sorted(k for k in want if k in doc_fields)
+        referenced = {
+            str(n.get("field") or "").strip()
+            for n in new_nodes
+            if n.get("kind") == "field" and n.get("field") and "[x]" not in str(n.get("field"))
+        } - popup_vars
+        missing_fields = sorted(k for k in referenced if k not in doc_fields and k not in want)
+        if added_fields:
+            doc["fields"] = {**doc_fields, **{k: want[k] for k in added_fields}}
 
         max_x = 0.0
         for n in existing_nodes:
@@ -1990,7 +2138,10 @@ class Handler(BaseHTTPRequestHandler):
         doc.setdefault("sheet_id", sheet_id)
         self._write_builder_scratch(sheet_id, doc)
         self._merge_graph_into_yaml(
-            sheet_id, {"nodes": merged_nodes, "edges": merged_edges}
+            sheet_id,
+            {"nodes": new_nodes, "edges": new_edges, "collapsed": new_collapsed},
+            new_fields={k: want[k] for k in added_fields},
+            full_graph=doc["graph"],
         )
 
         self._send_json(
@@ -1998,7 +2149,13 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "ok": True,
                 "sheet_id": sheet_id,
-                "name": name,
+                "name": target,
+                "source": name,
+                "kind": kind,
+                "renamed": target != name,
+                "added_fields": added_fields,
+                "kept_fields": kept_fields,
+                "missing_fields": missing_fields,
                 "graph_node_count": len(merged_nodes),
             },
         )

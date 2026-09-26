@@ -243,6 +243,8 @@
     if (node.kind === "field" && node.role === "output") return 1;
     if (node.kind === "roll") return 1;
     if (node.kind === "send_to_chat" || node.kind === "chat") return 1;
+    // 0.7.3 pop-up step: optional "after" wire (ordering / reachability only; value ignored)
+    if (node.kind === "popup") return 1;
     return 0;
   }
 
@@ -340,47 +342,23 @@
     return out;
   }
 
+  function _emptyFail(error, extra) {
+    return Object.assign({ ok: false, error, values: {}, writes: {}, rolls: [], messages: [] }, extra || {});
+  }
+
   /**
-   * Evaluate a named automation starting at an entry (or function) node.
-   * Supports [x] parameterized templates: entry name check_[x] matches
-   * function_id check_ATK or check_[ATK]; reachable subgraph is cloned and
-   * every string prop's literal [x] is replaced with the ID before eval.
-   * @param {{ nodes?: object[], edges?: object[] }} graph
-   * @param {string} functionId
-   * @param {Record<string, number|string>} fieldEnv
-   * @param {{ entryValue?: number }} [options] — entry/function nodes output this (default 1)
-   * @returns {{
-   *   ok: boolean,
-   *   error?: string,
-   *   values: Record<string, number>,
-   *   writes: Record<string, number>,
-   *   rolls: { sides: number, result: number, nodeId: string }[],
-   *   messages: { text: string, value: number, detail?: string, nodeId: string }[]
-   * }}
+   * Resolve + instantiate ([x]) + reachability + topo order for a named run.
+   * Shared by evaluateNamedFunction and popupsForRun (0.7.3) so both see the same nodes.
+   * @returns {{ error: string } | { nodes, edges, entry, byId, incoming, outgoing, order }}
    */
-  function evaluateNamedFunction(graph, functionId, fieldEnv, options) {
+  function planRun(graph, functionId) {
     const name = String(functionId || "").trim();
-    const opts = options && typeof options === "object" ? options : {};
-    const entryValue =
-      typeof opts.entryValue === "number" && Number.isFinite(opts.entryValue)
-        ? opts.entryValue
-        : 1;
     let nodes = (graph && graph.nodes) || [];
     let edges = (graph && graph.edges) || [];
-    if (!name) {
-      return { ok: false, error: "Missing function id", values: {}, writes: {}, rolls: [], messages: [] };
-    }
-
+    if (!name) return { error: "Missing function id" };
     const resolved = resolveNamedEntry(nodes, name);
     if (resolved.error) {
-      return {
-        ok: false,
-        error: resolved.error,
-        values: {},
-        writes: {},
-        rolls: [],
-        messages: [],
-      };
+      return { error: resolved.error };
     }
     let entry = resolved.entry;
     const substId = resolved.substId;
@@ -430,14 +408,7 @@
         .map((e) => ({ ...e }));
       entry = nodes.find((n) => n.id === entry.id);
       if (!entry) {
-        return {
-          ok: false,
-          error: `Template instantiation failed for "${name}"`,
-          values: {},
-          writes: {},
-          rolls: [],
-          messages: [],
-        };
+        return { error: `Template instantiation failed for "${name}"` };
       }
     }
 
@@ -509,17 +480,202 @@
       }
     }
     if (order.length !== reachable.size) {
-      return {
-        ok: false,
-        error: "Cycle in function graph",
-        values: {},
-        writes: {},
-        rolls: [],
-        messages: [],
-      };
+      return { error: "Cycle in function graph" };
     }
 
-    /** @type {Record<string, number>} */
+    return { nodes, edges, entry, byId, incoming, outgoing, order };
+  }
+
+  /**
+   * 0.7.3: an entry marked mode "toggle" is a toggle function — activating it flips the
+   * 0/1 field named like the entry, then runs the graph with entry output = the new value.
+   * Entries without mode (all pre-0.7.3 data) are trigger functions (unchanged behavior).
+   */
+  function entryModeFor(graph, functionId) {
+    const r = resolveNamedEntry((graph && graph.nodes) || [], functionId);
+    if (r.error || !r.entry) return null;
+    return r.entry.mode === "toggle" ? "toggle" : "trigger";
+  }
+
+  // ---- 0.7.3 pop-up step --------------------------------------------------------
+  const POPUP_TYPES = ["number", "text", "choice"];
+
+  /** Parse "Label=value" lines / comma list, or an array of {label,value}. */
+  function parseChoices(raw) {
+    let items = [];
+    if (Array.isArray(raw)) {
+      items = raw.map((c) =>
+        c && typeof c === "object"
+          ? { label: String(c.label != null ? c.label : c.value), value: c.value }
+          : { label: String(c), value: c }
+      );
+    } else if (raw != null && String(raw).trim()) {
+      items = String(raw)
+        .split(/\n|,/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => {
+          const i = s.indexOf("=");
+          if (i > 0) return { label: s.slice(0, i).trim(), value: s.slice(i + 1).trim() };
+          return { label: s, value: s };
+        });
+    }
+    return items.map((c) => {
+      const num = Number(c.value);
+      return { label: c.label, value: c.value === "" || !Number.isFinite(num) ? String(c.value) : num };
+    });
+  }
+
+  /** Normalized pop-up node definition (tolerant of missing/old props). */
+  function popupSpec(node) {
+    const n = node || {};
+    const type = POPUP_TYPES.includes(String(n.vtype || n.type_ || "").toLowerCase())
+      ? String(n.vtype || n.type_).toLowerCase()
+      : "number";
+    const v = String(n.var != null ? n.var : "").trim();
+    const choices = type === "choice" ? parseChoices(n.choices) : [];
+    let def = n.default;
+    if (def == null || def === "") def = type === "number" ? 0 : type === "choice" && choices.length ? choices[0].value : "";
+    return {
+      nodeId: n.id,
+      prompt: String(n.prompt != null && String(n.prompt).trim() ? n.prompt : v || "Value"),
+      var: v,
+      type,
+      default: def,
+      choices,
+    };
+  }
+
+  /** → { num, text } ; text only for text pop-ups / non-numeric choices. */
+  function coercePopupValue(spec, raw) {
+    if (spec.type === "text") {
+      const t = raw == null ? "" : String(raw);
+      const num = Number(t);
+      return { num: t.trim() !== "" && Number.isFinite(num) ? num : 0, text: t };
+    }
+    if (spec.type === "choice") {
+      const hit = spec.choices.find((c) => String(c.value) === String(raw) || c.label === String(raw));
+      const val = hit ? hit.value : raw;
+      const num = Number(val);
+      return Number.isFinite(num) && String(val).trim() !== ""
+        ? { num, text: hit ? hit.label : null }
+        : { num: 0, text: hit ? hit.label : String(val == null ? "" : val) };
+    }
+    const num = Number(raw);
+    return { num: Number.isFinite(num) ? num : 0, text: null };
+  }
+
+  /** {var} placeholders in chat labels → this run's pop-up answers (unknown names untouched). */
+  function substituteVars(text, vars, textVars) {
+    if (!text || text.indexOf("{") < 0) return text;
+    return text.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, k) => {
+      if (textVars && Object.prototype.hasOwnProperty.call(textVars, k)) return textVars[k];
+      if (vars && Object.prototype.hasOwnProperty.call(vars, k)) return String(vars[k]);
+      return m;
+    });
+  }
+
+  /**
+   * Pop-up steps a run of functionId will ask, in asking order: a pop-up that feeds
+   * (is upstream of) another comes first; otherwise top-to-bottom, then left-to-right.
+   * @returns {{ error?: string, popups: object[] }}
+   */
+  function popupsForRun(graph, functionId) {
+    const plan = planRun(graph, functionId);
+    if (plan.error) return { error: plan.error, popups: [] };
+    const { byId, incoming, order } = plan;
+    const ids = order.filter((id) => byId[id] && byId[id].kind === "popup");
+    if (!ids.length) return { popups: [] };
+    const idSet = new Set(ids);
+    const anc = Object.create(null);
+    for (const id of ids) {
+      const seen = new Set();
+      const stack = (incoming[id] || []).map((x) => x.from);
+      while (stack.length) {
+        const cur = stack.pop();
+        if (seen.has(cur)) continue;
+        seen.add(cur);
+        for (const x of incoming[cur] || []) stack.push(x.from);
+      }
+      anc[id] = [...seen].filter((x) => idSet.has(x));
+    }
+    const done = new Set();
+    const out = [];
+    while (out.length < ids.length) {
+      const ready = ids.filter((id) => !done.has(id) && anc[id].every((a) => done.has(a)));
+      ready.sort((a, b) => (Number(byId[a].y) || 0) - (Number(byId[b].y) || 0) || (Number(byId[a].x) || 0) - (Number(byId[b].x) || 0));
+      const pick = ready[0];
+      done.add(pick);
+      out.push(popupSpec(byId[pick]));
+    }
+    return { popups: out };
+  }
+
+  /**
+   * Async run: ask every pop-up (in order) BEFORE anything is evaluated, then evaluate once.
+   * Cancel (prompt resolves null/undefined) → { ok:false, cancelled:true } with no rolls,
+   * writes or messages — nothing was computed yet, so there is nothing to undo.
+   * @param {{ prompt?: (spec, info) => Promise<any>, entryValue?: number }} options
+   */
+  async function runNamedFunctionAsync(graph, functionId, fieldEnv, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const found = popupsForRun(graph, functionId);
+    if (found.error) return _emptyFail(found.error);
+    const popupValues = Object.create(null);
+    const answered = Object.create(null);
+    for (let i = 0; i < found.popups.length; i++) {
+      const spec = found.popups[i];
+      if (typeof opts.prompt !== "function") {
+        popupValues[spec.nodeId] = spec.default;
+        continue;
+      }
+      const v = await opts.prompt(spec, { index: i, total: found.popups.length, answered: { ...answered } });
+      if (v === null || v === undefined) {
+        return _emptyFail("Cancelled", { cancelled: true, popup: spec.var || spec.prompt });
+      }
+      popupValues[spec.nodeId] = v;
+      if (spec.var) answered[spec.var] = v;
+    }
+    const evalOpts = { popupValues };
+    if (opts.entryValue !== undefined) evalOpts.entryValue = opts.entryValue;
+    const res = evaluateNamedFunction(graph, functionId, fieldEnv, evalOpts);
+    res.popupCount = found.popups.length;
+    return res;
+  }
+
+  /**
+   * Evaluate a named automation starting at an entry (or function) node.
+   * Supports [x] parameterized templates: entry name check_[x] matches
+   * function_id check_ATK or check_[ATK]; reachable subgraph is cloned and
+   * every string prop's literal [x] is replaced with the ID before eval.
+   * @param {{ nodes?: object[], edges?: object[] }} graph
+   * @param {string} functionId
+   * @param {Record<string, number|string>} fieldEnv
+   * @param {{ entryValue?: number }} [options] — entry/function nodes output this (default 1)
+   * @returns {{
+   *   ok: boolean,
+   *   error?: string,
+   *   values: Record<string, number>,
+   *   writes: Record<string, number>,
+   *   rolls: { sides: number, result: number, nodeId: string }[],
+   *   messages: { text: string, value: number, detail?: string, nodeId: string }[]
+   * }}
+   */
+  function evaluateNamedFunction(graph, functionId, fieldEnv, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const entryValue =
+      typeof opts.entryValue === "number" && Number.isFinite(opts.entryValue)
+        ? opts.entryValue
+        : 1;
+    const plan = planRun(graph, functionId);
+    if (plan.error) return _emptyFail(plan.error);
+    const { byId, incoming, outgoing, order } = plan;
+    /** 0.7.3 pop-up steps: values chosen for this run only (nodeId → value); default when absent. */
+    const popupValues =
+      opts.popupValues && typeof opts.popupValues === "object" ? opts.popupValues : {};
+    /** Instance variables (pop-up var name → value) — readable by same-named field nodes, never written. */
+    const vars = Object.create(null);
+
     const values = Object.create(null);
     /** @type {Record<string, number>} */
     const writes = Object.create(null);
@@ -528,6 +684,23 @@
     /** @type {{ text: string, value: number, detail?: string, nodeId: string }[]} */
     const messages = [];
     const env = fieldEnv && typeof fieldEnv === "object" ? fieldEnv : {};
+    /** text pop-up answers (var → string) for chat label / detail substitution */
+    const textVars = Object.create(null);
+    // Pop-up answers do not depend on inputs: bind every instance variable before the walk,
+    // so same-named field nodes read it wherever they sit in the order.
+    const popupNum = Object.create(null);
+    for (const id of order) {
+      const pn = byId[id];
+      if (!pn || pn.kind !== "popup") continue;
+      const spec = popupSpec(pn);
+      const has = Object.prototype.hasOwnProperty.call(popupValues, id);
+      const v = coercePopupValue(spec, has ? popupValues[id] : spec.default);
+      popupNum[id] = v.num;
+      if (spec.var) {
+        vars[spec.var] = v.num;
+        if (v.text != null) textVars[spec.var] = v.text;
+      }
+    }
 
     function inputVal(nodeId, port) {
       const ins = incoming[nodeId] || [];
@@ -566,6 +739,11 @@
         return `${num} (${fname})`;
       }
       if (n.kind === "const") return String(num);
+      if (n.kind === "popup") {
+        const vn = String(n.var || "").trim() || "popup";
+        const shown = Object.prototype.hasOwnProperty.call(textVars, vn) ? textVars[vn] : num;
+        return `${shown} (${vn})`;
+      }
       if (n.kind === "op") {
         const op = n.op;
         if (op === "floor") {
@@ -624,11 +802,16 @@
           const sides = Math.max(2, Math.floor(Number(n.sides) || 20));
           out = rollDie(sides);
           rolls.push({ sides, result: out, nodeId: id });
+        } else if (n.kind === "popup") {
+          out = popupNum[id];
         } else if (n.kind === "field") {
           const fname = String(n.field || "").trim();
           if (n.role === "output") {
             out = inputVal(id, 0);
-            if (fname) writes[fname] = out;
+            // instance variables live only for this run: never written to the sheet
+            if (fname && !(fname in vars)) writes[fname] = out;
+          } else if (fname && fname in vars) {
+            out = vars[fname];
           } else {
             const raw = env[fname];
             const num = typeof raw === "number" ? raw : Number(raw);
@@ -686,7 +869,7 @@
           }
         } else if (n.kind === "send_to_chat" || n.kind === "chat") {
           out = inputVal(id, 0);
-          const text = n.label != null ? String(n.label).trim() : "";
+          const text = substituteVars(n.label != null ? String(n.label).trim() : "", vars, textVars);
           let detail = "";
           const ins = incoming[id] || [];
           const hit = ins.find((x) => x.toPort === 0) || ins[0];
@@ -920,10 +1103,13 @@
         n.kind === "entry" ||
         n.kind === "function" ||
         n.kind === "send_to_chat" ||
-        n.kind === "chat"
+        n.kind === "chat" ||
+        n.kind === "popup"
       ) {
         throw new Error(
-          "Roll/entry/chat nodes are runtime-only and cannot feed formula field outputs"
+          n.kind === "popup"
+            ? "Pop-up steps ask during a run, so they cannot feed always-on formula fields (use them in a Function)"
+            : "Roll/entry/chat nodes are runtime-only and cannot feed formula field outputs"
         );
       } else {
         throw new Error(`Unknown node kind: ${n.kind}`);
@@ -1517,6 +1703,14 @@
     rollDie,
     arityOf,
     evaluateNamedFunction,
+    runNamedFunctionAsync,
+    entryModeFor,
+    popupsForRun,
+    popupSpec,
+    coercePopupValue,
+    parseChoices,
+    substituteVars,
+    planRun,
     resolveNamedEntry,
     extractTemplateId,
     compileGraph,

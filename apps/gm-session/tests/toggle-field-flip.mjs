@@ -1,6 +1,7 @@
 /**
  * Documents toggle field flip semantics (sheet.js runToggleField).
- * Toggle does not call evaluateNamedFunction; it flips actor field 0/1.
+ * Toggle flips actor field 0/1. 0.7.3: an entry with mode "toggle" (toggle function) additionally
+ * runs its graph with entryValue = the new value (see popup-step.mjs); plain toggles don't.
  * Run: node apps/gm-session/tests/toggle-field-flip.mjs
  */
 function nextToggleValue(cur) {

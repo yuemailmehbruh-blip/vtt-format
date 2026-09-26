@@ -204,6 +204,28 @@
     .wire { fill: none; stroke: var(--wire); stroke-width: 2; pointer-events: stroke; }
     .wire-temp { stroke-dasharray: 4 3; opacity: 0.8; }
     .wire-selected { stroke: #e8c07d; stroke-width: 3; }
+    /* 0.7.3 compressed block resize grip */
+    .collapsed-resize { cursor: nwse-resize; }
+    .collapsed-resize path { stroke: #c9a0ff; stroke-width: 1.5; fill: none; }
+    /* 0.7.3 isolated edit of a compressed block */
+    #iso-bar, #ask-bar {
+      position: absolute; top: 8px; left: 8px; right: 8px; z-index: 5;
+      display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+      padding: 0.4rem 0.6rem; border-radius: 8px;
+      background: rgba(42, 53, 80, 0.96); border: 1px solid #c9a0ff;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+    }
+    #ask-bar { top: auto; bottom: 8px; border-color: var(--warn); }
+    #iso-bar .iso-title, #ask-bar .iso-title { font-weight: 600; flex: 1; min-width: 10rem; }
+    #iso-bar .iso-title em { color: var(--warn); font-style: normal; font-weight: 500; }
+    #iso-bar .iso-hint { color: var(--muted); font-size: 0.72rem; }
+    .iso-frame { fill: rgba(201, 160, 255, 0.05); stroke: #c9a0ff; stroke-width: 1.5; stroke-dasharray: 6 4; pointer-events: none; }
+    .iso-port { pointer-events: none; }
+    .iso-port rect { fill: #1f2638; stroke: #c9a0ff; stroke-width: 1.2; }
+    .iso-port text { fill: var(--muted); font-size: 10px; }
+    .iso-port circle { fill: #c9a0ff; }
+    .iso-wire { stroke-dasharray: 5 3; opacity: 0.75; pointer-events: none; }
+    #pane-graph.iso-editing .canvas-wrap { box-shadow: inset 0 0 0 2px rgba(201, 160, 255, 0.5); }
   </style>
 </head>
 <body>
@@ -280,6 +302,7 @@
           <button type="button" data-kind="roll" title="Roll dN (runtime)">Roll</button>
           <button type="button" data-kind="entry" title="Named function entry">Function</button>
           <button type="button" data-kind="send_to_chat" title="Send value to session chat (terminal)">Send to chat</button>
+          <button type="button" data-kind="popup" title="Pop-up step: asks the player for a value during the run (instance variable, this run only)">Pop-up</button>
           <span class="sep"></span>
           <button type="button" id="btn-graph-zoom-in" title="Zoom in">Zoom +</button>
           <button type="button" id="btn-graph-zoom-out" title="Zoom out">Zoom −</button>
