@@ -840,6 +840,7 @@
     }
     const data = await res.json();
     tokens = Array.isArray(data.tokens) ? data.tokens : [];
+    if (data.error) setTimeout(() => setStatus(data.error), 0);
     for (const t of tokens) {
       const n = Number(t.size_tiles);
       t.size_tiles = n > 0 ? n : 1;
@@ -1295,7 +1296,8 @@
       row.dataset.ref = r.ref;
       row.dataset.panel = panel;
       row.tabIndex = 0;
-      row.draggable = !PLAYER;
+      // 0.7.2: players may drag their own characters onto the map (no reordering)
+      row.draggable = !PLAYER || (panel === "actors" && !OT.isFolder(r.node) && myActors.has(r.node.actor));
       row.style.marginLeft = `${r.depth * 0.9}rem`;
       if (orgSelected[panel] === r.ref) row.classList.add("selected");
       wireRow(panel, row, r.node);
@@ -1387,6 +1389,18 @@
     row.addEventListener("dragstart", (e) => {
       if (orgRenaming) {
         e.preventDefault();
+        return;
+      }
+      if (PLAYER) {
+        if (panel !== "actors" || OT.isFolder(node) || !myActors.has(node.actor)) {
+          e.preventDefault();
+          return;
+        }
+        const actor = entityById("actors", node.actor) || { id: node.actor };
+        e.dataTransfer.setData("application/x-vtt-actor", JSON.stringify({ id: actor.id, name: actor.name }));
+        e.dataTransfer.setData("text/plain", actor.id);
+        e.dataTransfer.effectAllowed = "copy";
+        row.classList.add("dragging");
         return;
       }
       orgDrag = { panel, ref };
@@ -3455,7 +3469,7 @@
       hint.textContent = PLAYER
         ? canMoveToken(token)
           ? `Selected: ${token.name || token.id} (yours) · Drag to move · Double-click for its sheet`
-          : `Selected: ${token.name || token.id} · only the GM or its owner can move it`
+          : `Selected: ${token.name || token.id} · ${size} tile(s) · view only (not your character)`
         : `Selected: ${token.name || token.id} · Delete to remove · Double-click for sheet · Drag to move`;
     }
     draw();
@@ -3469,7 +3483,7 @@
       const hint = document.getElementById("header-hint");
       if (hint) {
         hint.textContent = PLAYER
-          ? "Drag empty map to pan · Wheel to zoom · Drag your own tokens (dashed outline) · Double-click your character for its sheet"
+          ? "Drag empty map to pan · Wheel to zoom · Click any token to select it · Drag your own tokens (dashed outline) · Drag your character from the sidebar onto the map to add it · Double-click your character for its sheet"
           : "Click token to select · Delete removes token/layer (or the selected sidebar item) · Double-click a token or character for its sheet · Drag characters onto map · Wheel zoom";
       }
     }
@@ -3540,6 +3554,7 @@
     gridSize: () => gridSize,
     scale: () => scale,
     worldToScreen: (x, y) => worldToScreen(x, y),
+    selected: () => selectedTokenId,
   };
 
   try {
@@ -3730,8 +3745,10 @@
     pointerDownX = e.clientX;
     pointerDownY = e.clientY;
     pointerMoved = false;
+    panFromToken = false;
     if (hit && !canMoveToken(hit)) {
       selectToken(hit); // look, don't touch: pan instead
+      panFromToken = true; // 0.7.2: keep the selection when this "pan" was a click on it
     } else if (hit) {
       dragMode = "token";
       draggingToken = hit;
@@ -3814,6 +3831,7 @@
     }
   });
 
+  let panFromToken = false;
   function endDrag(e) {
     const wasPan = dragMode === "pan";
     if (dragMode === "token" && draggingToken) {
@@ -3839,9 +3857,10 @@
       extent = computeExtent(scene);
     }
     // Click empty map (little/no pan movement) clears token selection
-    if (wasPan && !pointerMoved) {
+    if (wasPan && !pointerMoved && !panFromToken) {
       clearTokenSelection();
     }
+    panFromToken = false;
     dragMode = "none";
     draggingToken = null;
     draggingLayer = null;
@@ -3903,7 +3922,6 @@
   viewport.addEventListener("drop", (e) => {
     e.preventDefault();
     viewport.classList.remove("drop-target");
-    if (PLAYER) return;
     let actor = null;
     const raw = e.dataTransfer.getData("application/x-vtt-actor");
     if (raw) {
@@ -3918,7 +3936,8 @@
     if (!actor) return;
     const rect = canvas.getBoundingClientRect();
     const [wx, wy] = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
-    placeToken(actor, wx, wy);
+    if (PLAYER) playerPlaceToken(actor.id, wx, wy);
+    else placeToken(actor, wx, wy);
   });
 
   window.addEventListener("resize", resize);
@@ -4084,14 +4103,15 @@
   });
 
   // --- 0.7.1 player mode: live view, own-token moves, chat, connection ---------
-  const chatListEl = document.getElementById("chat-list");
-  const chatInputEl = document.getElementById("chat-input");
   const playerConnEl = document.getElementById("player-conn");
   const playerSyncEl = document.getElementById("player-last-sync");
-  let chatEntries = [];
-  let chatSeq = null;
-  let chatEpoch = null;
   let pendingViewRefresh = false;
+  // 0.7.2: the shared Rolls & Chat component (same as the GM's pop-out window)
+  const rcRoot = PLAYER ? document.getElementById("rolls-chat-root") : null;
+  const rollsChat =
+    rcRoot && window.RollsChat
+      ? window.RollsChat.mount(rcRoot, { post: (body) => postChat(body), canClear: false, emptyText: "No messages yet — say hi or roll a die." })
+      : null;
 
   function updateZoomReadout() {
     const z = document.getElementById("zoom-level");
@@ -4120,6 +4140,57 @@
     draw();
   }
 
+  /** 0.7.2: add one of my characters to the GM's current scene (GM validates +
+   *  snaps; an existing token of that character is moved instead of duplicated). */
+  async function playerPlaceToken(actorId, wx, wy) {
+    if (!sceneId || !scene) {
+      setStatus("The GM has no scene open right now");
+      return;
+    }
+    if (!myActors.has(actorId)) {
+      setStatus("You can only add your own characters to the map");
+      return;
+    }
+    const res = await fetch("/api/token-place", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scene: sceneId, actor: actorId, x: wx, y: wy }),
+    }).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok) {
+      setStatus(`Not placed: ${(data && data.error) || "not connected to the GM"}`);
+      return;
+    }
+    await playerApplyView(sceneId);
+    const tok = data.token && tokens.find((t) => t.id === data.token.id);
+    if (tok) selectToken(tok);
+    setStatus(data.created ? `Added ${entityName("actors", actorId)} to the map — sent to the GM` : `${entityName("actors", actorId)} is already on the map — moved it there`);
+  }
+
+  /** Toolbar button: add the selected character at the view centre, or select +
+   *  centre its token when it is already on this scene. */
+  function playerPlaceSelected() {
+    const sel = sidebarSelection();
+    const aid = (sel && sel.panel === "actors" && sel.node.actor) || (selectedActorId && myActors.has(selectedActorId) ? selectedActorId : null) || (myActors.size === 1 ? [...myActors][0] : null);
+    if (!aid || !myActors.has(aid)) {
+      setStatus("Select one of your characters first (or drag it onto the map)");
+      return;
+    }
+    const existing = tokens.find((t) => t.actor_id === aid);
+    if (existing) {
+      selectToken(existing);
+      const r = canvas.getBoundingClientRect();
+      offsetX = r.width / 2 - existing.x * scale;
+      offsetY = r.height / 2 - existing.y * scale;
+      draw();
+      setStatus(`${entityName("actors", aid)} is already on the map — selected it (drag it to move)`);
+      return;
+    }
+    const r = canvas.getBoundingClientRect();
+    const [wx, wy] = screenToWorld(r.width / 2, r.height / 2);
+    playerPlaceToken(aid, wx, wy);
+  }
+
   async function playerMoveToken(tok) {
     const res = await fetch("/api/token-move", {
       method: "POST",
@@ -4136,73 +4207,17 @@
     if (pendingViewRefresh) playerApplyView(sceneId);
   }
 
-  function fmtTime(ms) {
-    try {
-      return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    } catch (_) {
-      return "";
-    }
-  }
-
-  /** Chat lines are built with textContent only (no HTML from messages). */
-  function renderChat() {
-    if (!chatListEl) return;
-    const nearBottom = chatListEl.scrollHeight - chatListEl.scrollTop - chatListEl.clientHeight < 40;
-    chatListEl.innerHTML = "";
-    if (!chatEntries.length) {
-      const empty = document.createElement("div");
-      empty.className = "chat-empty";
-      empty.textContent = "No messages yet — say hi or roll a die.";
-      chatListEl.appendChild(empty);
-    }
-    for (const e of chatEntries) {
-      const line = document.createElement("div");
-      const role = (e.sender && e.sender.role) || "player";
-      line.className = `chat-line ${e.kind === "roll" ? "roll" : "msg"} ${role}`;
-      const who = document.createElement("span");
-      who.className = "chat-who";
-      who.textContent = (e.sender && e.sender.name) || "?";
-      const time = document.createElement("span");
-      time.className = "chat-time";
-      time.textContent = fmtTime(e.t);
-      const body = document.createElement("span");
-      body.className = "chat-body";
-      if (e.kind === "roll") {
-        body.textContent = `${e.label || "roll"} → `;
-        const v = document.createElement("strong");
-        v.className = "chat-roll";
-        v.textContent = String(e.result);
-        body.appendChild(v);
-        if (e.detail) {
-          const d = document.createElement("span");
-          d.className = "chat-detail";
-          d.textContent = ` (${e.detail})`;
-          body.appendChild(d);
-        }
-      } else {
-        body.textContent = e.text || "";
-      }
-      line.append(time, who, body);
-      chatListEl.appendChild(line);
-    }
-    if (nearBottom || chatEntries.length < 3) chatListEl.scrollTop = chatListEl.scrollHeight;
-  }
-
   async function loadChat(full) {
-    const q = full || chatSeq === null ? "after=0" : `after=${chatSeq}&epoch=${encodeURIComponent(chatEpoch || "")}`;
+    if (!rollsChat) return;
+    const q = full || rollsChat.seq === null ? "after=0" : `after=${rollsChat.seq}&epoch=${encodeURIComponent(rollsChat.epoch || "")}`;
     const res = await fetch(`/api/chat?${q}`).catch(() => null);
     if (!res || !res.ok) return;
     const d = await res.json();
-    if (full || chatSeq === null || d.epoch !== chatEpoch) chatEntries = [];
-    const seen = new Set(chatEntries.map((e) => e.seq));
-    for (const e of d.entries || []) if (!seen.has(e.seq)) chatEntries.push(e);
-    chatEntries.sort((a, b) => a.seq - b.seq);
-    chatEntries = chatEntries.slice(-500);
-    chatSeq = d.seq;
-    chatEpoch = d.epoch;
-    renderChat();
+    if (full) rollsChat.merge({ epoch: null, seq: 0, entries: [] });
+    rollsChat.merge(d);
   }
 
+  /** Player transport for the Rolls & Chat component: the local player server relays to the GM. */
   async function postChat(body) {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -4210,12 +4225,9 @@
       body: JSON.stringify(body),
     }).catch(() => null);
     const data = res ? await res.json().catch(() => ({})) : {};
-    if (!res || !res.ok) {
-      setStatus(`Not sent: ${(data && data.error) || "not connected to the GM"}`);
-      return false;
-    }
+    if (!res || !res.ok) return { ok: false, error: (data && data.error) || "not connected to the GM" };
     await loadChat(false);
-    return true;
+    return { ok: true };
   }
 
   function renderPlayerStatus(st) {
@@ -4246,7 +4258,9 @@
         } else {
           await loadLibrary(); // sheet list / pending counts
         }
-        if (first || d.chat_seq !== chatSeq || d.chat_epoch !== chatEpoch) await loadChat(first || d.chat_epoch !== chatEpoch);
+        if (rollsChat && (first || d.chat_seq !== rollsChat.seq || d.chat_epoch !== rollsChat.epoch)) {
+          await loadChat(first || d.chat_epoch !== rollsChat.epoch);
+        }
       } catch (_) {
         await sleep(1000);
       }
@@ -4254,27 +4268,8 @@
   }
 
   function wirePlayerUi() {
-    const form = document.getElementById("chat-form");
-    if (form) {
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const text = chatInputEl.value.trim();
-        if (!text) return;
-        chatInputEl.disabled = true;
-        const ok = await postChat({ kind: "message", text });
-        chatInputEl.disabled = false;
-        if (ok) chatInputEl.value = "";
-        chatInputEl.focus();
-      });
-    }
-    const btnRoll = document.getElementById("chat-roll");
-    if (btnRoll) {
-      btnRoll.addEventListener("click", () => {
-        const sides = Math.max(2, Math.min(1000, Math.floor(Number(document.getElementById("chat-die").value) || 20)));
-        const result = 1 + Math.floor(Math.random() * sides);
-        postChat({ kind: "roll", label: `d${sides}`, result, detail: `1d${sides}` });
-      });
-    }
+    const btnPlace = document.getElementById("btn-place-token");
+    if (btnPlace) btnPlace.addEventListener("click", () => playerPlaceSelected());
     const btnFull = document.getElementById("btn-full-sync");
     if (btnFull) {
       btnFull.addEventListener("click", async () => {
@@ -4313,7 +4308,7 @@
   async function playerBoot() {
     layout.classList.add("no-sheet");
     const hint = document.getElementById("header-hint");
-    if (hint) hint.textContent = "Drag empty map to pan · Wheel to zoom · Drag your own tokens (dashed outline) · Double-click your character for its sheet";
+    if (hint) hint.textContent = "Drag empty map to pan · Wheel to zoom · Click any token to select it · Drag your own tokens (dashed outline) · Drag your character from the sidebar onto the map to add it · Double-click your character for its sheet";
     resize();
     wirePlayerUi();
     await loadLibrary();

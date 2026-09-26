@@ -69,6 +69,8 @@ class PlayerHub:
         self._chat_times: dict[str, list[float]] = {}
         self._move_times: dict[str, list[float]] = {}
         self.token_mover = None  # callable(scene, token, x, y, allowed_actor_ids)
+        self.token_placer = None  # callable(scene, actor, x, y, allowed_actor_ids) (0.7.2)
+        self._place_times: dict[str, list[float]] = {}
 
     MOVE_RATE = (20, 5.0)  # at most 20 token moves per 5 s per player
 
@@ -90,6 +92,29 @@ class PlayerHub:
         times.append(now)
         self._move_times[pid] = times
         self.live.refresh()  # push now instead of waiting for the next watcher tick
+        return out
+
+    PLACE_RATE = (6, 10.0)  # at most 6 "add to map" per 10 s per player
+
+    def player_place_token(self, pid: str, body) -> dict:
+        """0.7.2: a player adds one of their own characters to the GM's active scene
+        (or moves its existing token there - never a duplicate)."""
+        if not isinstance(body, dict):
+            raise sc.SyncError("body must be an object")
+        n, window = self.PLACE_RATE
+        now = time.time()
+        times = [t for t in self._place_times.get(pid, []) if now - t < window]
+        if len(times) >= n:
+            raise OverflowError("slow down: too many tokens placed")
+        scene = self.live.active_scene
+        if not scene or body.get("scene") != scene:
+            raise LookupError("that scene is not the GM's current scene")
+        if self.token_placer is None:
+            raise LookupError("placing tokens is unavailable")
+        out = self.token_placer(scene, body.get("actor"), body.get("x"), body.get("y"), set(self.assigned_to(pid)))
+        times.append(now)
+        self._place_times[pid] = times
+        self.live.refresh()
         return out
 
     # ------------------------------------------------------------ 0.7.1 chat
@@ -159,6 +184,15 @@ class PlayerHub:
             "assignments": data["assignments"],
         }
         p = self._players_path()
+        if p.exists():
+            # 0.7.2: a players.yaml we cannot parse is never overwritten (it would drop
+            # every player and assignment); the GM has to fix or remove it first.
+            try:
+                prev = yaml.safe_load(p.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError, UnicodeDecodeError) as exc:
+                raise sc.SyncError(f"world/players.yaml is unreadable ({exc}); not overwriting it") from exc
+            if prev is not None and not isinstance(prev, dict):
+                raise sc.SyncError("world/players.yaml is not a mapping; not overwriting it")
         tmp = p.with_name(p.name + ".tmp")
         tmp.write_text(PLAYERS_HEADER + yaml.safe_dump(out, sort_keys=False, allow_unicode=True), encoding="utf-8")
         tmp.replace(p)
@@ -529,6 +563,19 @@ class PlayerHub:
                     data["assignments"].pop(aid)
             self.save_players(data)
             self.presence.pop(pid, None)
+            # 0.7.2: drop the forgotten player's sync bookkeeping (acks / pending full syncs)
+            d = self._sync_dir()
+            for f in sorted(d.glob("*.json")) if d.is_dir() else []:
+                if f.name.startswith("_"):
+                    continue
+                st = sc.load_json(f, {})
+                hit = False
+                for key in ("acks", "full_pending"):
+                    if isinstance(st.get(key), dict) and pid in st[key]:
+                        st[key].pop(pid)
+                        hit = True
+                if hit:
+                    sc.save_json(f, st)
 
     def gm_full_to_player(self, aid: str, pid: str) -> str:
         """GM → player full sync: next sync the player's copy is replaced by the GM's."""
@@ -664,6 +711,9 @@ class PlayerHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     raise sc.SyncError("bad after")
                 self._send(200, self.hub.live.chat_since(after))
+                return
+            if method == "POST" and sub == "token-place":
+                self._send(200, {"ok": True, **self.hub.player_place_token(pid, self._body())})
                 return
             if method == "POST" and sub == "token-move":
                 self._send(200, {"ok": True, "token": self.hub.player_move_token(pid, self._body())})

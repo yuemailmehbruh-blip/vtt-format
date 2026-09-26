@@ -175,6 +175,36 @@ def main():
             g = {t["id"]: t for t in gm_tokens()}
             check(g["t-o"]["x"] == 455 and math.isfinite(g["t-f"]["x"]), "rejected moves changed nothing")
 
+            # --- 0.7.2 players add their own characters to the map ----------------
+            (root / "state/ui/docks.json").write_text(json.dumps({"snapToGrid": True, "snapTarget": "center"}))
+            check(req("PUT", gm + "/api/players/assign", {"actor": "blank-npc", "players": [pid1]})[0] == 200, "GM assigns a 2nd character to P1")
+            wait_for(lambda: "blank-npc" in {a["id"] for a in req("GET", p1 + "/api/library")[1].get("actors", []) if a.get("assigned")}, 5)
+            n_before = len(gm_tokens())
+            t0 = time.time()
+            st, out = req("POST", p1 + "/api/token-place", {"scene": "docks", "actor": "blank-npc", "x": 100, "y": 30})
+            check(st == 200 and out["created"] and (out["token"]["x"], out["token"]["y"]) == (105, 35) and out["token"]["actor_id"] == "blank-npc",
+                  f"P1 adds own character to the map, snapped ({out.get('token')})")
+            new_id = out["token"]["id"]
+            g = gm_tokens()
+            check(len(g) == n_before + 1 and any(t["id"] == new_id and t["name"] and t["size_tiles"] > 0 for t in g), "placed token persisted on the GM with name/size")
+            dt = wait_for(lambda: any(t["id"] == new_id for t in req("GET", p2 + "/api/tokens/docks")[1]["tokens"]), 5)
+            check(dt is not None and time.time() - t0 < 1.5, f"placed token reaches P2 in {time.time() - t0:.2f}s")
+            st, out = req("POST", p1 + "/api/token-place", {"scene": "docks", "actor": "blank-npc", "x": 390, "y": 390})
+            check(st == 200 and not out["created"] and out["token"]["id"] == new_id and out["token"]["x"] == 385, "placing again moves the existing token (no duplicate)")
+            st, out = req("POST", p1 + "/api/token-place", {"scene": "docks", "actor": AID, "x": 40, "y": 40})
+            check(st == 200 and not out["created"] and out["token"]["id"] == "t-f", "character already on the map (GM-placed) is moved, not duplicated")
+            check(sum(1 for t in gm_tokens() if t["actor_id"] in (AID, "blank-npc")) == 2, "still exactly one token per character")
+            check(req("POST", p1 + "/api/token-place", {"scene": "docks", "actor": OTHER, "x": 0, "y": 0})[0] == 403, "cannot place a character that is not assigned")
+            check(req("POST", p2 + "/api/token-place", {"scene": "docks", "actor": AID, "x": 0, "y": 0})[0] == 403, "P2 cannot place P1's character")
+            check(req("POST", p1 + "/api/token-place", {"scene": "alley", "actor": AID, "x": 0, "y": 0})[0] == 404, "cannot place in a scene that is not active")
+            check(req("POST", p1 + "/api/token-place", {"scene": "docks", "actor": "../x", "x": 0, "y": 0})[0] in (400, 403), "bad character id rejected")
+            for bad in ({"x": 1e12, "y": 0}, {"x": "10", "y": 0}, {"x": None, "y": 1}):
+                check(req("POST", p1 + "/api/token-place", {"scene": "docks", "actor": AID, **bad})[0] == 400, f"placement with bad coordinates rejected: {bad}")
+            check(req("POST", gmp + "/player/api/token-place", {"scene": "docks", "actor": AID, "x": 1, "y": 1})[0] in (401, 403), "token-place needs player auth")
+            codes = [req("POST", p1 + "/api/token-place", {"scene": "docks", "actor": AID, "x": 40, "y": 40})[0] for _ in range(10)]
+            check(429 in codes, f"placement rate limit ({codes.count(200)} accepted, then 429)")
+            check(len(gm_tokens()) == n_before + 1, "rejected placements changed nothing")
+
             # --- scene switch --------------------------------------------------
             t0 = time.time()
             req("POST", gm + "/api/session/active", {"scene": "alley"})

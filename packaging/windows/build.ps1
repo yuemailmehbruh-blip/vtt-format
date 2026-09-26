@@ -69,26 +69,14 @@ if (-not (Test-Path (Join-Path $PlayerDist "GM Session Player.exe"))) {
     throw "PyInstaller did not produce dist\GM Session Player\GM Session Player.exe"
 }
 
+# 0.7.2: the installer no longer seeds a campaign (it re-created deleted sample files on
+# every update). The app creates %LOCALAPPDATA%\GM Session\campaign from the bundled
+# sample itself, only when no campaign exists. Remove a stale staging folder if present.
 $StagingCampaign = Join-Path $ScriptDir "staging-campaign"
 if (Test-Path $StagingCampaign) { Remove-Item -Recurse -Force $StagingCampaign }
-
-$Candidates = @(
-    (Join-Path $AppDist "_internal\sample-campaign"),
-    (Join-Path $AppDist "sample-campaign"),
-    (Join-Path $RepoRoot "examples\sample-campaign")
-)
-$SourceCampaign = $null
-foreach ($c in $Candidates) {
-    if (Test-Path (Join-Path $c "world\scenes")) {
-        $SourceCampaign = $c
-        break
-    }
+if (-not (Test-Path (Join-Path $AppDist "_internal\sample-campaign\world\scenes"))) {
+    throw "bundled sample-campaign missing from dist (needed to create new campaigns)"
 }
-if (-not $SourceCampaign) {
-    throw "Could not find sample-campaign to stage for the installer"
-}
-Write-Host "==> Staging campaign from $SourceCampaign"
-Copy-Item -Recurse -Force $SourceCampaign $StagingCampaign
 
 Write-Host ""
 Write-Host "PyInstaller output:"

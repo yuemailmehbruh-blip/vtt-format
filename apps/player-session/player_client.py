@@ -155,6 +155,22 @@ class SyncClient:
         self._bump()
         return out
 
+    def place_token(self, body: dict) -> dict:
+        """0.7.2: add own character to the GM's current scene (validated there)."""
+        out = self._req("POST", "token-place", body)
+        tok = out.get("token") or {}
+        with self.store.lock:
+            view = self.store.load_view()
+            toks = view.setdefault("tokens", [])
+            hit = next((t for t in toks if t.get("id") == tok.get("id")), None)
+            if hit is not None:
+                hit.update(tok)
+            elif tok.get("id"):
+                toks.append(tok)
+            self.store.save_view(view)
+        self._bump()
+        return out
+
     def post_chat(self, body: dict) -> dict:
         """Player message/roll → GM immediately (the GM stamps sender + time)."""
         out = self._req("POST", "chat", body)

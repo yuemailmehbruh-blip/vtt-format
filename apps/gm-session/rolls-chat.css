@@ -1,0 +1,130 @@
+/* 0.7.2: the one "Rolls & Chat" component. Used as-is by the GM's pop-out window
+   (rolls.html) and by the player's sidebar (index.html in player mode), so both look
+   identical. Everything is scoped under .rc and sets its own colours/fonts so the
+   host page's styles don't leak in. */
+.rc {
+  --rc-u: 16px; /* fixed unit: identical sizes whatever the host page's root font */
+  --rc-bg: #12151c;
+  --rc-panel: #1b2030;
+  --rc-text: #e8ecf4;
+  --rc-muted: #9aa3b5;
+  --rc-accent: #6ea8fe;
+  --rc-border: #2c3448;
+  --rc-ok: #7ddea5;
+  color-scheme: dark;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: var(--rc-bg);
+  color: var(--rc-text);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  text-align: left;
+}
+.rc * { box-sizing: border-box; }
+.rc .rc-head {
+  display: flex;
+  align-items: center;
+  gap: calc(0.5 * var(--rc-u));
+  padding: calc(0.65 * var(--rc-u)) calc(0.85 * var(--rc-u));
+  background: var(--rc-panel);
+  border-bottom: 1px solid var(--rc-border);
+}
+.rc .rc-head strong { flex: 1; font-size: calc(1 * var(--rc-u)); font-weight: 700; }
+.rc .rc-note { color: var(--rc-muted); font-size: calc(0.78 * var(--rc-u)); }
+.rc .rc-body {
+  flex: 1;
+  overflow: auto;
+  padding: calc(0.85 * var(--rc-u));
+  display: flex;
+  flex-direction: column;
+  gap: calc(0.85 * var(--rc-u));
+  min-height: 0;
+}
+.rc .rc-section {
+  border: 1px solid var(--rc-border);
+  border-radius: 8px;
+  padding: calc(0.75 * var(--rc-u)) calc(0.85 * var(--rc-u));
+  background: var(--rc-panel);
+  margin: 0;
+}
+.rc .rc-section h3 { margin: 0 0 calc(0.55 * var(--rc-u)); font-size: calc(0.85 * var(--rc-u)); font-weight: 600; color: var(--rc-text); }
+.rc .rc-fields { display: flex; flex-wrap: wrap; align-items: center; gap: calc(0.4 * var(--rc-u)); }
+.rc .rc-fields label { font-size: calc(0.78 * var(--rc-u)); color: var(--rc-muted); user-select: none; margin: 0; }
+.rc input[type="number"], .rc input[type="text"] {
+  width: calc(4.2 * var(--rc-u));
+  height: auto;
+  margin: 0;
+  padding: calc(0.35 * var(--rc-u)) calc(0.45 * var(--rc-u));
+  border-radius: 6px;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-bg);
+  color: var(--rc-text);
+  font: inherit;
+}
+.rc input.rc-mod { width: calc(3.6 * var(--rc-u)); }
+.rc button.rc-primary {
+  background: #2a4a7a;
+  color: var(--rc-text);
+  border: 1px solid #3d6cb0;
+  border-radius: 6px;
+  padding: calc(0.35 * var(--rc-u)) calc(0.75 * var(--rc-u));
+  margin: 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  width: auto;
+}
+.rc button.rc-primary:hover { filter: brightness(1.08); }
+.rc button.rc-ghost {
+  background: transparent;
+  color: var(--rc-muted);
+  border: 1px solid var(--rc-border);
+  border-radius: 6px;
+  padding: calc(0.3 * var(--rc-u)) calc(0.65 * var(--rc-u));
+  margin: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: calc(0.8 * var(--rc-u));
+  width: auto;
+}
+.rc button.rc-ghost:hover { border-color: var(--rc-accent); color: var(--rc-accent); }
+.rc .rc-history { flex: 1; display: flex; flex-direction: column; min-height: 140px; padding: 0; overflow: hidden; }
+.rc .rc-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(0.5 * var(--rc-u));
+  padding: calc(0.65 * var(--rc-u)) calc(0.85 * var(--rc-u));
+  border-bottom: 1px solid var(--rc-border);
+}
+.rc .rc-history-head h3 { margin: 0; }
+.rc .rc-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: calc(0.55 * var(--rc-u)) calc(0.85 * var(--rc-u)) calc(0.85 * var(--rc-u));
+  display: flex;
+  flex-direction: column;
+  gap: calc(0.3 * var(--rc-u));
+  font-size: calc(0.85 * var(--rc-u));
+  min-height: calc(4 * var(--rc-u));
+}
+.rc .roll-line { color: var(--rc-text); line-height: 1.35; word-break: break-word; }
+.rc .roll-line .roll-val { color: var(--rc-ok); font-weight: 700; }
+.rc .roll-line .who { font-weight: 600; color: var(--rc-accent); margin-right: calc(0.3 * var(--rc-u)); }
+.rc .roll-line.gm .who { color: #f2c46d; }
+.rc .roll-line.gm .who::after { content: " (GM)"; font-weight: 400; color: var(--rc-muted); font-size: calc(0.7 * var(--rc-u)); }
+.rc .roll-line .time { color: var(--rc-muted); font-size: calc(0.7 * var(--rc-u)); margin-right: calc(0.3 * var(--rc-u)); }
+.rc .roll-line .det { color: var(--rc-muted); }
+.rc .roll-empty { color: var(--rc-muted); font-size: calc(0.8 * var(--rc-u)); font-style: italic; }
+.rc .rc-form { display: flex; gap: calc(0.4 * var(--rc-u)); padding: calc(0.55 * var(--rc-u)) calc(0.85 * var(--rc-u)); border-top: 1px solid var(--rc-border); margin: 0; }
+.rc .rc-form input[type="text"] { flex: 1; min-width: 0; width: auto; padding: calc(0.35 * var(--rc-u)) calc(0.5 * var(--rc-u)); }
+.rc .rc-actions {
+  display: flex;
+  gap: calc(0.5 * var(--rc-u));
+  align-items: center;
+  padding: calc(0.55 * var(--rc-u)) calc(0.85 * var(--rc-u));
+  border-top: 1px solid var(--rc-border);
+  background: var(--rc-panel);
+}
+.rc .rc-status { color: var(--rc-muted); font-size: calc(0.8 * var(--rc-u)); }

@@ -6,7 +6,9 @@ import hashlib
 import json
 import mimetypes
 import re
+import secrets
 import sys
+import time
 import math
 import threading
 import uuid
@@ -14,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import campaign_home as ch
 import campaign_model as cm
 import clipboard_os  # noqa: E402
 import player_host as ph
@@ -68,26 +71,22 @@ def bundled_sample_campaign() -> Path:
     ).resolve()
 
 
-def resolve_campaign_path(explicit: Path | None = None) -> Path:
+def resolve_campaign_path(explicit: Path | None = None, *, data_dir: Path | None = None) -> Path:
+    """0.7.2: explicit path, else the per-user campaign (``%LOCALAPPDATA%\\GM Session\\campaign``).
+
+    A pre-0.7.2 ``campaign/`` beside the exe is copied there once (verified; the old
+    folder is left untouched). A brand-new campaign is copied from the bundled sample.
+    The bundled sample itself is never used in place (installs replace it).
+    See campaign_home.py.
     """
-    Prefer user-editable campaign/ beside the exe (install layout),
-    then an explicit path, then the bundled sample.
-    """
-    if explicit is not None:
-        return explicit.resolve()
-
-    beside = exe_dir() / "campaign"
-    if (beside / "world" / "scenes").is_dir():
-        return beside.resolve()
-
-    sample = bundled_sample_campaign()
-    if (sample / "world" / "scenes").is_dir():
-        return sample
-
-    raise FileNotFoundError(
-        "No campaign found. Expected campaign/ next to the app "
-        f"({beside}) or a bundled sample at {sample}."
+    root, info = ch.locate_campaign(
+        explicit,
+        legacy_dirs=[exe_dir() / "campaign"],
+        sample=bundled_sample_campaign(),
+        data_dir=data_dir,
     )
+    resolve_campaign_path.last_info = info  # type: ignore[attr-defined]
+    return root
 
 
 def _safe_segment(value: str) -> bool:
@@ -508,6 +507,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/rolls.html":
             self._send_file(app / "rolls.html")
             return
+        if path in ("/rolls-chat.js", "/rolls-chat.css"):
+            self._send_file(app / path.lstrip("/"))
+            return
         if path == "/rolls.js":
             self._send_file(app / "rolls.js")
             return
@@ -598,10 +600,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 data = json.loads(tokens_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                data = {"scene": scene_id, "tokens": []}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                data = None
             if not isinstance(data, dict):
-                data = {"scene": scene_id, "tokens": []}
+                # 0.7.2: report it; saves are refused (409) so the file is never overwritten
+                data = {"scene": scene_id, "tokens": [], "error": f"state/tokens/{scene_id}.json is unreadable; token changes are not saved until it is fixed"}
             data.setdefault("scene", scene_id)
             data.setdefault("tokens", [])
             self._send_json(200, data)
@@ -774,12 +777,19 @@ class Handler(BaseHTTPRequestHandler):
             tokens_path = tokens_dir / f"{scene_id}.json"
             merge = body.get("merge") if isinstance(body.get("merge"), dict) else None
             with TOKENS_LOCK:
+                try:
+                    current = _read_tokens(tokens_path)
+                except TokensUnreadable as exc:
+                    self._send_json(409, {"error": str(exc)})
+                    return
+                # 0.7.2: keep token keys this client does not know about (forward-compatible)
+                prev = {str(t.get("id")): t for t in current}
+                cleaned = [{**{k: v for k, v in prev.get(t["id"], {}).items() if k not in t}, **t} for t in cleaned]
                 if merge is not None:
                     # 0.7.1: only the tokens this window changed/removed are applied on
                     # top of the file, so a player's move made meanwhile is kept.
                     changed = {str(i) for i in (merge.get("changed") or [])}
                     removed = {str(i) for i in (merge.get("removed") or [])}
-                    current = _read_tokens(tokens_path)
                     mine = {t["id"]: t for t in cleaned}
                     merged = [mine.get(t.get("id"), t) if t.get("id") in changed else t
                               for t in current if t.get("id") not in removed]
@@ -948,7 +958,8 @@ class Handler(BaseHTTPRequestHandler):
                 if ui_path.is_file():
                     try:
                         existing = json.loads(ui_path.read_text(encoding="utf-8"))
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        _keep_unreadable(ui_path)  # 0.7.2: keep a copy before replacing
                         existing = {}
                 if not isinstance(existing, dict):
                     existing = {}
@@ -964,7 +975,8 @@ class Handler(BaseHTTPRequestHandler):
                 if ui_path.is_file():
                     try:
                         existing = json.loads(ui_path.read_text(encoding="utf-8"))
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        _keep_unreadable(ui_path)  # 0.7.2: keep a copy before replacing
                         existing = {}
                 if not isinstance(existing, dict):
                     existing = {}
@@ -1997,11 +2009,30 @@ TOKENS_LOCK = threading.Lock()
 TOKEN_COORD_LIMIT = 1_000_000.0
 
 
+def _keep_unreadable(path: Path) -> None:
+    """Copy a file we could not parse aside (``<name>.unreadable-<ts>``) before it is replaced."""
+    import shutil
+    import time as _t
+
+    try:
+        shutil.copy2(path, path.with_name(f"{path.name}.unreadable-{_t.strftime('%Y%m%d-%H%M%S')}"))
+    except OSError:
+        pass
+
+
+class TokensUnreadable(ValueError):
+    """state/tokens/<scene>.json exists but cannot be parsed: never write over it."""
+
+
 def _read_tokens(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
+    except (OSError, ValueError) as exc:
+        raise TokensUnreadable(f"{path.name} is unreadable ({exc}); not overwriting it") from exc
+    if not isinstance(data, dict):
+        raise TokensUnreadable(f"{path.name} is not a token file; not overwriting it")
     toks = data.get("tokens") if isinstance(data, dict) else None
     return [t for t in toks if isinstance(t, dict)] if isinstance(toks, list) else []
 
@@ -2063,6 +2094,77 @@ def move_token(root: Path, scene_id: str, token_id: str, x, y, allowed_actors: s
         tok["x"], tok["y"] = nx, ny
         _write_tokens(path, {"scene": scene_id, "tokens": toks})
     return {"id": token_id, "x": nx, "y": ny}
+
+def _initials(name: str) -> str:
+    """Mirror of session.js initials()."""
+    parts = str(name or "").split()
+    if not parts:
+        return "?"
+    if len(parts) == 1:
+        return parts[0][:2].upper()
+    return (parts[0][0] + parts[-1][0]).upper()
+
+
+def _check_xy(x, y) -> tuple[float, float]:
+    if isinstance(x, bool) or isinstance(y, bool) or not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+        raise ValueError("x and y must be numbers")
+    x, y = float(x), float(y)
+    if not (math.isfinite(x) and math.isfinite(y)) or abs(x) > TOKEN_COORD_LIMIT or abs(y) > TOKEN_COORD_LIMIT:
+        raise ValueError("coordinates out of range")
+    return x, y
+
+
+def place_token(root: Path, scene_id: str, actor_id: str, x, y, allowed_actors: set[str]) -> dict:
+    """0.7.2 player "add my character to the map" (validated): the actor must be one of
+    ``allowed_actors`` (assigned to the player); coordinates finite/in range; snapped
+    with the GM's setting. If the character already has a token in the scene it is
+    moved there instead of adding a duplicate. Returns {"token", "created"}."""
+    if not (_safe_segment(scene_id) and isinstance(actor_id, str) and _safe_segment(actor_id)):
+        raise ValueError("bad scene or character id")
+    x, y = _check_xy(x, y)
+    if actor_id not in allowed_actors:
+        raise PermissionError("you can only place your own characters")
+    root = Path(root)
+    apath = root / "world" / "actors" / f"{actor_id}.yaml"
+    try:
+        actor = yaml.safe_load(apath.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise LookupError("character not found") from exc
+    actor = actor if isinstance(actor, dict) else {}
+    raw = yaml.safe_load((root / "world" / "scenes" / f"{scene_id}.yaml").read_text(encoding="utf-8")) or {}
+    grid = cm.resolve_scene(root, raw).get("grid") or {}
+    try:
+        g = float(grid.get("size") or 70)
+    except (TypeError, ValueError):
+        g = 70.0
+    nx, ny = snap_point(x, y, g, scene_snap(root, scene_id))
+    path = root / "state" / "tokens" / f"{scene_id}.json"
+    with TOKENS_LOCK:
+        toks = _read_tokens(path)
+        tok = next((t for t in toks if str(t.get("actor_id") or "") == actor_id), None)
+        created = tok is None
+        if created:
+            name = str(actor.get("name") or actor_id)
+            app = actor.get("appearance") if isinstance(actor.get("appearance"), dict) else {}
+            try:
+                size = float(app.get("size_tiles", 1)) or 1.0
+            except (TypeError, ValueError):
+                size = 1.0
+            tok = {
+                "id": f"{actor_id}-{int(time.time() * 1000)}-{secrets.randbelow(10000)}",
+                "actor_id": actor_id,
+                "name": name,
+                "label": _initials(name),
+                "x": nx,
+                "y": ny,
+                "size_tiles": size if size > 0 else 1.0,
+            }
+            toks.append(tok)
+        else:
+            tok["x"], tok["y"] = nx, ny
+        _write_tokens(path, {"scene": scene_id, "tokens": toks})
+    return {"token": {k: tok[k] for k in PLAYER_TOKEN_KEYS if k in tok}, "created": created}
+
 
 PLAYER_LAYER_KEYS = ("id", "name", "asset", "x", "y", "w", "h", "flipX", "flipY", "rotation")
 PLAYER_TOKEN_KEYS = ("id", "actor_id", "name", "label", "x", "y", "size_tiles")
@@ -2160,12 +2262,17 @@ def create_server(
     Handler.campaign_root = campaign
     Handler.app_dir = (app_dir or default_app_dir()).resolve()
     Handler.quiet = quiet
-    # 0.6.19 load-time migration (idempotent, backs up rewritten scenes)
-    Handler.migration_report = cm.migrate_campaign(campaign)
+    # 0.7.2: explicit campaign schema; pending migrations run once (additive, backed up)
+    try:
+        _ver = (Handler.app_dir / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        _ver = "0.0.0"
+    Handler.migration_report = ch.migrate(campaign, _ver)
     # 0.7.0 player session: hub always (GM endpoints); LAN listener only when asked.
     hub = ph.PlayerHub(campaign, sheet_payload=lambda aid: Handler.__new__(Handler).sheet_payload(aid))
     hub.live.view_builder = lambda sid: build_player_view(campaign, sid)
     hub.token_mover = lambda sid, tid, x, y, allowed: move_token(campaign, sid, tid, x, y, allowed)
+    hub.token_placer = lambda sid, aid, x, y, allowed: place_token(campaign, sid, aid, x, y, allowed)
     Handler.player_hub = hub
     Handler.player_server = None
     if player_port is not None:

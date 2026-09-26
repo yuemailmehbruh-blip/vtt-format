@@ -26,6 +26,8 @@ datas = [
     (str(GM / "sheet-runtime.js"), "gm-session"),
     (str(GM / "image-xform.js"), "gm-session"),
     (str(GM / "token-auras.js"), "gm-session"),
+    (str(GM / "rolls-chat.js"), "gm-session"),
+    (str(GM / "rolls-chat.css"), "gm-session"),
     (str(GM / "VERSION"), "gm-session"),
 ]
 

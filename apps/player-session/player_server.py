@@ -18,7 +18,7 @@ from player_store import PlayerStore, sc
 
 ACTOR_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 SHARED_UI = ("sheet.html", "sheet.js", "sheet-runtime.js", "image-xform.js", "token-auras.js",
-             "session.js", "org-tree.js", "infer-grid-from-walls.js")
+             "session.js", "org-tree.js", "infer-grid-from-walls.js", "rolls-chat.js", "rolls-chat.css")
 PLAYER_FLAG = '<script>window.GM_PLAYER_MODE = true;</script>'
 UI_DEFAULTS = {"showGrid": True, "snapToGrid": True, "snapTarget": "center", "showNametags": True, "snapLayers": False}
 
@@ -275,6 +275,13 @@ class LocalHandler(BaseHTTPRequestHandler):
             return
         path = unquote(urlparse(self.path).path)
         try:
+            if path == "/api/token-place":
+                try:
+                    return self._json(200, self.client.place_token(self._body()))
+                except GMError as exc:
+                    return self._json(exc.status if 400 <= exc.status < 500 else 502, {"error": str(exc)})
+                except OSError:
+                    return self._json(503, {"error": "not connected to the GM"})
             if path == "/api/token-move":
                 try:
                     return self._json(200, self.client.move_token(self._body()))

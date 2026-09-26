@@ -28,7 +28,7 @@ The script:
 1. Creates `.venv` if needed
 2. `pip install pyinstaller pyyaml pywebview`
 3. Runs PyInstaller with `gm-session.spec` → `dist\GM Session\GM Session.exe`
-4. Stages the sample campaign for the installer
+4. Checks the sample campaign is bundled (0.7.2: the installer installs no campaign files)
 5. If `ISCC.exe` is available, builds `output\GM-Session-Setup.exe`
 6. Prints a `gh release create …` command for auto-update publishing
 
@@ -55,7 +55,7 @@ On launch the app:
 - Starts a local HTTP server on `http://127.0.0.1:8765`
 - Opens the **main UI in a pywebview window** (not Chrome)
 - Sheet clicks open **additional pywebview windows**
-- Uses `{install}\campaign\` (sample campaign copied by the installer). Edit that folder to change the game.
+- Uses `%LOCALAPPDATA%\GM Session\campaign\` (0.7.2+). First start: an existing `{install}\campaign\` from an older version is copied there once (hash-verified; the old folder is left untouched as a fallback), otherwise a new campaign is created from the bundled sample. Installs/updates/uninstalls never write to it. `--campaign <path>` overrides.
 
 ## Auto-update / publishing releases
 
@@ -91,7 +91,7 @@ python apps/gm-session/serve.py
 
 - Windowed build (`console=False`) — no console flash on Windows.
 - Hidden imports cover pywebview’s Edge/WebView2 (Edge Chromium) backend.
-- Prefer the installer-copied `campaign\` folder next to the exe for day-to-day edits.
+- Edit the campaign in `%LOCALAPPDATA%\GM Session\campaign\` (0.7.2+). An old `{install}\campaign\` folder is no longer used once copied.
 
 ## GM Session Player (0.7.0+)
 

@@ -19,6 +19,8 @@ ui_datas = [
     (str(APP / "sheet.js"), "gm-session"),
     (str(APP / "rolls.html"), "gm-session"),
     (str(APP / "rolls.js"), "gm-session"),
+    (str(APP / "rolls-chat.js"), "gm-session"),
+    (str(APP / "rolls-chat.css"), "gm-session"),
     (str(APP / "sheet-builder.html"), "gm-session"),
     (str(APP / "sheet-builder.js"), "gm-session"),
     (str(APP / "sheet-runtime.js"), "gm-session"),
@@ -32,7 +34,7 @@ ui_datas = [
     (str(APP / "defaults" / "player-sheet.builder.json"), "gm-session/defaults"),
 ]
 
-# Bundle sample campaign under sample-campaign/ in the archive (fallback + installer source)
+# Bundle sample campaign under sample-campaign/ (0.7.2: only copied to create a NEW campaign in %LOCALAPPDATA%)
 sample_datas = [(str(SAMPLE), "sample-campaign")]
 
 a = Analysis(

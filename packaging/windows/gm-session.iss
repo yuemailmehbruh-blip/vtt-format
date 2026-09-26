@@ -1,7 +1,6 @@
 ; Inno Setup script for GM Session
 ; Expects:
 ;   dist\GM Session\          — PyInstaller onedir output
-;   staging-campaign\         — sample campaign copied by build.ps1
 ; Build: run packaging\windows\build.ps1 (or ISCC gm-session.iss after pyinstaller)
 
 #define MyAppName "GM Session"
@@ -28,6 +27,7 @@ WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
+CloseApplications=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -38,10 +38,12 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 ; PyInstaller onedir payload
 Source: "dist\GM Session\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Editable sample campaign beside the executable. onlyifdoesntexist: an update/reinstall
-; must never overwrite the user's campaign (sheets, actors, scenes, tokens); only missing
-; files are seeded. uninsneveruninstall keeps the campaign if the app is uninstalled.
-Source: "staging-campaign\*"; DestDir: "{app}\campaign"; Flags: onlyifdoesntexist uninsneveruninstall recursesubdirs createallsubdirs
+; 0.7.2: NO campaign files are installed. Up to 0.7.1 the sample campaign was seeded into
+; {app}\campaign with onlyifdoesntexist on every install, which re-created sample files the
+; GM had deleted (scenes, actors, token files, sheet templates). The campaign now lives in
+; %LOCALAPPDATA%\GM Session\campaign, created/copied by the app on first start (an existing
+; {app}\campaign is copied there once and left untouched). Nothing here may ever write to
+; campaign data: no [InstallDelete]/[UninstallDelete] entries either.
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

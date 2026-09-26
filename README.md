@@ -71,7 +71,7 @@ Double-click install on Windows 10/11 (no system browser):
 3. Double-click **GM-Session-Setup.exe**, then launch **GM Session** from the Start Menu.
 4. Publish for auto-update: `gh release create vX.Y.Z packaging/windows/output/GM-Session-Setup.exe`, then `gh release upload vX.Y.Z packaging/windows/output/GM-Session-Player-Setup.exe` (0.7.0+: `build.ps1` builds both installers).
 
-The installer places an editable `campaign\` folder next to the app (sample campaign). See `packaging/windows/README.md` for details.
+The campaign lives in `%LOCALAPPDATA%\GM Session\campaign` (0.7.2+; created from the sample on first start, or copied once from an older install's `campaign\` folder, which is left untouched). Installing an update never writes to it. See `packaging/windows/README.md` for details.
 
 ## GM Session Player (0.7.0+) — how to host / join
 

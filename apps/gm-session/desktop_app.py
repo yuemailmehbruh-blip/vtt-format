@@ -6,18 +6,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import shutil
 import sys
 import threading
 from pathlib import Path
 from urllib.parse import quote
 
 from server_lib import (
-    bundled_sample_campaign,
     create_server,
     default_app_dir,
-    exe_dir,
-    is_frozen,
     resolve_campaign_path,
 )
 from updater import check_and_offer_update, install_latest_release, load_version
@@ -47,33 +43,6 @@ DEFAULT_SCENE = "docks"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("gm_session.desktop")
-
-
-def ensure_campaign_beside_exe() -> Path | None:
-    """
-    If frozen and campaign/ is missing beside the exe, copy the bundled sample
-    there so the user has an editable campaign folder.
-    Returns the campaign path when copied or already present; None if not frozen.
-    """
-    if not is_frozen():
-        return None
-
-    dest = exe_dir() / "campaign"
-    if (dest / "world" / "scenes").is_dir():
-        return dest.resolve()
-
-    sample = bundled_sample_campaign()
-    if not (sample / "world" / "scenes").is_dir():
-        return None
-
-    try:
-        if dest.exists():
-            # Incomplete/corrupt — leave alone and fall back to bundled
-            return None
-        shutil.copytree(sample, dest)
-        return dest.resolve()
-    except OSError:
-        return None
 
 
 def _show_error(message: str) -> None:
@@ -169,7 +138,7 @@ class DesktopApi:
 
         url = f"{self.base_url}/rolls.html"
         window = webview.create_window(
-            "Rolls",
+            "Rolls & Chat",
             url,
             js_api=self,
             width=420,
@@ -448,11 +417,12 @@ def run_desktop(
     player_host: str = DEFAULT_PLAYER_HOST,
     player_port: int | None = DEFAULT_PLAYER_PORT,
 ) -> None:
-    ensure_campaign_beside_exe()
-
+    # 0.7.2: the campaign lives in %LOCALAPPDATA%\GM Session\campaign (copied once from
+    # the old {app}\campaign, which is left untouched). Installs never write there.
     try:
         campaign_root = resolve_campaign_path(campaign)
-    except FileNotFoundError as exc:
+        logger.info("Campaign: %s (%s)", campaign_root, getattr(resolve_campaign_path, "last_info", {}))
+    except (FileNotFoundError, OSError) as exc:
         _show_error(str(exc))
         raise SystemExit(1) from exc
 
